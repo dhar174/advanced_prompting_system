@@ -1,10 +1,13 @@
+from calendar import c
 from math import e
+from turtle import st
 import openai
 import os
 import re
 import time
 import random
 
+import p
 from regex import R
 from tqdm import tqdm
 from traitlets import Int
@@ -12,10 +15,16 @@ from conversation_manager import output_type_determination, OutputType
 from pydantic import BaseModel, Field
 
 from typing import List, Tuple, Optional
-
+import tiktoken
 
 import complexity_measures
-from complexity_measures import Plan, PlanStep, Subtask
+from complexity_measures import (
+    Plan,
+    PlanStep,
+    Subtask,
+    cosine_similarity_custom,
+    get_embedding,
+)
 
 
 # Set your OpenAI API key
@@ -1371,10 +1380,26 @@ class PromptEngineeringConfig:
         self.complexity_factor = complexity_factor
 
 
-class Reflection:
+class Reflection(BaseModel):
     content: str
     reward: float
     step_number: int
+
+    def __repr__(self):
+        return f"Reflection(content={self.content}, reward={self.reward}, step_number={self.step_number})"
+
+    def __str__(self):
+        return f"Reflection(content={self.content}, reward={self.reward}, step_number={self.step_number})"
+
+    def __eq__(self, other):
+        return (
+            self.content == other.content
+            and self.reward == other.reward
+            and self.step_number == other.step_number
+        )
+
+    def __hash__(self):
+        return hash((self.content, self.reward, self.step_number))
 
 
 class Step:
@@ -1385,13 +1410,44 @@ class Step:
         description (str): A text description of the step.
         step_number (int): The sequential number/position of this step.
         remaining_budget (int): The budget amount remaining at this step.
-        reflections (List[Reflection]): A list of Reflection objects associated with this step.
+        reflection (Reflection): A reflection object containing insights and rewards.
     """
 
-    description: str
-    step_number: int
-    remaining_budget: int
-    reflection: Reflection
+    def __init__(
+        self,
+        description: str,
+        step_number: int,
+        remaining_budget: int,
+        reflection: Reflection | None,
+    ):
+        self.description = description
+        self.step_number = step_number
+        self.remaining_budget = remaining_budget
+        self.reflection = reflection
+
+    def __repr__(self):
+        return f"Step(description={self.description}, step_number={self.step_number}, remaining_budget={self.remaining_budget}, reflection={self.reflection})"
+
+    def __str__(self):
+        return f"Step(description={self.description}, step_number={self.step_number}, remaining_budget={self.remaining_budget}, reflection={self.reflection})"
+
+    def __eq__(self, other):
+        return (
+            self.description == other.description
+            and self.step_number == other.step_number
+            and self.remaining_budget == other.remaining_budget
+            and self.reflection == other.reflection
+        )
+
+    def __hash__(self):
+        return hash(
+            (
+                self.description,
+                self.step_number,
+                self.remaining_budget,
+                self.reflection,
+            )
+        )
 
 
 class Task:
@@ -1413,10 +1469,62 @@ class Task:
     complexity: int
     steps: List[Step]
     reflections: List[Reflection]
-    answer: Optional[str] = None
-    final_reward: Optional[float] = None
-    plan = Optional[Plan] = None
+    answer: str
+    final_reward: float
+    plan = Plan
     output_type: OutputType
+
+    def __init__(
+        self,
+        description: str,
+        refined_description: str,
+        complexity: int,
+        steps: List[Step],
+        reflections: List[Reflection],
+        answer: str,
+        final_reward: float,
+        plan: Plan,
+        output_type: OutputType,
+    ):
+        self.description = description
+        self.refined_description = refined_description
+        self.complexity = complexity
+        self.steps = steps
+        self.reflections = reflections
+        self.answer = answer
+        self.final_reward = final_reward
+        self.plan = plan
+        self.output_type = output_type
+
+    def __repr__(self):
+        return f"Task(description={self.description}, complexity={self.complexity}, steps={self.steps}, reflections={self.reflections}, answer={self.answer}, final_reward={self.final_reward}, plan={self.plan})"
+
+    def __str__(self):
+        return f"Task(description={self.description}, complexity={self.complexity}, steps={self.steps}, reflections={self.reflections}, answer={self.answer}, final_reward={self.final_reward}, plan={self.plan})"
+
+    def __eq__(self, other):
+        return (
+            self.description == other.description
+            and self.complexity == other.complexity
+            and self.steps == other.steps
+            and self.reflections == other.reflections
+            and self.answer == other.answer
+            and self.final_reward == other.final_reward
+            and self.plan == other.plan
+        )
+
+    def __hash__(self):
+        return hash(
+            (
+                self.description,
+                self.complexity,
+                tuple(self.steps),
+                tuple(self.reflections),
+                self.answer,
+                self.final_reward,
+                self.plan,
+            )
+        )
 
 
 class Interaction:
@@ -1433,11 +1541,69 @@ class Interaction:
         final_reward (Optional[float]): The final numerical reward/score for the interaction, if any.
     """
 
-    task = Task
-    steps: List[Step] = Field(default_factory=list)
-    reflections: List[Reflection] = Field(default_factory=list)
-    answer: Optional[str] = None
-    final_reward: Optional[float] = None
+    def __init__(
+        self,
+        task: Task,
+        steps: List[Step],
+        reflections: List[Reflection],
+        answer: str,
+        final_reward: float,
+    ):
+        self.task = task
+        self.steps = steps
+        self.reflections = reflections
+        self.answer = answer
+        self.final_reward = final_reward
+
+    def __repr__(self):
+        return f"Interaction(task={self.task}, steps={self.steps}, reflections={self.reflections}, answer={self.answer}, final_reward={self.final_reward})"
+
+    def __str__(self):
+        return f"Interaction(task={self.task}, steps={self.steps}, reflections={self.reflections}, answer={self.answer}, final_reward={self.final_reward})"
+
+    def __eq__(self, other):
+        return (
+            self.task == other.task
+            and self.steps == other.steps
+            and self.reflections == other.reflections
+            and self.answer == other.answer
+            and self.final_reward == other.final_reward
+        )
+
+    def __hash__(self):
+        return hash(
+            (
+                self.task,
+                tuple(self.steps),
+                tuple(self.reflections),
+                self.answer,
+                self.final_reward,
+            )
+        )
+
+    def to_dict(self):
+        return {
+            "task": self.task,
+            "steps": self.steps,
+            "reflections": self.reflections,
+            "answer": self.answer,
+            "final_reward": self.final_reward,
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(
+            task=data["task"],
+            steps=data["steps"],
+            reflections=data["reflections"],
+            answer=data["answer"],
+            final_reward=data["final_reward"],
+        )
+
+    def sum_rewards(self):
+        total_reward = sum(reflection.reward for reflection in self.reflections)
+        print(f"Total Reward: {total_reward}")
+        return total_reward
 
 
 class CompletionStatus(BaseModel):
@@ -1453,6 +1619,14 @@ class AdvancedPromptEngineer:
         self.config = config
         self.knowledge_base = {}  # For Retrieval-Augmented Generation
         self.task_object = None
+
+    def count_tokens(self, text: list[str]) -> int:
+        """Count the number of tokens in the input text using the tiktoken library."""
+        encoding = tiktoken.encoding_for_model("gpt-4o-mini")
+        total_tokens = 0
+        for text_item in text:
+            total_tokens += len(encoding.encode(text_item))
+        return total_tokens
 
     def track_progress(self, interaction: Interaction) -> None:
         """Track progress using tqdm progress bar"""
@@ -1657,6 +1831,10 @@ class AdvancedPromptEngineer:
 
         interaction.final_reward = response.choices[0].message.parsed.score
 
+        print(
+            f"Final Reward Score for interaction {interaction.task}: {interaction.final_reward}"
+        )
+
         return interaction
 
     # -------------------------------
@@ -1694,9 +1872,10 @@ class AdvancedPromptEngineer:
         Combines internal knowledge base and external information.
         """
         # TODO: Implement actual retrieval of internal information
-        internal_info = self.knowledge_base.get(task, "")
-        external_info = self.retrieve_external_info(task)
-        return f"{internal_info}\n{external_info}"
+        # internal_info = self.knowledge_base.get(task, "")
+        # external_info = self.retrieve_external_info(task)
+        # return f"{internal_info}\n{external_info}"
+        return ""
 
     # -------------------------------
     # Chain-of-Thought (CoT) Prompting
@@ -1823,7 +2002,7 @@ class AdvancedPromptEngineer:
     # -------------------------------
     def collaborative_reasoning(
         self,
-        task: str,
+        task: Task,
         prompt: str,
         existing_interaction: Interaction,
         output_type: OutputType,
@@ -1834,7 +2013,7 @@ class AdvancedPromptEngineer:
         # TODO: Use conversation_manager.py for more advanced multi-agent interactions
         type_of_output = output_type.output_type
         ext_of_output = output_type.file_extension
-        agent_responses = list[Interaction]
+        agent_responses = []
         tag_explainer = f"""1. Begin by enclosing all thoughts within <thinking> tags, exploring multiple angles and approaches. You will use these as your mental scratchpad to brainstorm and consider various strategies, as well as to step through the problem-solving process. The current step involves outlining the next logical action within <step> tags, focusing on the immediate next step in the problem-solving process.
 2. The <count> tag will help you keep track of the remaining steps and budget your actions accordingly.
 3. Break down the solution into clear steps within <step> tags. These steps should be concise and focused on the next specific action to take in the problem-solving process after the previous <step> tags.
@@ -1848,11 +2027,6 @@ class AdvancedPromptEngineer:
 You will be stopped when the count enclosed in <count> tags reaches 0. 
 Please start at the most recent step and continue from there. 
 Example:
-{examples_for_prompt_instructions[random.randint(0, len(examples_for_prompt_instructions) - 1)]}
-
-Now, let's solve the following task, focusing specifically on the <thinking>, and <step> tags, and focusing ONLY on the current step, generating <thinking> and <step> tags for the next step in the task after the most recent <step> tag, building directly on the previous steps. You will be stopped after you complete another <step> tag, or <answer> tag, or when the <count> reaches 0.
-Always think in <thinking> tags before generating a <step> tag, and ensure that it builds on the previous steps.
-Remember to provide a clear and concise answer within <answer> tags at the end of the process, if the task is completed within the step budget. Also, the expected format of the end result the user is looking for is {type_of_output} file extension {ext_of_output}, so keep that in mind for the last step.
 
 """
         agent_intro_mapping = {
@@ -1912,8 +2086,10 @@ Remember to provide a clear and concise answer within <answer> tags at the end o
             messages = [
                 {
                     "role": "system",
-                    "content": agent_intro_mapping[i]["intro"].join(
-                        tag_explainer.split("Example:")[0]
+                    "content": agent_intro_mapping[i]["intro"]
+                    + "\n"
+                    + (
+                        tag_explainer
                         + "\n"
                         + examples_for_prompt_instructions[
                             random.randint(0, len(examples_for_prompt_instructions) - 1)
@@ -1922,15 +2098,36 @@ Remember to provide a clear and concise answer within <answer> tags at the end o
                 },
                 {
                     "role": "user",
-                    "content": agent_intro_mapping[i]["template"].format(task=task)
+                    "content": f"""Now, let's solve the following task, focusing specifically on the <thinking>, and <step> tags, and focusing ONLY on the current step, generating <thinking> and <step> tags for the next step in the task after the most recent <step> tag, building directly on the previous steps. You will be stopped after you complete another <step> tag, or <answer> tag, or when the <count> reaches 0.
+Always think in <thinking> tags before generating a <step> tag, and ensure that it builds on the previous steps.
+Remember to provide a clear and concise answer within <answer> tags at the end of the process, if the task is completed within the step budget. Also, the expected format of the end result the user is looking for is {type_of_output} file extension {ext_of_output}, so keep that in mind for the last step."""
+                    + agent_intro_mapping[i]["template"].format(task=task)
                     + "\n\n"
                     + prompt,
                 },
             ]
+            token_count = self.count_tokens(
+                [message["content"] for message in messages]
+            )
+            if token_count >= 1048576:
+                print(
+                    f"Token count exceeds the limit for agent {i}. Token count: {token_count}\n"
+                )
+                print(f"\nMessages: {messages}\n\n")
+                print(
+                    f"Template: {agent_intro_mapping[i]['template'].format(task=task)}"
+                )
+                raise ValueError(
+                    "Token count exceeds the limit in collaborative reasoning."
+                )
+            else:
+                print(f"\nMessages for agent {i}: {messages}\n\n")
+                print(f"\nToken count for agent {i}: {token_count}\n")
+
             response = self.call_openai(
                 messages=messages,
                 temperature=agent_intro_mapping[i]["temperature"],
-                stop=["</agent_response>"],
+                stop_sequence=["</agent_response>"],
             )
             if response:
                 response_interaction = self.parse_response(
@@ -1941,14 +2138,24 @@ Remember to provide a clear and concise answer within <answer> tags at the end o
                     interaction=existing_interaction,
                 )
                 assert isinstance(response_interaction, Interaction)
+                print(f"\n Agent {i} response: {response_interaction} \n")
                 agent_responses.append(response_interaction)
-        print("Agent Interactions:", agent_responses)
-        assert isinstance(agent_responses, list[Interaction])
+        print("Agent Interactions:")
+        assert all(
+            isinstance(agent_response, Interaction)
+            for agent_response in agent_responses
+        ), f"Agent responses are not of type Interaction."
+
+        assert isinstance(
+            agent_responses, list
+        ), f"Agent responses are not a list. Type: {type(agent_responses)}"
+        for agent_response in agent_responses:
+            print(f"Agent Response: {agent_response} \n")
         return agent_responses
 
     def collaborative_reasoning_main(
         self,
-        task: str,
+        task: Task,
         prompt: str,
         existing_interaction: Interaction,
         output_type: OutputType,
@@ -1958,10 +2165,13 @@ Remember to provide a clear and concise answer within <answer> tags at the end o
         """
         # Collaborative Multi-Agent Reasoning
         # TODO: Use conversation_manager.py for more advanced multi-agent interactions
-        agent_responses = list[Interaction]
+        # agent_responses = list[Interaction]
         agent_responses = self.collaborative_reasoning(
             task, prompt, existing_interaction, output_type
         )
+        # Handle empty responses
+        if not agent_responses:
+            raise ValueError("No agent responses received")
         # Select the interaction with the highest final_reward
         best_interaction: Interaction = max(
             agent_responses, key=lambda x: x.final_reward if x.final_reward else 0.0
@@ -2049,9 +2259,9 @@ Remember to provide a clear and concise answer within <answer> tags at the end o
         """
         Condenses the plan into a concise summary.
         """
-        condensed_plan = f"Plan Summary:\n\n{plan.description}\n\nSteps:\n"
+        condensed_plan = f"Plan Summary:\n\n"
         for step in plan.steps:
-            condensed_plan += f"- Step {step.step_number}: {step.step_name}\n"
+            condensed_plan += f"- Step {step.step_number}: {step.step_name}\n - Description: {step.step_description}\n  - Explanation: {step.step_explanation}\n  - Expected Output: {step.step_output}\n\n Step full text: {step.step_full_text}\n\n"
         return condensed_plan
 
     # -------------------------------
@@ -2277,7 +2487,7 @@ Task: {task}
                     stop=stop_sequence,
                 )
 
-                return response.choices[0].message["content"]
+                return response.choices[0].message.content
             except Exception as e:
                 print(f"Unexpected error: {e}.")
                 break
@@ -2289,9 +2499,9 @@ Task: {task}
     def parse_response(
         self,
         response: str,
-        task: str,
-        steps_objs: List[Step] = None,
-        reflections_objs: List[Reflection] = None,
+        task: Task,
+        steps_objs=None,
+        reflections_objs=None,
         current_step_number: int = 0,
         current_remaining_budget: int = 0,
         interaction: Interaction = None,
@@ -2302,9 +2512,24 @@ Task: {task}
         """
         # TODO: Implement a more robust response parsing mechanism, like using structured output from the model
         if interaction is None:
-            interaction = Interaction()
+            interaction = Interaction(
+                task=task, steps=[], reflections=[], answer="", final_reward=0.0
+            )
+
+        if response is None or not isinstance(response, str):
+            return interaction
+
         # Extract steps
+        if steps_objs is None or not isinstance(steps_objs, list):
+            steps_objs = []
+
+        if reflections_objs is None or not isinstance(reflections_objs, list):
+            reflections_objs = []
+
         steps = re.findall(r"<step>(.*?)<\/step>", response, re.DOTALL)
+
+        # remove empty steps
+        print(f"Steps: {steps}")
         first_count = re.search(
             r"<count>(\d+)<\/count>", response
         )  # Represents the initial step budget
@@ -2315,7 +2540,9 @@ Task: {task}
         if initial_budget != 0:
             if first_count != initial_budget:
                 first_count = initial_budget
-                print("Initial budget mismatch. Adjusting initial budget.")
+                print(
+                    f"Initial budget mismatch. Adjusting initial budget. {first_count} vs initial: {initial_budget}"
+                )
 
         counts = re.findall(r"<count>(\d+)<\/count>", response)
         # Extract reflections
@@ -2325,31 +2552,44 @@ Task: {task}
             response,
             re.DOTALL,
         )
+        reflections = [
+            reflection for reflection in reflections if reflection.strip() != ""
+        ]
 
         # Use the modified pattern for rewards
         rewards = re.findall(
-            r"</reflection>\s*.*?<reward>(0\.\d+|1\.0)</reward>(?=.*(?=<reflection>|<step>))",
+            r"</reflection>\s*.*?<reward>(0\.\d+|1\.0)</reward>",
             response,
             re.DOTALL,
         )
+        print(f"Rewards: {rewards}")
+        for i in range(len(rewards)):
+            print(f"Step {i} reward: {rewards[i]}")
         i = 0
 
-        if steps_objs is not None:
+        if steps_objs is not None and steps_objs != []:
             if len(steps_objs) != len(steps):
+                print(
+                    f"Steps mismatch. Adjusting steps. {len(steps_objs)} vs {len(steps)}"
+                )
                 if len(steps_objs) > len(steps):
-                    print("Steps mismatch. Adjusting steps.")
+                    print("Stepsobj larger than steps. Adjusting steps.")
+                    # print (steps_objs) entries that are not in steps
                     missing_steps = {}
                     for step in steps_objs:
                         if step.description.strip() not in [s.strip() for s in steps]:
+                            print(f"Missing step: {step.description.strip()}")
                             missing_steps.update(
                                 {step.description.strip(): step.step_number}
                             )
 
                     # Ensure lists are same length before processing
-                    while len(reflections) < len(steps_objs):
-                        reflections.append(None)
-                    while len(rewards) < len(steps_objs):
-                        rewards.append(None)
+                    assert len(reflections) + 1 == len(
+                        steps_objs
+                    ), f"Reflections mismatch: {len(reflections)} reflections, {len(steps_objs)}steps, steps: {steps_objs}"
+                    assert len(rewards) + 1 == len(
+                        steps_objs
+                    ), f"Rewards mismatch {len(rewards)} rewards, {len(steps_objs)}steps, steps: {steps_objs}"
 
                     for step in steps_objs:
                         if step.description.strip() in missing_steps.keys():
@@ -2365,10 +2605,26 @@ Task: {task}
 
                             # Insert step and its attributes
                             steps.insert(step_num, step.description.strip())
-                            counts.insert(step_num, step.count)
+                            counts.insert(step_num, step.step_number)
 
-                            if hasattr(step, "reflection"):
-                                reflections[step_num] = step.reflection
+                            if step_num < len(reflections):
+                                if hasattr(step, "reflection"):
+                                    reflections.insert(step_num, step.reflection)
+                                else:
+                                    raise ValueError(
+                                        f"Missing reflection for past step {step_num}"
+                                    )
+                            # If it's the current new step, reflections will remain one shorter
+                            # since reflection gets added by judge_step() later
+                            elif step_num == len(reflections):
+                                _reflection = self.judge_step(step, task)
+                                reflections.append(_reflection)
+
+                            else:
+                                raise ValueError(
+                                    f"Reflection list gap detected at step {step_num}"
+                                )
+
                             if hasattr(step, "reward"):
                                 # Handle final reward for last step
                                 if step_num == len(steps_objs) - 1:
@@ -2382,10 +2638,116 @@ Task: {task}
 
                     # Verify each step has required attributes
                     for i in range(len(steps)):
-                        if reflections[i] is None or rewards[i] is None:
+
+                        if (i < len(reflections) and reflections[i] is None) or (
+                            i < len(rewards) and rewards[i] is None
+                        ):
                             raise ValueError(
                                 f"Missing reflection or reward for step {i}"
                             )
+                elif len(steps_objs) < len(steps):
+                    print("Stepsobj smaller than steps. Adjusting steps.")
+                    # print (steps) entries that are not in steps_objs
+                    missing_steps = {}
+                    for step in steps:
+                        if step.strip() not in [
+                            s.description.strip() for s in steps_objs
+                        ]:
+                            print(f"Missing step: {step.strip()}")
+                            missing_steps.update({step.strip(): 0})
+
+                    # Ensure lists are same length before processing
+                    assert len(reflections) - 1 == len(
+                        steps
+                    ), f"Reflections mismatch: {len(reflections)} reflections, {len(steps)}steps, steps: {steps}"
+                    assert len(rewards) - 1 == len(
+                        steps
+                    ), f"Rewards mismatch {len(rewards)} rewards, {len(steps)}steps, steps: {steps}"
+
+                    for step in steps:
+                        if step.strip() in missing_steps.keys():
+                            step_num = missing_steps[step.strip()]
+
+                            # Validate step number is sequential
+                            if step_num > 0 and not any(
+                                s.step_number == step_num - 1 for s in steps_objs
+                            ):
+                                raise ValueError(
+                                    f"Non-sequential step number found: {step_num}"
+                                )
+
+                            # Insert step and its attributes
+                            steps_objs.append(
+                                Step(
+                                    description=step.strip(),
+                                    remaining_budget=int(counts[i]),
+                                    step_number=int(counts[i]),
+                                    reflection=reflections[i],
+                                )
+                            )
+
+                            if hasattr(step, "reward"):
+                                steps_objs[-1].reflection.reward = float(rewards[i])
+
+                    # Verify each step has required attributes
+                    for i in range(len(steps)):
+                        if (i < len(reflections) and reflections[i] is None) or (
+                            i < len(rewards) and rewards[i] is None
+                        ):
+                            raise ValueError(
+                                f"Missing reflection or reward for step {i}"
+                            )
+
+            elif len(steps_objs) == len(steps):
+                # if steps are not the same ones, then we combine them
+                for i in range(len(steps)):
+                    if (
+                        (
+                            steps_objs[i].description.strip() != steps[i].strip()
+                            and steps[i].strip()
+                            not in [s.description.strip() for s in steps_objs]
+                        )
+                        or (
+                            steps_objs[i].step_number
+                            != int(first_count) - int(counts[i])
+                        )
+                        or (
+                            steps_objs[i].step_number
+                            != int(first_count)
+                            - int(
+                                re.findall(
+                                    rf"<step>{re.escape(steps[i])}</step>.*?<count>(\d+)</count>",
+                                    response,
+                                    re.DOTALL,
+                                )[0]
+                            )
+                        )
+                    ):
+                        print(
+                            f"Steps mismatch. Adjusting steps. {steps_objs[i].description.strip()} vs {steps[i].strip()}"
+                        )
+                        # Validate step number is sequential
+                        if steps_objs[i].step_number > 0 and not any(
+                            s.step_number == steps_objs[i].step_number - 1
+                            for s in steps_objs
+                        ):
+                            raise ValueError(
+                                f"Non-sequential step number found: {steps_objs[i].step_number}"
+                            )
+
+                        # Insert step and its attributes
+                        steps_objs.insert(
+                            i,
+                            Step(
+                                description=steps[i].strip(),
+                                remaining_budget=int(counts[i]),
+                                step_number=int(counts[i]),
+                                reflection=reflections[i],
+                            ),
+                        )
+
+                        if hasattr(steps_objs[i], "reward"):
+                            steps_objs[i].reflection.reward = float(rewards[i])
 
         def find_next_reflection(text, current_position):
             step_tag = re.compile(r"<step>.*?</step>", re.DOTALL)
@@ -2403,155 +2765,217 @@ Task: {task}
 
             return -1  # Indicating no reflections tag found no reflections tag found
 
-        for step_desc, count in zip(steps, counts):
+        for i, (step_desc, count) in enumerate(zip(steps, counts)):
             this_step = None
             if isinstance(count, str):
                 count = int(count)
             if not isinstance(step_desc, str):
                 step_desc = step_desc.group(1)
             step_reflection = None
-            if len(reflections) == len(steps):
+            if len(reflections) == len(steps) or (
+                len(steps) - len(reflections) == 1 and i < len(reflections)
+            ):
                 step_reflection = reflections[i]
             else:
                 step_reflection = find_next_reflection(
                     response, response.find(steps[i]) + len(steps[i])
                 )
-                if step_reflection == -1:
-                    # First, check if this step exists in steps_objs
+            if step_reflection == -1:
+                # First, check if this step exists in steps_objs
+                if steps_objs and isinstance(step_desc, str):
+                    for step_obj in steps_objs:
+                        if isinstance(step_obj, Step):
+                            if (
+                                step_obj.step_number == int(first_count) - int(count)
+                                or step_obj.step_number == i
+                            ) and (
+                                (
+                                    step_obj.description.strip().lower()
+                                    in step_desc.strip().lower()
+                                    and abs(
+                                        len(step_obj.description.strip())
+                                        - len(step_desc.strip())
+                                    )
+                                    < 10
+                                )
+                                or cosine_similarity_custom(
+                                    get_embedding(step_obj.description.strip()),
+                                    get_embedding(step_desc.strip()),
+                                )
+                                > 0.9
+                            ):
+
+                                step_reflection = step_obj.reflection
+                                this_step = step_obj
+                                break
+                elif reflections_objs and isinstance(step_desc, str):
+                    for reflection_obj in reflections_objs:
+                        if isinstance(reflection_obj, Reflection):
+                            if (
+                                reflection_obj.step_number
+                                == int(first_count) - int(count)
+                                and not steps_objs
+                            ):
+                                step_reflection = reflection_obj
+                                break
+                            elif steps_objs:
+                                for step_obj in steps_objs:
+                                    if (
+                                        step_obj.step_number
+                                        == reflection_obj.step_number
+                                    ):
+                                        step_reflection = reflection_obj
+                                        this_step = step_obj
+                                        break
+                if this_step is None:
+                    this_step = Step(
+                        description=step_desc,
+                        remaining_budget=int(count),
+                        step_number=int(first_count) - int(count),
+                        reflection=None,
+                    )
+                this_reward = 0.0
+                if i < len(rewards) and (
+                    len(rewards) == len(steps) or len(rewards) == len(steps) - 1
+                ):
+                    this_reward = float(rewards[i])
+
+                if step_reflection is None or step_reflection == -1:
+                    step_reflection = self.judge_step(this_step, task)
+                    if this_reward != 0.0:
+                        step_reflection.reward = this_reward
+                this_step.reflection = step_reflection
+                if this_step not in interaction.steps:
+                    interaction.steps.append(this_step)
+            else:
+                if isinstance(step_reflection, str):
+                    # Check for <reward> tag after reflection closing tag, but only if it's not the last reflection and only if it's not followed by another reflection or step tag
+                    # Extract the substring starting after step_reflection
+                    substring = response[
+                        response.find(step_reflection) + len(step_reflection) :
+                    ]
+
+                    # Search for <reward> tag ensuring it's not followed by <reflection> or <step> tags
+                    if i < len(reflections) - 1 and len(rewards) > i:
+                        step_reward = re.search(
+                            r"</reflection>\s*.*?<reward>(0\.\d+|1\.0)<\/reward>(?!.*(<reflection>|<step>))",
+                            substring,
+                            re.DOTALL,
+                        )
+                        step_rew_float = (
+                            float(step_reward.group(1)) if step_reward else 0.0
+                        )
+                    elif i == len(reflections) - 1 and len(rewards) > i:
+                        final_reward = re.search(
+                            r"<final_reward>(0\.\d+|1\.0)<\/final_reward>",
+                            substring,
+                            re.DOTALL,
+                        )
+                        step_rew_float = (
+                            float(final_reward.group(1)) if final_reward else 0.0
+                        )
+                    else:
+                        step_rew_float = 0.0
+
+                    step_reflection_obj = Reflection(
+                        content=step_reflection.strip(),
+                        reward=step_rew_float,
+                        step_number=int(first_count) - int(count),
+                    )
                     if steps_objs and isinstance(step_desc, str):
                         for step_obj in steps_objs:
-                            if isinstance(step_obj, Step):
-                                if (
-                                    step_obj.step_number
-                                    == int(first_count) - int(count)
-                                    or step_obj.description.strip().lower()
-                                    == step_desc.strip().lower()
-                                ):
-                                    step_reflection = step_obj.reflection
-                                    this_step = step_obj
-                                    break
-                    elif reflections_objs and isinstance(step_desc, str):
-                        for reflection_obj in reflections_objs:
-                            if isinstance(reflection_obj, Reflection):
-                                if (
-                                    reflection_obj.step_number
-                                    == int(first_count) - int(count)
-                                    and not steps_objs
-                                ):
-                                    step_reflection = reflection_obj
-                                    break
-                                elif steps_objs:
-                                    for step_obj in steps_objs:
-                                        if (
-                                            step_obj.step_number
-                                            == reflection_obj.step_number
-                                        ):
-                                            step_reflection = reflection_obj
-                                            this_step = step_obj
-                                            break
-                    if this_step is None:
+                            if (
+                                step_obj.step_number == int(first_count) - int(count)
+                                or step_obj.description.strip().lower()
+                                == step_desc.strip().lower()
+                            ):
+                                step_obj.reflection = step_reflection_obj
+                                this_step = step_obj
+
+                                break
+
+                    if this_step is None or not isinstance(this_step, Step):
                         this_step = Step(
-                            description=step_desc,
+                            description=step_desc.strip(),
                             remaining_budget=int(count),
                             step_number=int(first_count) - int(count),
-                            reflection=None,
+                            reflection=step_reflection_obj,
                         )
-
-                    if step_reflection is None:
-                        step_reflection = self.judge_step(this_step, task)
-                    this_step.reflection = step_reflection
-                    interaction.steps.append(this_step)
-                else:
-                    if isinstance(step_reflection, str):
-                        # Check for <reward> tag after reflection closing tag, but only if it's not the last reflection and only if it's not followed by another reflection or step tag
-                        # Extract the substring starting after step_reflection
-                        substring = response[
-                            response.find(step_reflection) + len(step_reflection) :
-                        ]
-
-                        # Search for <reward> tag ensuring it's not followed by <reflection> or <step> tags
-                        if i < len(reflections) - 1 and len(rewards) > i:
-                            step_reward = re.search(
-                                r"</reflection>\s*.*?<reward>(0\.\d+|1\.0)<\/reward>(?!.*(<reflection>|<step>))",
-                                substring,
-                                re.DOTALL,
-                            )
-                            step_rew_float = (
-                                float(step_reward.group(1)) if step_reward else 0.0
-                            )
-
-                        step_reflection_obj = Reflection(
-                            content=step_reflection.strip(), reward=step_rew_float
+                    if this_step not in interaction.steps:
+                        interaction.steps.append(this_step)
+                elif isinstance(step_reflection, Reflection):
+                    if steps_objs and isinstance(step_desc, str):
+                        for step_obj in steps_objs:
+                            if (
+                                step_obj.step_number == int(first_count) - int(count)
+                                or step_obj.description.strip().lower()
+                                == step_desc.strip().lower()
+                            ):
+                                step_obj.reflection = step_reflection
+                                this_step = step_obj
+                                break
+                    if this_step is None:
+                        this_step = Step(
+                            description=step_desc.strip(),
+                            remaining_budget=int(count),
+                            step_number=int(first_count) - int(count),
+                            reflection=step_reflection,
                         )
-                        if steps_objs and isinstance(step_desc, str):
-                            for step_obj in steps_objs:
-                                if (
-                                    step_obj.step_number
-                                    == int(first_count) - int(count)
-                                    or step_obj.description.strip().lower()
-                                    == step_desc.strip().lower()
-                                ):
-                                    step_obj.reflection = step_reflection_obj
-                                    this_step = step_obj
+                    if step_reflection.reward == 0.0:
+                        this_reward = 0.0
+                        if i < len(rewards) and (
+                            len(rewards) == len(steps) or len(rewards) == len(steps) - 1
+                        ):
+                            this_reward = float(rewards[i])
+                        if this_reward != 0.0:
+                            step_reflection.reward = this_reward
 
-                                    break
+                    if this_step not in interaction.steps:
+                        interaction.steps.append(this_step)
+                elif reflections_objs and isinstance(step_desc, str):
+                    for reflection_obj in reflections_objs:
+                        if isinstance(reflection_obj, Reflection):
+                            if (
+                                reflection_obj.step_number
+                                == int(first_count) - int(count)
+                                and not steps_objs
+                            ):
+                                reflection_obj.content = step_reflection
+                                this_step = reflection_obj
+                                break
+                            elif steps_objs:
+                                for step_obj in steps_objs:
+                                    if (
+                                        step_obj.step_number
+                                        == reflection_obj.step_number
+                                    ):
+                                        reflection_obj.content = step_reflection
+                                        this_step = reflection_obj
+                                        break
+                    if this_step is None:
+                        this_step = Reflection(
+                            content=step_reflection.strip(),
+                            reward=0.0,
+                            step_number=int(first_count) - int(count),
+                        )
+                    this_reward = 0.0
+                    if i < len(rewards) and (
+                        len(rewards) == len(steps) or len(rewards) == len(steps) - 1
+                    ):
+                        this_reward = float(rewards[i])
+                    if this_reward != 0.0:
+                        this_step.reward = this_reward
 
-                        if this_step is None or not isinstance(this_step, Step):
-                            this_step = Step(
-                                description=step_desc.strip(),
-                                remaining_budget=int(count),
-                                step_number=int(first_count) - int(count),
-                                reflection=step_reflection_obj,
-                            )
-                        interaction.steps.append(this_step)
-                    elif isinstance(step_reflection, Reflection):
-                        if steps_objs and isinstance(step_desc, str):
-                            for step_obj in steps_objs:
-                                if (
-                                    step_obj.step_number
-                                    == int(first_count) - int(count)
-                                    or step_obj.description.strip().lower()
-                                    == step_desc.strip().lower()
-                                ):
-                                    step_obj.reflection = step_reflection
-                                    this_step = step_obj
-                                    break
-                        if this_step is None:
-                            this_step = Step(
-                                description=step_desc.strip(),
-                                remaining_budget=int(count),
-                                step_number=int(first_count) - int(count),
-                                reflection=step_reflection,
-                            )
-                        interaction.steps.append(this_step)
-                    elif reflections_objs and isinstance(step_desc, str):
-                        for reflection_obj in reflections_objs:
-                            if isinstance(reflection_obj, Reflection):
-                                if (
-                                    reflection_obj.step_number
-                                    == int(first_count) - int(count)
-                                    and not steps_objs
-                                ):
-                                    reflection_obj.content = step_reflection
-                                    this_step = reflection_obj
-                                    break
-                                elif steps_objs:
-                                    for step_obj in steps_objs:
-                                        if (
-                                            step_obj.step_number
-                                            == reflection_obj.step_number
-                                        ):
-                                            reflection_obj.content = step_reflection
-                                            this_step = reflection_obj
-                                            break
-                        if this_step is None:
-                            this_step = Reflection(
-                                content=step_reflection.strip(),
-                                reward=0.0,
-                                step_number=int(first_count) - int(count),
-                            )
-                        interaction.reflections.append(this_step)
-            i += 1
+                    interaction.reflections.append(this_step)
+                    if step_desc and isinstance(step_desc, str):
+                        this_step = Step(
+                            description=step_desc.strip(),
+                            remaining_budget=int(count),
+                            step_number=int(first_count) - int(count),
+                            reflection=this_step,
+                        )
+                        if this_step not in interaction.steps:
+                            interaction.steps.append(this_step)
 
         for reflection, reward in zip(reflections, rewards):
             # Check if the reflection is already in the interaction object
@@ -2571,7 +2995,11 @@ Task: {task}
             if not found:
                 if isinstance(reflection, str):
                     interaction.reflections.append(
-                        Reflection(content=reflection, reward=float(reward))
+                        Reflection(
+                            content=reflection,
+                            reward=float(reward),
+                            step_number=int(first_count) - i,
+                        )
                     )
                 elif isinstance(reflection, Reflection):
                     interaction.reflections.append(reflection)
@@ -2594,12 +3022,16 @@ Task: {task}
     # Self-Consistency
     # -------------------------------
     def self_consistency(
-        self, task: Task, prompt: str, existing_interaction: Interaction
+        self,
+        task: Task,
+        prompt: str,
+        existing_interaction: Interaction,
+        messages: List[dict],
     ) -> Interaction:
         """
         Implements Self-Consistency by generating multiple reasoning paths and selecting the most consistent one.
         """
-        responses = List[Interaction]
+        responses = []
         steps_objs = existing_interaction.steps if existing_interaction else None
         reflections_objs = (
             existing_interaction.reflections if existing_interaction else None
@@ -2607,11 +3039,13 @@ Task: {task}
 
         for _ in range(self.config.n if self.config.n > 4 else 5):
             temperature = random.uniform(0.0, 0.5 + (min(0.1 * self.config.n, 1.2)))
-            response = self.call_openai(prompt, temperature=temperature)
+            response = self.call_openai(
+                messages=messages, temperature=temperature, stop_sequence=["</step>"]
+            )
             if response:
                 interaction = self.parse_response(
                     response,
-                    task.refined_description,
+                    task,
                     steps_objs,
                     reflections_objs,
                     interaction=existing_interaction,
@@ -2703,7 +3137,7 @@ Task: {task}
             messages=messages,
         )
 
-        return response.choices[0].message["content"].strip()
+        return response.choices[0].message.content.strip()
 
     def task_into_prompt(self, task: str) -> str:
         """
@@ -2750,7 +3184,7 @@ Task: {task}
 
         # Extract the refined prompt from the response
         pattern = re.compile(r"<prompt>(.*?)</prompt>", re.DOTALL)
-        match = pattern.search(response.choices[0].message["content"])
+        match = pattern.search(response.choices[0].message.content)
         refined_prompt = match.group(1) if match else ""
 
         return refined_prompt if refined_prompt not in ["", " "] else first_prompt
@@ -2795,7 +3229,7 @@ Task: {task}
     #         ],
     #     )
 
-    #     return response.choices[0].message["content"].strip()
+    #     return response.choices[0].message.content.strip()
 
     def merge_interactions(
         self, interaction_a: Interaction, interaction_b: Interaction
@@ -2807,7 +3241,13 @@ Task: {task}
             interaction_b, Interaction
         ):
             raise TypeError("Both arguments must be Interaction instances")
-        merged_interaction = Interaction()
+        merged_interaction = Interaction(
+            task=interaction_a.task,
+            steps=[],
+            reflections=[],
+            answer="",
+            final_reward=0.0,
+        )
         try:
 
             # Merge steps
@@ -2867,17 +3307,21 @@ Task: {task}
         # Step 1: Retrieve Information
         retrieved_info = self.retrieve_information(task)
         print("Retrieved Information:\n", retrieved_info)
-        interaction = Interaction()
         refined_task = self.task_into_prompt(task)
         print("Refined Task:", refined_task)
 
-        task_object = Task()
-        task_object.description = task
-        task_object.refined_description = refined_task
-        task_object.output_type = output_type_determination(task)
+        _description = task
+        _refined_description = refined_task
+        _output_type = output_type_determination(task)
 
         # Step 2: Assess Complexity
         complexity, plan = self.assess_complexity(refined_task)
+        task_object = Task(
+            task, refined_task, complexity, [], [], "", 0.0, plan, _output_type
+        )
+        interaction = Interaction(
+            task=task_object, steps=[], reflections=[], answer="", final_reward=0.0
+        )
         print("Assessed Complexity:", complexity)
         assert complexity > 0.0, "Complexity assessment failed."
         assert isinstance(plan, Plan), "Complexity plan generation failed."
@@ -2904,7 +3348,11 @@ Task: {task}
 
         # Step 4: Generate Initial Prompt
         initial_prompt, system_prompt = self.generate_initial_prompt(
-            refined_task, retrieved_info, adjusted_budget, complexity
+            refined_task,
+            retrieved_info,
+            adjusted_budget,
+            complexity,
+            task_object.output_type,
         )
         print("System Prompt:\n", system_prompt)
         print("Initial Prompt:\n", initial_prompt)
@@ -2989,18 +3437,18 @@ For the current step, focus on the following plan step or plan sub-task:
                     "role": "system",
                     "content": system_prompt,
                 },
-                {"role": "user", "content": current_prompt, "name": "Human User"},
+                {"role": "user", "content": current_prompt, "name": "Human_User"},
             ]
             # Step 5: Collaborative Multi-Agent Reasoning
             # for collaborative_reasoning, input only the current prompt minus the initial prompt
             agent_prompt = current_prompt.replace(initial_prompt, "")
             if self.config.agents > 0:
                 agent_interaction = self.collaborative_reasoning_main(
-                    task, agent_prompt, interaction, task_object.output_type
+                    task_object, agent_prompt, interaction, task_object.output_type
                 )
             # Step 6: Self-Consistency Check
             self_consistent_interaction = self.self_consistency(
-                task_object, current_prompt, interaction
+                task_object, current_prompt, interaction, messages
             )
             print("Self-Consistent Interaction:", self_consistent_interaction)
 
@@ -3010,7 +3458,12 @@ For the current step, focus on the following plan step or plan sub-task:
             all_interactions.append(self_consistent_interaction)
             best_interaction = max(
                 all_interactions,
-                key=lambda x: x.final_reward if x.final_reward else 0.0,
+                key=lambda x: x.sum_rewards() if x.sum_rewards() else 0.0,
+            )
+
+            assert (
+                best_interaction.sum_rewards() is not None
+                and best_interaction.sum_rewards() > 0.0
             )
 
             # Step 8: Dynamic Confidence Exploration
@@ -3086,8 +3539,11 @@ For the current step, focus on the following plan step or plan sub-task:
                     else:
                         current_plan_subtask = None
             if interaction.answer and interaction.answer != "":
+                print(f"\n\nFinal Answer: {interaction.answer}\n\n")
                 interaction = self.judge_final_answer(task, interaction)
                 return interaction
+        else:
+            return interaction
 
     def adaptive_complexity_handling(
         self, task: str, interaction: Interaction
@@ -3170,6 +3626,9 @@ Test Success Criteria:
 
     # TODO: Replace the task_description with steps from the plans generated by complexity_measures.py
     result = engineer.main(task_description)
+    assert isinstance(
+        result, Interaction
+    ), f"Invalid result type: {type(result)} Results: {result}"
     print("\nFinal Answer:")
     print(result.answer)
     print("\nFinal Reflection:")
