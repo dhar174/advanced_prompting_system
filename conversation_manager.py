@@ -1,25 +1,21 @@
 # conversation_manager.py
 
-from calendar import c
 from datetime import datetime
-from json import tool
-from operator import le
-from sys import version
-from turtle import st
-from typing import Any, Dict, List, final
+
+from typing import Any, Dict, List
 from jarowinkler import jarowinkler_similarity
 
 
 # jarowinkler_similarity("this is an example".split(), ["this", "is", "a", "example"])
 # 0.8666666666666667
-from numpy import add
 import openai
 import os
 import re
+
 from assistant_personalities import assistant_personalities, assistant_instructions
 import json
 from schema import ConversationInput
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from function_definitions import (
     GenerateSimpleConciseAnswerMessage,
     GenerateJSONOutput,
@@ -43,63 +39,63 @@ from output_generator import (
 
 
 class OutputType(BaseModel):
-    output_type: str
-    file_extension: str
+    output_type: str = Field(..., description="The type of output to generate.")
+    file_extension: str = Field(..., description="The file extension for the output.")
 
 
 output_functions = [
     {
         "name": "generate_simple_concise_answer_message",
         "description": "Generate a simple concise text answer message.",
-        "parameters": GenerateSimpleConciseAnswerMessage.schema(),
+        "parameters": GenerateSimpleConciseAnswerMessage.model_json_schema(),
         "required": ["final_decision"],
         "additionalProperties": False,
     },
     {
         "name": "generate_json_output",
         "description": "Generate a JSON file from the provided data.",
-        "parameters": GenerateJSONOutput.schema(),
+        "parameters": GenerateJSONOutput.model_json_schema(),
         "required": ["final_decision", "filename"],
         "additionalProperties": False,
     },
     {
         "name": "generate_pdf_output",
         "description": "Generate a PDF file from the provided data.",
-        "parameters": GeneratePDFOutput.schema(),
+        "parameters": GeneratePDFOutput.model_json_schema(),
         "required": ["final_decision", "filename"],
         "additionalProperties": False,
     },
     {
         "name": "generate_text_output",
         "description": "Generate a text file from the provided data.",
-        "parameters": GenerateTextOutput.schema(),
+        "parameters": GenerateTextOutput.model_json_schema(),
         "required": ["final_decision", "filename"],
         "additionalProperties": False,
     },
     {
         "name": "generate_html_output",
         "description": "Generate an HTML file from the provided data.",
-        "parameters": GenerateHTMLOutput.schema(),
+        "parameters": GenerateHTMLOutput.model_json_schema(),
         "required": ["final_decision", "filename"],
         "additionalProperties": False,
     },
     {
         "name": "generate_python_script_output",
         "description": "Generate a Python script file from the provided data.",
-        "parameters": GeneratePythonScriptOutput.schema(),
+        "parameters": GeneratePythonScriptOutput.model_json_schema(),
         "required": ["final_decision", "filename"],
         "additionalProperties": False,
     },
     {
         "name": "generate_code_snippet_output",
         "description": "Generate a code snippet file from the provided data.",
-        "parameters": GenerateCodeSnippetOutput.schema(),
+        "parameters": GenerateCodeSnippetOutput.model_json_schema(),
         "required": ["final_decision", "filename"],
     },
     {
         "name": "generate_csv_output",
         "description": "Generate a CSV file from the provided data.",
-        "parameters": GenerateCSVOutput.schema(),
+        "parameters": GenerateCSVOutput.model_json_schema(),
         "required": ["final_decision", "filename"],
     },
 ]
@@ -351,17 +347,35 @@ def summarize_conversation(conversation_history):
 
 
 class DirectReply(BaseModel):
-    assistant_name: str
-    reply: str
+    assistant_name: str = Field(..., description="The name of the assistant.")
+    reply: str = Field(..., description="The direct reply from the assistant.")
 
 
 class ExtractFormat(BaseModel):
-    Facts: list[str]
-    Arguments: list[str]
-    Direct_Replies: DirectReply
-    Decisions: list[str]
-    Recommended_Actions: list[str]
-    To_Do_List: list[str]
+    Facts: list[str] = Field(
+        default_factory=list,
+        description="List of factual statements extracted from the conversation.",
+    )
+    Arguments: list[str] = Field(
+        default_factory=list,
+        description="List of arguments extracted from the conversation.",
+    )
+    Direct_Replies: DirectReply = Field(
+        default_factory=DirectReply,
+        description="Direct replies from one assistant to another.",
+    )
+    Decisions: list[str] = Field(
+        default_factory=list,
+        description="List of decisions extracted from the conversation.",
+    )
+    Recommended_Actions: list[str] = Field(
+        default_factory=list,
+        description="List of recommended actions extracted from the conversation.",
+    )
+    To_Do_List: list[str] = Field(
+        default_factory=list,
+        description="List of items that need to be addressed or completed.",
+    )
 
 
 def extract_information(
@@ -479,11 +493,13 @@ def calculate_priority(
 
 
 class BinaryVote(BaseModel):
-    vote: bool
+    vote: bool = Field(..., description="The binary vote cast by the assistant.")
 
 
 class ConfidenceVote(BaseModel):
-    confidence: float
+    confidence: float = Field(
+        ..., description="The confidence score cast by the assistant."
+    )
 
 
 def cast_binary_vote(assistant_name, messages, vote_prompt):
@@ -1141,24 +1157,39 @@ output_analysis = """[
 
 
 class FinalOutput(BaseModel):
-    final_output: str
-    output_type: OutputType
-    version: int
+    final_output: str = Field(
+        ..., description="The final output generated by the assistant."
+    )
+    output_type: OutputType = Field(..., description="The type of output generated.")
+    version: int = Field(..., description="The version of the final output.")
 
 
 class OutputRequirements(BaseModel):
-    requirement: str
-    met: bool
+    requirement: str = Field(
+        ..., description="The specific requirement for the output."
+    )
+    met: bool = Field(..., description="Whether the requirement is met.")
 
 
 class FinalOutputAnalysis(BaseModel):
-    user_intent: str
-    expected_output_type: str
-    requirements: List[OutputRequirements]
-    matches_expected_output_type: bool
-    aligns_with_user_intent: bool
-    changes_needed_to_align: List[str]
-    is_complete: bool
+    user_intent: str = Field(
+        ..., description="The user's intent or goal for the output."
+    )
+    expected_output_type: str = Field(..., description="The expected type of output.")
+    requirements: List[OutputRequirements] = Field(
+        ..., description="The specific requirements for the output."
+    )
+    matches_expected_output_type: bool = Field(
+        ..., description="Whether the output matches the expected type."
+    )
+    aligns_with_user_intent: bool = Field(
+        ..., description="Whether the output aligns with the user's intent."
+    )
+    changes_needed_to_align: List[str] = Field(
+        ...,
+        description="The changes needed to align the output with the user's intent.",
+    )
+    is_complete: bool = Field(..., description="Whether the output is complete.")
 
 
 sample_final_output_code = """Plan for Function to Calculate the Area of a Circle:
@@ -1783,13 +1814,17 @@ def analyze_final_output(
 
 
 class TaskCompletion(BaseModel):
-    task: str
-    completed: bool
-    completion_artifact: str
+    task: str = Field(..., description="The task to be completed.")
+    completed: bool = Field(..., description="Whether the task has been completed.")
+    completion_artifact: str = Field(
+        ..., description="The artifact or evidence of completion."
+    )
 
 
 class TaskList(BaseModel):
-    tasks: List[TaskCompletion]
+    tasks: List[TaskCompletion] = Field(
+        ..., description="The list of tasks with completion status and artifacts."
+    )
 
 
 def analyze_to_do_list(conversation_memory, conversation_history):
@@ -1947,8 +1982,12 @@ def get_assistant_response(
 
 
 class MediatorReviseOrDecide(BaseModel):
-    final_decision: str
-    keep_output: bool
+    final_decision: str = Field(
+        ..., description="The final decision made by the mediator."
+    )
+    keep_output: bool = Field(
+        ..., description="Whether to keep the current output or revise it."
+    )
 
 
 def run_conversation(

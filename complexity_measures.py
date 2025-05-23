@@ -1,6 +1,7 @@
 from ast import Tuple
 from calendar import c
 from curses import nl
+from doctest import debug
 import inspect
 import os
 import re
@@ -9,11 +10,13 @@ import pickle
 import string
 import sys
 from tkinter import BOTH
-from typing import Dict, List
+from typing import Dict, List, Optional
 from cv2 import merge
 from flask import g
 from pydantic import BaseModel, Field
 from regex import P, sub
+from scipy import stats
+from sklearn.model_selection import GridSearchCV, cross_val_score
 import spacy
 import networkx as nx
 import nltk
@@ -40,11 +43,7 @@ date_str = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 save_path = f"debug_log_complexity_{date_str}.txt"
 
 client = openai.OpenAI()
-openai_api_key = os.getenv("OPENAI_API_KEY")
-if not openai_api_key:
-    print("[Language Model] OpenAI API key not found.")
-    raise ValueError("OpenAI API key not found.")
-openai.api_key = openai_api_key
+
 
 import numpy as np
 import logging
@@ -63,6 +62,35 @@ import logging
 import numpy as np
 import logging
 from typing import Tuple
+
+DEBUG_INDICATOR = True
+
+
+class printer:
+    def __init__(self, debug_indicator=False):
+        self.DEBUG_INDICATOR = debug_indicator
+
+    def print_custom(self, *args):
+        """
+        Custom print function that can be toggled on or off for debugging purposes.
+
+        Args:
+            *args: Variable length argument list.
+        """
+        if self.DEBUG_INDICATOR:
+            print(*args)
+        else:
+            # do nothing
+            pass
+
+
+printer = printer(DEBUG_INDICATOR)
+
+openai_api_key = os.getenv("OPENAI_API_KEY")
+if not openai_api_key:
+    printer.print_custom("[Language Model] OpenAI API key not found.")
+    raise ValueError("OpenAI API key not found.")
+openai.api_key = openai_api_key
 
 
 def cosine_similarity_custom(vector_a, matrix_b):
@@ -103,8 +131,8 @@ def cosine_similarity_custom(vector_a, matrix_b):
         matrix_b = matrix_b.reshape(1, -1)
 
     # Debug statements to check the shapes
-    print(f"Shape of vector_a: {vector_a.shape}")
-    print(f"Shape of matrix_b: {matrix_b.shape}")
+    printer.print_custom(f"Shape of vector_a: {vector_a.shape}")
+    printer.print_custom(f"Shape of matrix_b: {matrix_b.shape}")
 
     # Check if vector and matrix have compatible dimensions
     if vector_a.shape[0] != matrix_b.shape[1]:
@@ -151,9 +179,9 @@ matrix_b = [[0.4, 0.8, 0.1], [0.2, 0.1, 0.9], [0.5, 0.5, 0.5]]
 
 try:
     similarities = cosine_similarity_custom(vector_a, matrix_b)
-    print("Cosine Similarities:", similarities)
+    printer.print_custom("Cosine Similarities:", similarities)
 except ValueError as e:
-    print(f"Error: {e}")
+    printer.print_custom(f"Error: {e}")
 
 
 @lru_cache(maxsize=2048)
@@ -182,21 +210,27 @@ def get_embedding(text, model="text-embedding-3-small"):
     logging.info(
         f"Requesting embedding for text: '{text[:20]}...' using model: '{model}'"
     )
-    print(f"Requesting embedding for text: '{text[:20]}...' using model: '{model}'")
+    printer.print_custom(
+        f"Requesting embedding for text: '{text[:20]}...' using model: '{model}'"
+    )
 
     # Fetch embedding
     try:
         response = client.embeddings.create(input=text, model=model)
         if not response or not response.data or (not response.data[0].embedding):
-            print(f"Invalid response from the embedding model: {response}")
+            printer.print_custom(
+                f"Invalid response from the embedding model: {response}"
+            )
             raise ValueError("Invalid response from the embedding model.")
         else:
             logging.info(f"Embedding fetched successfully for text: '{text[:20]}...'")
-            print(f"Embedding fetched successfully for text: '{text[:20]}...'")
+            printer.print_custom(
+                f"Embedding fetched successfully for text: '{text[:20]}...'"
+            )
         embedding = response.data[0].embedding
     except Exception as e:
         logging.error(f"An error occurred while fetching embedding: {str(e)}")
-        print(
+        printer.print_custom(
             f"An error occurred while fetching embedding: {str(e)} on line {sys.exc_info()[-1].tb_lineno} in {sys.exc_info()[-1].tb_frame.f_code.co_filename} for text: '{text[:20]}...'. Response: {response}"
         )
         raise ConnectionError(f"An error occurred while fetching embedding: {str(e)}")
@@ -211,7 +245,7 @@ try:
         model="dbmdz/bert-large-cased-finetuned-conll03-english",
     )
 except Exception as e:
-    print(f"Error loading SRL model: {e}")
+    printer.print_custom(f"Error loading SRL model: {e}")
     srl_pipeline = None
 
 
@@ -331,7 +365,7 @@ def is_text_readable(text, readability_threshold=60):
     # First, remove odd puntuation like emojis, hashtags, etc.
     text = re.sub(r"[^a-zA-Z0-9\s]", "", text)
     score = flesch_reading_ease(text)
-    print(f"\nReadability Score: {score}\n\n")
+    printer.print_custom(f"\nReadability Score: {score}\n\n")
     return score >= readability_threshold
 
 
@@ -359,7 +393,7 @@ def is_real_words(text) -> bool:
             # Append to real words if it is a punctuation, space, stop word, digit, currency, quote, bracket, or out of vocabulary so that it is not removed
             real_words.append(word)
         else:
-            print(f"Word not found: {word}")
+            printer.print_custom(f"Word not found: {word}")
             not_words.append(word)
 
     # Return a new string with the real words in the original order, minus the non-words
@@ -487,7 +521,7 @@ def is_complex_nlp_dependency(
     # Normalize score by using sigmoid function
     # score = 1 / (1 + math.exp(-score))
 
-    print(
+    printer.print_custom(
         f"[NLP Dependency Parsing] Substeps: {substeps}, Max Depth: {max_depth}, Score: {score}"
     )
     return score
@@ -504,7 +538,9 @@ def is_complex_spacy_srl(
 
     # Combined score
     score = (substeps_score + depth_score) / 2
-    print(f"Predicates: {substeps}, Max Argument Depth: {max_depth}, Score: {score}")
+    printer.print_custom(
+        f"Predicates: {substeps}, Max Argument Depth: {max_depth}, Score: {score}"
+    )
     return score
 
 
@@ -524,11 +560,11 @@ def is_complex_srl(
         float: Score between 0 and 1 indicating complexity.
     """
     if not srl_pipeline:
-        print("[SRL] SRL Pipeline not available.")
+        printer.print_custom("[SRL] SRL Pipeline not available.")
         return 0.0
 
     result = srl_pipeline(input_query)
-    print(f"[SRL] Result: {result}")
+    printer.print_custom(f"[SRL] Result: {result}")
 
     # Extract predicates (verbs) and arguments from result
     predicates = [entity for entity in result if entity["entity"].startswith("I-V")]
@@ -544,7 +580,7 @@ def is_complex_srl(
 
     # Combined score
     score = substeps_score * depth_score
-    print(
+    printer.print_custom(
         f"[SRL] Predicates: {substeps}, Max Argument Depth: {max_depth}, Score: {score}"
     )
     return score
@@ -565,46 +601,149 @@ def is_complex_ml(input_query: str, threshold: float = 0.5) -> float:
     prob = pipeline_ml.predict_proba([input_query])[0][
         1
     ]  # Probability of being complex
-    print(f"[Machine Learning] Probability of Complexity: {prob}")
+    printer.print_custom(f"[Machine Learning] Probability of Complexity: {prob}")
+
     return prob
+
+
+def finetune_ml_model(df: pd.DataFrame, model_path: str):
+    """
+    Finetune the pipeline model using the input query and the results from other methods as labels.
+
+    Args:
+        df (pd.DataFrame): DataFrame containing the input queries and the results from other methods.
+        model_path (str): Path to save the finetuned model.
+        results (Dict[str, float]): Dictionary containing the results from other methods.
+
+    Returns:
+        Pipeline: Finetuned pipeline model.
+    """
+    # Create a copy of the DataFrame
+    df_finetune = df.copy()
+    df_load = None
+    if os.path.exists("df_data.pkl"):
+        with open("df_data.pkl", "rb") as f:
+            df_load = pickle.load(f)
+    if df_load is not None:
+        df_finetune = pd.concat([df_finetune, df_load], ignore_index=True)
+    with open("df_data.pkl", "wb") as f:
+        pickle.dump(df_finetune, f)
+
+    df_ml = pd.DataFrame(
+        {
+            "query": [
+                "What is the capital of France?",
+                "Explain the process of photosynthesis.",
+                "List the steps to bake a cake, including preparing the ingredients, mixing, baking, and decorating.",
+                "Solve the integral of x^2 dx.",
+                "Describe how to set up a machine learning pipeline involving data collection, preprocessing, model training, and evaluation.",
+                "Define Newton's second law of motion.",
+                "Provide a comprehensive guide to building a web application using Django.",
+                "What are the main causes of World War II?",
+                "Explain the theory of relativity.",
+                "Detail the process of software development lifecycle, including requirements gathering, design, implementation, testing, deployment, and maintenance.",
+            ],
+            "complex": [0, 0, 1, 0, 1, 0, 1, 0, 0, 1],
+        }
+    )
+    # combine df_ml and df_finetune
+    df_finetune = pd.concat([df_finetune, df_ml], ignore_index=True)
+    df_finetune["query"] = df_finetune["query"].apply(
+        lambda x: (x.strip().lower().replace("\n", " ").replace("\t", " "))
+    )
+    df_finetune = df_finetune.drop_duplicates(subset=["query"])
+    # Add the results from other methods as labels
+
+    # Split the data into features and labels
+    X_finetune = df_finetune["query"]
+    y_finetune = [1 if score >= 0.5 else 0 for score in df_finetune["complex"]]
+
+    # Load the existing pipeline model
+    with open(model_path, "rb") as f:
+        pipeline_finetuned = pickle.load(f)
+
+        # Add cross-validation
+
+    # try:
+    #     # Define parameter grid for your pipeline
+    #     param_grid = {
+    #         "vectorizer__max_features": [1000, 2000, 3000],
+    #         "classifier__max_depth": [10, 20, None],
+    #         "classifier__n_estimators": [100, 200, 300],
+    #     }
+
+    #     # Use GridSearchCV instead of simple cross_val_score
+    #     grid_search = GridSearchCV(
+    #         pipeline_finetuned,
+    #         param_grid,
+    #         cv=5,
+    #         scoring="accuracy",
+    #         n_jobs=-1,
+    #         verbose=1,
+    #     )
+    #     grid_search.fit(X_finetune, y_finetune)
+
+    #     printer.print_custom(f"Best parameters: {grid_search.best_params_}")
+    #     printer.print_custom(f"Best score: {grid_search.best_score_:.3f}")
+    # except Exception as e:
+    #     # Use the best model
+    #     pipeline_finetuned = grid_search.best_estimator_
+    #     cv_scores = cross_val_score(pipeline_finetuned, X_finetune, y_finetune, cv=5)
+    #     printer.print_custom(f"Cross-validation scores: {cv_scores}")
+    #     printer.print_custom(
+    #         f"Average CV score: {cv_scores.mean():.3f} (+/- {cv_scores.std() * 2:.3f})"
+    #     )
+    pipeline_finetuned.fit(X_finetune, y_finetune)
+
+    # Save the finetuned model
+    with open(model_path, "wb") as f:
+        pickle.dump(pipeline_finetuned, f)
+
+    return pipeline_finetuned
 
 
 class Subtask(BaseModel):
     """
     Subtask model for representing a subtask in a step of a plan or another subtask."""
 
-    subtask_number: int
-    subtask_description: str
-    subtask_name: str
-    subtask_explanation: str
-    subtask_output: str
-    subtask_full_text: str
-    subtasks: List["Subtask"] = Field(default_factory=list)
+    subtask_number: int = Field(..., description="The number of the subtask.")
+    completed: bool = Field(description="Whether the subtask has been completed.")
+    subtask_description: str = Field(
+        ..., description="The description or title of the subtask."
+    )
+    subtask_name: str = Field(..., description="The name or title of the subtask.")
+    subtask_explanation: str = Field(..., description="The explanation of the subtask.")
+    subtask_output: str = Field(..., description="The output or result of the subtask.")
+    subtask_full_text: str = Field(..., description="The full text of the subtask.")
+    subtasks: List["Subtask"] = Field(default_factory=list, description="Subtasks.")
 
 
 class PlanStep(BaseModel):
     """
     PlanStep model for representing a step in a plan."""
 
-    step_number: int
-    step_name: str
-    step_description: str
-    step_explanation: str
-    step_output: str
-    step_full_text: str
-    subtasks: List[Subtask]
+    step_number: int = Field(..., description="The number of the step in the plan.")
+    completed: bool = Field(description="Whether the step has been completed.")
+    step_name: str = Field(..., description="The name or title of the step.")
+    step_description: str = Field(..., description="The description of the step.")
+    step_explanation: str = Field(..., description="The explanation of the step.")
+    step_output: str = Field(..., description="The output or result of the step.")
+    step_full_text: str = Field(..., description="The full text of the step.")
+    subtasks: List[Subtask] = Field(
+        ..., description="The subtasks associated with the step."
+    )
 
 
 class Plan(BaseModel):
     """
     Plan model for representing a step-by-step plan."""
 
-    steps: List[PlanStep]
+    steps: List[PlanStep] = Field(..., description="The steps in the plan.")
 
 
 class MathResponse(BaseModel):
-    steps: List[PlanStep]
-    final_answer: str
+    steps: List[PlanStep] = Field(..., description="The steps in the math solution.")
+    final_answer: str = Field(..., description="The final answer to the math problem.")
 
 
 def merge_steps(
@@ -636,7 +775,7 @@ def merge_steps(
         input_text += f"{step_obj.subtask_full_text}]\n"
     openai_api_key = os.getenv("OPENAI_API_KEY")
     if not openai_api_key:
-        print("[Language Model] OpenAI API key not found.")
+        printer.print_custom("[Language Model] OpenAI API key not found.")
         return ""
     openai.api_key = openai_api_key
     if isinstance(step_obj, PlanStep):
@@ -680,6 +819,7 @@ def merge_steps(
             merged_step_text = output.split("Merged PlanStep:")[1].strip()
             merged_step = PlanStep(
                 step_number=step_obj.step_number,
+                completed=step_obj.completed,
                 step_name=step_obj.step_name,
                 step_description=step_obj.step_description,
                 step_explanation=step_obj.step_explanation,
@@ -689,7 +829,7 @@ def merge_steps(
             )
 
         except Exception as e:
-            print(f"[Language Model] Error merging steps: {e}")
+            printer.print_custom(f"[Language Model] Error merging steps: {e}")
             return step_obj
     elif isinstance(step_obj, Subtask):
         try:
@@ -727,6 +867,7 @@ def merge_steps(
             merged_subtask_text = output.split("Merged Subtask:")[1].strip()
             merged_subtask = Subtask(
                 subtask_number=step_obj.subtask_number,
+                completed=step_obj.completed,
                 subtask_name=step_obj.subtask_name,
                 subtask_description=step_obj.subtask_description,
                 subtask_explanation=step_obj.subtask_explanation,
@@ -737,7 +878,7 @@ def merge_steps(
 
             return merged_subtask
         except Exception as e:
-            print(f"[Language Model] Error merging subtasks: {e}")
+            printer.print_custom(f"[Language Model] Error merging subtasks: {e}")
             return step_obj
 
     # Now merge the subtasks the same way
@@ -813,7 +954,7 @@ def generate_plan(input_query: str) -> str:
     """
     openai_api_key = os.getenv("OPENAI_API_KEY")
     if not openai_api_key:
-        print("[Language Model] OpenAI API key not found.")
+        printer.print_custom("[Language Model] OpenAI API key not found.")
         return ""
     openai.api_key = openai_api_key
 
@@ -840,7 +981,7 @@ def generate_plan(input_query: str) -> str:
 
         return output
     except Exception as e:
-        print(f"[Language Model] Error generating plan: {e}")
+        printer.print_custom(f"[Language Model] Error generating plan: {e}")
         return ""
 
 
@@ -871,6 +1012,7 @@ exemplar_plan = Plan(
     steps=[
         PlanStep(
             step_number=1,
+            completed=False,
             step_name="Assess Network Requirements",
             step_description="Determine the needs of the network.",
             step_explanation="Identify the number of devices, types of devices, and the required bandwidth to ensure the network meets all user requirements.",
@@ -880,6 +1022,7 @@ exemplar_plan = Plan(
         ),
         PlanStep(
             step_number=2,
+            completed=False,
             step_name="Choose the Right Equipment",
             step_description="Select appropriate networking hardware.",
             step_explanation="Based on the assessed requirements, purchase a suitable router, switches (if necessary), and wireless access points to build a robust network.",
@@ -889,6 +1032,7 @@ exemplar_plan = Plan(
         ),
         PlanStep(
             step_number=3,
+            completed=False,
             step_name="Install the Router",
             step_description="Physically set up the main networking device.",
             step_explanation="Connect the router to the modem and ensure it is powered on to establish the primary network gateway.",
@@ -898,6 +1042,7 @@ exemplar_plan = Plan(
         ),
         PlanStep(
             step_number=4,
+            completed=False,
             step_name="Configure Router Settings",
             step_description="Set up the router for optimal performance and security.",
             step_explanation="Access the router's admin panel to change default settings, establish a secure Wi-Fi network, and enable advanced security features.",
@@ -906,6 +1051,7 @@ exemplar_plan = Plan(
             subtasks=[
                 Subtask(
                     subtask_number=1,
+                    completed=False,
                     subtask_name="Access Admin Panel",
                     subtask_description="Access the router's administrative interface.",
                     subtask_explanation="Use a web browser to navigate to the router's admin panel using its IP address for configuration.",
@@ -915,6 +1061,7 @@ exemplar_plan = Plan(
                 ),
                 Subtask(
                     subtask_number=2,
+                    completed=False,
                     subtask_name="Change Admin Password",
                     subtask_description="Enhance security by updating the default admin password.",
                     subtask_explanation="Replace the router's default admin password with a strong, unique password to prevent unauthorized access.",
@@ -924,6 +1071,7 @@ exemplar_plan = Plan(
                 ),
                 Subtask(
                     subtask_number=3,
+                    completed=False,
                     subtask_name="Set Up Wi-Fi Network",
                     subtask_description="Establish the Wi-Fi network name and password.",
                     subtask_explanation="Create a unique SSID (network name) and set a strong password to secure the wireless network.",
@@ -933,6 +1081,7 @@ exemplar_plan = Plan(
                 ),
                 Subtask(
                     subtask_number=4,
+                    completed=False,
                     subtask_name="Enable WPA3 Encryption",
                     subtask_description="Enhance wireless security by enabling WPA3 encryption.",
                     subtask_explanation="Activate WPA3 encryption on the router to provide the latest security standards for the wireless network.",
@@ -944,6 +1093,7 @@ exemplar_plan = Plan(
         ),
         PlanStep(
             step_number=5,
+            completed=False,
             step_name="Connect Devices to the Network",
             step_description="Ensure all intended devices are connected.",
             step_explanation="Connect each device to the newly created Wi-Fi network using the set SSID and password.",
@@ -952,6 +1102,7 @@ exemplar_plan = Plan(
             subtasks=[
                 Subtask(
                     subtask_number=1,
+                    completed=False,
                     subtask_name="Search for Wi-Fi Network",
                     subtask_description="Locate the Wi-Fi network on each device.",
                     subtask_explanation="Use the device's network settings to find and select the appropriate Wi-Fi network (SSID).",
@@ -961,6 +1112,7 @@ exemplar_plan = Plan(
                 ),
                 Subtask(
                     subtask_number=2,
+                    completed=False,
                     subtask_name="Enter Wi-Fi Password",
                     subtask_description="Authenticate by entering the network password.",
                     subtask_explanation="Input the previously set strong password to establish a secure connection between the device and the network.",
@@ -972,6 +1124,7 @@ exemplar_plan = Plan(
         ),
         PlanStep(
             step_number=6,
+            completed=False,
             step_name="Test the Network",
             step_description="Verify that the network is functioning correctly.",
             step_explanation="Conduct connectivity and performance tests to ensure the network operates as intended.",
@@ -980,6 +1133,7 @@ exemplar_plan = Plan(
             subtasks=[
                 Subtask(
                     subtask_number=1,
+                    completed=False,
                     subtask_name="Check Internet Connectivity",
                     subtask_description="Ensure devices can access the internet.",
                     subtask_explanation="Open a web browser on multiple devices to confirm that internet access is available.",
@@ -989,6 +1143,7 @@ exemplar_plan = Plan(
                 ),
                 Subtask(
                     subtask_number=2,
+                    completed=False,
                     subtask_name="Perform Speed Tests",
                     subtask_description="Measure the network's bandwidth and speed.",
                     subtask_explanation="Use online speed testing tools to verify that the network meets the required bandwidth specifications.",
@@ -998,6 +1153,7 @@ exemplar_plan = Plan(
                 ),
                 Subtask(
                     subtask_number=3,
+                    completed=False,
                     subtask_name="Ensure Stable Connections",
                     subtask_description="Confirm that devices maintain a consistent connection.",
                     subtask_explanation="Monitor the network to ensure that devices remain connected without frequent drops or interruptions.",
@@ -1009,6 +1165,7 @@ exemplar_plan = Plan(
         ),
         PlanStep(
             step_number=7,
+            completed=False,
             step_name="Optimize Network Performance",
             step_description="Enhance the efficiency and speed of the network.",
             step_explanation="Implement strategies to maximize network coverage and performance while minimizing interference.",
@@ -1017,6 +1174,7 @@ exemplar_plan = Plan(
             subtasks=[
                 Subtask(
                     subtask_number=1,
+                    completed=False,
                     subtask_name="Position Router Centrally",
                     subtask_description="Place the router in an optimal location for maximum coverage.",
                     subtask_explanation="Locate the router in a central area of the home to ensure even distribution of the wireless signal.",
@@ -1026,6 +1184,7 @@ exemplar_plan = Plan(
                 ),
                 Subtask(
                     subtask_number=2,
+                    completed=False,
                     subtask_name="Update Router Firmware",
                     subtask_description="Ensure the router has the latest software updates.",
                     subtask_explanation="Access the router's admin panel to check for and install any available firmware updates, which can improve performance and security.",
@@ -1035,6 +1194,7 @@ exemplar_plan = Plan(
                 ),
                 Subtask(
                     subtask_number=3,
+                    completed=False,
                     subtask_name="Adjust Channel Settings",
                     subtask_description="Minimize wireless interference by selecting optimal channels.",
                     subtask_explanation="Change the Wi-Fi channel settings on the router to less congested channels to reduce interference from neighboring networks.",
@@ -1046,6 +1206,7 @@ exemplar_plan = Plan(
         ),
         PlanStep(
             step_number=8,
+            completed=False,
             step_name="Secure the Network",
             step_description="Protect the network from unauthorized access and threats.",
             step_explanation="Implement security measures to safeguard the network and connected devices from potential vulnerabilities.",
@@ -1054,6 +1215,7 @@ exemplar_plan = Plan(
             subtasks=[
                 Subtask(
                     subtask_number=1,
+                    completed=False,
                     subtask_name="Disable WPS",
                     subtask_description="Turn off Wi-Fi Protected Setup to enhance security.",
                     subtask_explanation="Disable WPS in the router settings to prevent potential security breaches through this feature.",
@@ -1063,6 +1225,7 @@ exemplar_plan = Plan(
                 ),
                 Subtask(
                     subtask_number=2,
+                    completed=False,
                     subtask_name="Set Up Guest Network",
                     subtask_description="Create a separate network for guests to protect the main network.",
                     subtask_explanation="Enable a guest Wi-Fi network on the router to allow visitors to access the internet without accessing the primary network resources.",
@@ -1072,6 +1235,7 @@ exemplar_plan = Plan(
                 ),
                 Subtask(
                     subtask_number=3,
+                    completed=False,
                     subtask_name="Monitor Connected Devices",
                     subtask_description="Regularly check devices connected to the network.",
                     subtask_explanation="Use the router's admin panel to view and manage connected devices, ensuring no unauthorized devices are accessing the network.",
@@ -1083,6 +1247,7 @@ exemplar_plan = Plan(
         ),
         PlanStep(
             step_number=9,
+            completed=False,
             step_name="Document the Network Setup",
             step_description="Keep a record of the network configuration for future reference.",
             step_explanation="Maintain documentation of the network's settings and hardware placement to facilitate troubleshooting and future upgrades.",
@@ -1091,6 +1256,7 @@ exemplar_plan = Plan(
             subtasks=[
                 Subtask(
                     subtask_number=1,
+                    completed=False,
                     subtask_name="Record Network Credentials",
                     subtask_description="Write down the network name and password.",
                     subtask_explanation="Document the SSID and Wi-Fi password in a secure location for easy access when needed.",
@@ -1100,6 +1266,7 @@ exemplar_plan = Plan(
                 ),
                 Subtask(
                     subtask_number=2,
+                    completed=False,
                     subtask_name="Note Admin Credentials",
                     subtask_description="Store the router's admin login details securely.",
                     subtask_explanation="Ensure that the router's admin username and password are documented and stored in a secure place to prevent unauthorized changes.",
@@ -1109,6 +1276,7 @@ exemplar_plan = Plan(
                 ),
                 Subtask(
                     subtask_number=3,
+                    completed=False,
                     subtask_name="Document Hardware Placement",
                     subtask_description="Keep a record of where networking hardware is located.",
                     subtask_explanation="Map out the physical placement of the router, switches, and access points to aid in maintenance and troubleshooting.",
@@ -1215,13 +1383,9 @@ class TextClassification(BaseModel):
     TextClassification model for representing the classification of a text.
     """
 
-    is_useful: bool
-
-
-import openai
-import os
-from typing import Optional
-from pydantic import BaseModel
+    is_useful: bool = Field(
+        ..., description="Boolean indicating whether the text is useful or junk."
+    )
 
 
 # Define the custom class for structured output
@@ -1230,7 +1394,9 @@ class TextClassification(BaseModel):
     TextClassification model for representing the classification of a text.
     """
 
-    is_useful: bool
+    is_useful: bool = Field(
+        ..., description="Boolean indicating whether the text is useful or junk."
+    )
 
 
 def classify_remaining_text_structured(
@@ -1409,12 +1575,12 @@ Respond only with a bool that is true for 'useful' and false for 'junk'. This bo
         if isinstance(parsed_response, TextClassification):
             return parsed_response
         else:
-            print(f"Unexpected response format: {parsed_response}")
+            printer.print_custom(f"Unexpected response format: {parsed_response}")
             return None
 
     except Exception as e:
         # Handle other possible errors
-        print(f"Unexpected error: {e}")
+        printer.print_custom(f"Unexpected error: {e}")
         return None
 
 
@@ -1480,7 +1646,7 @@ def test_classify_remaining_text_structured():
             f"Expected: {case['expected']}, Got: {result.is_useful}"
         )
 
-    print("All tests passed!")
+    printer.print_custom("All tests passed!")
 
 
 # Call the test function
@@ -1518,7 +1684,7 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
 
         # Function to remove punctuation from a string
 
-        print(
+        printer.print_custom(
             f"Input Query in remove_converted_text_preserving_order: {input_query} \n\n"
         )
         # Create punctuation-free versions of input_query
@@ -1545,7 +1711,7 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
 
         for step in steps:
             step_text = step.step_full_text
-            print(f"PlanStep Text Type: {type(step_text)} \n\n")
+            printer.print_custom(f"PlanStep Text Type: {type(step_text)} \n\n")
             # make sure its a string
             if isinstance(step_text, list):
                 step_text = " ".join(step_text)
@@ -1573,19 +1739,19 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
                     )  # Punctuation-free version
                     text_mapping[step_text_no_punctuation].append(step_text)
                 else:
-                    print(
+                    printer.print_custom(
                         f"No Matches Found in remove_converted_text_preserving_order for PlanStep Text: {step_text} \n\n"
                     )
-                    print(
+                    printer.print_custom(
                         f"PlanStep Text No Punctuation in remove_converted_text_preserving_order: {step_text_no_punctuation} \n\n"
                     )
-                    print(
+                    printer.print_custom(
                         f"Escaped PlanStep Text No Punctuation in remove_converted_text_preserving_order: {escaped_step_text_no_punctuation} \n\n"
                     )
 
             for subtask in step.subtasks:
                 subtask_text = subtask.subtask_full_text
-                print(f"Subtask Text Type: {type(subtask_text)} \n\n")
+                printer.print_custom(f"Subtask Text Type: {type(subtask_text)} \n\n")
                 # make sure its a string
                 if isinstance(step_text, list):
                     step_text = " ".join(step_text)
@@ -1617,11 +1783,11 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
                         text_mapping[subtask_text_no_punctuation].append(subtask_text)
 
         if not texts_to_remove_no_punctuation:
-            print(
+            printer.print_custom(
                 f"No texts to remove in remove_converted_text_preserving_order: {texts_to_remove_no_punctuation} \n\n"
             )
             return "", ""
-        print(
+        printer.print_custom(
             f"Texts to Remove No Punctuation in remove_converted_text_preserving_order: {texts_to_remove_no_punctuation} \n\n"
         )
         # Normalize case if not case-sensitive
@@ -1642,7 +1808,7 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
         unique_texts_to_remove_no_punctuation = sorted(
             set(texts_to_remove_no_punctuation), key=len, reverse=True
         )
-        print(
+        printer.print_custom(
             f"Unique Texts to Remove No Punctuation in remove_converted_text_preserving_order: {unique_texts_to_remove_no_punctuation} \n\n"
         )
 
@@ -1654,7 +1820,7 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
             if len(str(text)) > 10  # Ensure text is not too short
         ]
 
-        print(
+        printer.print_custom(
             f"Escaped Texts No Punctuation in remove_converted_text_preserving_order: {escaped_texts_no_punctuation} \n\n"
         )
         assert escaped_texts_no_punctuation  # Ensure there are escaped texts
@@ -1662,12 +1828,12 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
         # pattern = re.compile("|".join(escaped_texts_no_punctuation), flags=flags)
 
         # logging.debug(f"Pattern: {pattern}")
-        # print(f"Pattern: {pattern}")
+        # printer.print_custom(f"Pattern: {pattern}")
 
         # Find all matches with their positions in input_query
         # Collect all matches
         all_matches = []
-        print(
+        printer.print_custom(
             f"input_query_no_punctuation in remove_converted_text_preserving_order: {input_query_no_punctuation} \n\n"
         )
         cntr = 0
@@ -1677,35 +1843,35 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
             # escaped_text = escape_regex(text_no_punct)
 
             pattern = re.compile(text_no_punct, flags=flags)
-            print(
+            printer.print_custom(
                 f"\n Text No Punctuation in remove_converted_text_preserving_order: {text_no_punct} \n Pattern: {pattern} \n\n"
             )
             matches = list(pattern.finditer(input_query_no_punctuation))
             cntr = 0
             for match in matches:
-                print(
+                printer.print_custom(
                     f"Match in remove_converted_text_preserving_order: {match.group()}"
                 )
                 all_matches.append((match.start(), match.end()))
                 cntr += 1
                 if cntr > 1:
-                    print(
+                    printer.print_custom(
                         f"Multiple Matches Found in remove_converted_text_preserving_order for Text No Punctuation: {text_no_punct} \n\n"
                     )
             if len(matches) < 1:
-                print(
+                printer.print_custom(
                     f"No Matches Found in remove_converted_text_preserving_order for Text No Punctuation: {text_no_punct} \n\n"
                 )
                 unmatched_texts.append(text_no_punct)
                 unmatched_cntr += 1
         if unmatched_cntr > 0 or len(unmatched_texts) > 0:
-            print(
+            printer.print_custom(
                 f"Unmatched Texts in remove_converted_text_preserving_order: {unmatched_texts} \n\n"
             )
-            print(
+            printer.print_custom(
                 f"Unmatched Counter in remove_converted_text_preserving_order: {unmatched_cntr} \n\n"
             )
-            print(
+            printer.print_custom(
                 f"Unmatched Texts Length in remove_converted_text_preserving_order: {len(unmatched_texts)} \n\n"
             )
 
@@ -1717,15 +1883,17 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
         texts_to_remove_str = " ".join(texts_to_remove)
         if len(all_matches) == 0:
 
-            print(
+            printer.print_custom(
                 f"\n\nNo matches found in remove_converted_text_preserving_order. Let's compare the lengths of the input_query and the texts to remove. Then, we will calculate the Jaccard Similarity and Cosine Similarity. \n\n"
             )
-            print(f"all_matches: {all_matches} \n\n")
-            print(f"Input Query Length: {len(input_query)} \n\n")
+            printer.print_custom(f"all_matches: {all_matches} \n\n")
+            printer.print_custom(f"Input Query Length: {len(input_query)} \n\n")
 
-            print(f"\n \n Texts to Remove Length: {len(texts_to_remove_str)} \n\n")
-            print(f"\nInput Query: {input_query} \n\n")
-            print(f"\nTexts to Remove: {texts_to_remove} \n\n")
+            printer.print_custom(
+                f"\n \n Texts to Remove Length: {len(texts_to_remove_str)} \n\n"
+            )
+            printer.print_custom(f"\nInput Query: {input_query} \n\n")
+            printer.print_custom(f"\nTexts to Remove: {texts_to_remove} \n\n")
             exit(3)
             if isinstance(unique_texts_to_remove_no_punctuation, list):
                 unique_texts_to_remove_no_punctuation_str = " ".join(
@@ -1743,19 +1911,19 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
                     if isinstance(texts_to_remove_no_punctuation, str)
                     else " ".join(texts_to_remove_no_punctuation)
                 )
-            print(
+            printer.print_custom(
                 f"Jaccard Similarity: {jaccard_similarity(input_query_no_punctuation, texts_to_remove_no_punctuation_str)} \n\n"
             )
             cosine_sim = cosine_similarity_custom(
                 get_embedding(input_query_no_punctuation),
                 get_embedding(texts_to_remove_no_punctuation_str),
             )
-            print(f"Cosine Similarity: {cosine_sim} \n\n")
+            printer.print_custom(f"Cosine Similarity: {cosine_sim} \n\n")
 
             return input_query, input_query  # No matches found
         else:
             match_texts = [input_query[match[0] : match[1]] for match in all_matches]
-            print(
+            printer.print_custom(
                 f"Matches No Punctuation in remove_converted_text_preserving_order: {match_texts} \n\n"
             )
         # Merge overlapping matches
@@ -1774,7 +1942,7 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
         # Remove each match in merged_matches from all_matches
         merged_matches = set(merged_matches)
         all_matches = [m for m in all_matches if m not in merged_matches]
-        print(
+        printer.print_custom(
             f"All Matches after merged_matches loop: {all_matches} \n\n Merge Matches: {merged_matches} \n\n"
         )
         all_matches = list(set(all_matches))
@@ -1786,7 +1954,7 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
                 unmerged_matches = [m for m in all_matches if m not in merged_matches]
                 false_unmerged = []
                 for m in unmerged_matches:
-                    print(
+                    printer.print_custom(
                         f"Unmerged Match in remove_converted_text_preserving_order: {m} \n Match Text: {input_query[m[0]:m[1]]} \n\n"
                     )
                     # Check if the unmerged match is a subset of any merged match
@@ -1808,7 +1976,7 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
                             false_unmerged.append(merged)
                             replacements[merged] = m
 
-                    # If the unmerged match is not a subset of any merged match, print a warning
+                    # If the unmerged match is not a subset of any merged match, printer.print_custom a warning
                     merged_matches_to_remove = []
                     new_merged_matches = []
                     for match_text in match_texts:
@@ -1837,7 +2005,7 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
                                             f" Merged Match start and end indices within Unmerged Match Even Though Unmerged Match text is in Merged Match: {m} \n\n Merged Match: {mg_match} \n\n"
                                         )
                                     else:
-                                        print(
+                                        printer.print_custom(
                                             f"mg_match[0]: {mg_match[0]} \n\n m[0]: {m[0]} \n\n mg_match[1]: {mg_match[1]} \n\n m[1]: {m[1]} \n\n"
                                         )
                                 elif m[0] >= mg_match[0] and m[1] <= mg_match[1]:
@@ -1936,7 +2104,7 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
                                         if m not in false_unmerged:
                                             false_unmerged.append(m)
                                     else:
-                                        print(
+                                        printer.print_custom(
                                             f"mg_match[0]: {mg_match[0]} \n\n m[0]: {m[0]} \n\n mg_match[1]: {mg_match[1]} \n\n m[1]: {m[1]} \n\n"
                                         )
                                 elif re.search(
@@ -2012,7 +2180,7 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
                             in input_query[m[0] : m[1]]
                         ):
                             # It was a superset of a match that might or might not have been merged
-                            print(
+                            printer.print_custom(
                                 f"Match Text: {remove_punctuation(escape_regex(match_text))} \n\n"
                             )
                             # If the remove_punctuation(escape_regex(match_text)) is in merged_matches, remove it and add the unmerged match
@@ -2041,21 +2209,21 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
                                 false_unmerged.append(m)
 
                     if not subset:
-                        print(
+                        printer.print_custom(
                             f"Unmerged Match Not Subset of merged_match entry: {m} \n\n"
                         )
-                    # If the unmerged match is a subset of a merged match, print the subset information and then remove the unmerged match
+                    # If the unmerged match is a subset of a merged match, printer.print_custom the subset information and then remove the unmerged match
                     else:
-                        print(
+                        printer.print_custom(
                             f"Unmerged Match IS a Subset of merged_match entry: {m} \n\n m Subset of: {subset_of} \n\n"
                         )
                     if not super_set:
-                        print(
+                        printer.print_custom(
                             f"Unmerged Match Not Super Set of merged_match entry: {m} \n\n"
                         )
-                    # If the unmerged match is a super set of a merged match, print the super set information and then remove the merged match
+                    # If the unmerged match is a super set of a merged match, printer.print_custom the super set information and then remove the merged match
                     else:
-                        print(
+                        printer.print_custom(
                             f"Unmerged Match IS a Super Set of merged_match entry: {m} \n\n m Super Set of: {super_set_of} \n\n"
                         )
                 for false_unmerged_match in false_unmerged:
@@ -2074,11 +2242,11 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
                         merged_matches.remove(to_be_replaced)
                     if replacement not in merged_matches:
                         merged_matches.append(replacement)
-                print(
+                printer.print_custom(
                     f"False Unmerged Matches in remove_converted_text_preserving_order: {false_unmerged} \n\n"
                 )
             except Exception as e:
-                print(
+                printer.print_custom(
                     f"Error in check_unmerged_matches in remove_converted_text_preserving_order: {e} on line {sys.exc_info()[-1].tb_lineno} \n\n"
                 )
 
@@ -2093,13 +2261,13 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
             check_unmerged_matches()
             if len(all_matches) > 0:
                 unmerged_matches_b = [m for m in all_matches if m not in merged_matches]
-                print(
+                printer.print_custom(
                     f"\n Unmerged Matches in remove_converted_text_preserving_order: {all_matches} \n\n"
                 )
-                print(
+                printer.print_custom(
                     f"\n Unmerged Matches B in remove_converted_text_preserving_order: {unmerged_matches_b} \n\n"
                 )
-        print(
+        printer.print_custom(
             f"Merged Matches in remove_converted_text_preserving_order: {merged_matches} \n\n"
         )
         # Track the parts of input_query to keep
@@ -2107,7 +2275,7 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
         removed_parts = []
 
         last_index = 0
-        print(
+        printer.print_custom(
             f"Text mapping in remove_converted_text_preserving_order: {text_mapping}\n\n"
         )
         # This loop will process the original input_query while using matches based on the punctuation-free version
@@ -2130,28 +2298,32 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
         # Add any remaining text after the last match
         if last_index < len(input_query):
             remaining_parts.append(input_query[last_index:])
-        print(f"Remaining Parts after loop over merged_matches: {remaining_parts} \n\n")
+        printer.print_custom(
+            f"Remaining Parts after loop over merged_matches: {remaining_parts} \n\n"
+        )
         if len(removed_parts) == 0:
 
-            print(
+            printer.print_custom(
                 f"No text was removed in remove_converted_text_preserving_order. Let's compare the lengths of the input_query and the texts to remove. Then, we will calculate the Jaccard Similarity and Cosine Similarity. \n\n"
             )
-            print(f"Input Query Length: {len(input_query)} \n\n")
-            print(f"\n \n Texts to Remove Length: {len(texts_to_remove_str)} \n\n")
-            print(f"\nInput Query: {input_query} \n\n")
-            print(f"\nTexts to Remove: {texts_to_remove} \n\n")
-            print(f"\n Texts removed: {removed_parts} \n\n")
+            printer.print_custom(f"Input Query Length: {len(input_query)} \n\n")
+            printer.print_custom(
+                f"\n \n Texts to Remove Length: {len(texts_to_remove_str)} \n\n"
+            )
+            printer.print_custom(f"\nInput Query: {input_query} \n\n")
+            printer.print_custom(f"\nTexts to Remove: {texts_to_remove} \n\n")
+            printer.print_custom(f"\n Texts removed: {removed_parts} \n\n")
             if isinstance(texts_to_remove, list):
                 texts_to_remove_str = texts_to_remove_str
             elif isinstance(texts_to_remove, str):
                 texts_to_remove_str = texts_to_remove
-            print(
+            printer.print_custom(
                 f"Jaccard Similarity: {jaccard_similarity(input_query, texts_to_remove_str)} \n\n"
             )
             cosine_sim = cosine_similarity_custom(
                 get_embedding(input_query), get_embedding(texts_to_remove_str)
             )
-            print(f"Cosine Similarity: {cosine_sim} \n\n")
+            printer.print_custom(f"Cosine Similarity: {cosine_sim} \n\n")
             return input_query, ""
 
         # Join the remaining and removed parts
@@ -2160,22 +2332,24 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
             for part in remaining_parts
             if len(remove_junk_patterns(part).split()) >= 5
         ]
-        print(f"Remaining Parts after removing junk patterns: {remaining_parts} \n\n")
+        printer.print_custom(
+            f"Remaining Parts after removing junk patterns: {remaining_parts} \n\n"
+        )
 
         # remaining_parts = [
         #     part
         #     for part in remaining_parts
         #     if len(part.split()) >= 5 and is_text_readable(part)
         # ]
-        # print(f"Remaining Parts after removing unreadable text: {remaining_parts} \n\n")
+        # printer.print_custom(f"Remaining Parts after removing unreadable text: {remaining_parts} \n\n")
         # remaining_parts = [
         #     is_real_words(remove_junk_patterns(part)) for part in remaining_parts
         # ]
-        # print(f"Remaining Parts after removing non-real words: {remaining_parts} \n\n")
+        # printer.print_custom(f"Remaining Parts after removing non-real words: {remaining_parts} \n\n")
 
         # Remove non-sentences
         # remaining_parts = [remove_non_sentences(part) for part in remaining_parts]
-        # print(f"Remaining Parts after removing non-sentences: {remaining_parts} \n\n")
+        # printer.print_custom(f"Remaining Parts after removing non-sentences: {remaining_parts} \n\n")
         not_useful_parts = []
         for part in remaining_parts:
             classification_ = classify_remaining_text_structured(part)
@@ -2183,8 +2357,10 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
                 not_useful_parts.append(part)
         for part in not_useful_parts:
             remaining_parts.remove(part)
-        print(f"Not Useful Parts: {not_useful_parts} \n\n")
-        print(f"Remaining Parts after last match: {remaining_parts} \n\n")
+        printer.print_custom(f"Not Useful Parts: {not_useful_parts} \n\n")
+        printer.print_custom(
+            f"Remaining Parts after last match: {remaining_parts} \n\n"
+        )
         remaining_text = "".join(remaining_parts)
         converted_text = "".join(removed_parts)
 
@@ -2193,10 +2369,10 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
         converted_text = " ".join(converted_text.split())
         assert isinstance(remaining_text, str)
         assert isinstance(converted_text, str)
-        print(f"Remaining Text: {remaining_text} \n\n")
-        print(f"Converted Text: {converted_text} \n\n")
-        print(f"Remaining Text Length: {len(remaining_text)} \n\n")
-        print(f"Converted Text Length: {len(converted_text)} \n\n")
+        printer.print_custom(f"Remaining Text: {remaining_text} \n\n")
+        printer.print_custom(f"Converted Text: {converted_text} \n\n")
+        printer.print_custom(f"Remaining Text Length: {len(remaining_text)} \n\n")
+        printer.print_custom(f"Converted Text Length: {len(converted_text)} \n\n")
         if (
             len(
                 re.sub(
@@ -2208,7 +2384,7 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
             == 0
         ):
             # If the remaining text is empty, return the original input_query because we are finished
-            print(
+            printer.print_custom(
                 f"Successfully removed all converted text in remove_converted_text_preserving_order. \n\n"
             )
             return "", converted_text
@@ -2221,39 +2397,41 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
             == 0
         ):
             # If the converted text is empty, this means that nothing was removed from the input_query
-            print(
+            printer.print_custom(
                 f"No text was removed in remove_converted_text_preserving_order. Let's compare the lengths of the input_query and the texts to remove. Then, we will calculate the Jaccard Similarity and Cosine Similarity. \n\n"
             )
-            print(f"Input Query Length: {len(input_query)} \n\n")
-            print(f"\n \n Texts to Remove Length: {len(texts_to_remove_str)} \n\n")
-            print(f"\nInput Query: {input_query} \n\n")
-            print(f"\nTexts to Remove: {texts_to_remove} \n\n")
+            printer.print_custom(f"Input Query Length: {len(input_query)} \n\n")
+            printer.print_custom(
+                f"\n \n Texts to Remove Length: {len(texts_to_remove_str)} \n\n"
+            )
+            printer.print_custom(f"\nInput Query: {input_query} \n\n")
+            printer.print_custom(f"\nTexts to Remove: {texts_to_remove} \n\n")
             if isinstance(texts_to_remove, list):
                 texts_to_remove_str = texts_to_remove_str
             elif isinstance(texts_to_remove, str):
                 texts_to_remove_str = texts_to_remove
-            print(
+            printer.print_custom(
                 f"Jaccard Similarity: {jaccard_similarity(input_query, texts_to_remove_str)} \n\n"
             )
             cosine_sim = cosine_similarity_custom(
                 get_embedding(input_query), get_embedding(texts_to_remove_str)
             )
-            print(f"Cosine Similarity: {cosine_sim} \n\n")
+            printer.print_custom(f"Cosine Similarity: {cosine_sim} \n\n")
             raise Exception(
                 "No text was removed in remove_converted_text_preserving_order"
             )
             return input_query, ""
-        print(
+        printer.print_custom(
             f"Jaccard Similarity: {jaccard_similarity(remaining_text, converted_text)} \n\n"
         )
         cosine_sim = cosine_similarity_custom(
             get_embedding(remaining_text), get_embedding(converted_text)
         )
-        print(f"Cosine Similarity: {cosine_sim} \n\n")
+        printer.print_custom(f"Cosine Similarity: {cosine_sim} \n\n")
 
         return remaining_text, converted_text
     except Exception as e:
-        print(
+        printer.print_custom(
             f"Error in remove_converted_text_preserving_order: {e} Error on line: {sys.exc_info()[-1].tb_lineno}"
         )
         return input_query, ""
@@ -2276,19 +2454,21 @@ def convert_plan(
     instructions = convert_instruction_a
 
     plan_token_count = count_tokens(input_query + instructions, model)
-    print(f"\n[Language Model] Plan Token Count: {plan_token_count} \n\n")
+    printer.print_custom(
+        f"\n[Language Model] Plan Token Count: {plan_token_count} \n\n"
+    )
     with open(save_path, "a") as f:
         f.write(f"\n[Language Model] Plan Token Count: {plan_token_count} \n\n")
     if plan_token_count > 16384:
         instructions = convert_instruction_b
         plan_token_count = count_tokens(input_query + instructions, model)
         if plan_token_count > 16384:
-            print("[Language Model] Plan too long for conversion.")
+            printer.print_custom("[Language Model] Plan too long for conversion.")
             with open(save_path, "a") as f:
                 f.write("[Language Model] Plan too long for conversion.")
             exit()
     max_completion_tokens = 16384 - plan_token_count
-    print(
+    printer.print_custom(
         f"[Language Model] Max Tokens for Plan Conversion: {max_completion_tokens} \n\n"
     )
     with open(save_path, "a") as f:
@@ -2297,20 +2477,28 @@ def convert_plan(
         )
     if instructions == convert_instruction_a:
 
-        print(f"[Language Model] Converting Plan with Instruction A \n\n")
+        printer.print_custom(
+            f"[Language Model] Converting Plan with Instruction A \n\n"
+        )
         with open(save_path, "a") as f:
             f.write(f"[Language Model] Converting Plan with Instruction A \n\n")
     elif instructions == convert_instruction_b:
-        print(f"[Language Model] Converting Plan with Instruction B \n\n")
+        printer.print_custom(
+            f"[Language Model] Converting Plan with Instruction B \n\n"
+        )
         with open(save_path, "a") as f:
             f.write(f"[Language Model] Converting Plan with Instruction B \n\n")
     else:
-        print(f"[Language Model] Converting Plan without Instructions?? \n\n")
+        printer.print_custom(
+            f"[Language Model] Converting Plan without Instructions?? \n\n"
+        )
         with open(save_path, "a") as f:
             f.write(f"[Language Model] Converting Plan without Instructions?? \n\n")
 
     if recursive_count > 1:
-        print(f"[Language Model] Recursive Count: {recursive_count} \n\n")
+        printer.print_custom(
+            f"[Language Model] Recursive Count: {recursive_count} \n\n"
+        )
         with open(save_path, "a") as f:
             f.write(f"[Language Model] Recursive Count: {recursive_count} \n\n")
         instructions = instructions.replace(
@@ -2358,7 +2546,9 @@ Here is the remaining text to be converted:
         )
         output = None
         if response.choices[0].finish_reason == "length":
-            print(f"[Language Model] Plan conversion incomplete due to token limit.")
+            printer.print_custom(
+                f"[Language Model] Plan conversion incomplete due to token limit."
+            )
             with open(save_path, "a") as f:
                 f.write(
                     f"[Language Model] Plan conversion incomplete due to token limit."
@@ -2368,13 +2558,13 @@ Here is the remaining text to be converted:
             or response.choices[0].message.parsed == ""
             or response.choices[0].message.content.strip() == ""
         ):
-            print(
+            printer.print_custom(
                 f"[Language Model] Plan conversion failed. Empty response with finish reason: {response.choices[0].finish_reason}. \n Refusal?: {response.choices[0].message.refusal} \n For input: {input_query}. \n The existing plan is: {existing_plan}"
             )
             with open(save_path, "a") as f:
                 f.write(f"[Language Model] Plan conversion failed.")
-            print(
-                print(
+            printer.print_custom(
+                printer.print_custom(
                     f"\nReturning converted plan from line {inspect.currentframe().f_lineno + 1}\n"
                 )
             )
@@ -2383,15 +2573,15 @@ Here is the remaining text to be converted:
         elif existing_plan is not None and re.search(
             r"\bComplete\b", response.choices[0].message.content
         ):
-            print(
+            printer.print_custom(
                 f"[Language Model] Plan conversion complete on recursive loop {recursive_count}. \n\n {response.choices[0].message.content} \n\n"
             )
             with open(save_path, "a") as f:
                 f.write(
                     f"[Language Model] Plan conversion complete on recursive loop {recursive_count}. \n\n {response.choices[0].message.content} \n\n"
                 )
-            print(
-                print(
+            printer.print_custom(
+                printer.print_custom(
                     f"\nReturning converted plan from line {inspect.currentframe().f_lineno + 1}\n"
                 )
             )
@@ -2401,19 +2591,21 @@ Here is the remaining text to be converted:
             and response.choices[0].message.parsed != ""
             and response.choices[0].message.content.strip() != ""
         ):
-            print(
+            printer.print_custom(
                 f"\n\n[Language Model] Plan Conversion Response in recursive loop {recursive_count}: {response} \n\n"
             )
             output = response.choices[0].message.parsed
             response_tokens_string = ""
             response_tokens = [token.step_full_text.split() for token in output.steps]
             if response_tokens is not None and len(response_tokens) > 0:
-                print(f"[Language Model] Response Tokens Type: {type(response_tokens)}")
+                printer.print_custom(
+                    f"[Language Model] Response Tokens Type: {type(response_tokens)}"
+                )
 
-                print(
+                printer.print_custom(
                     f"[Language Model] Response Tokens Item Type: {type(response_tokens[0])}"
                 )
-                # print(f"[Language Model] Response Tokens: {response_tokens}")
+                # printer.print_custom(f"[Language Model] Response Tokens: {response_tokens}")
                 with open(save_path, "a") as f:
                     f.write(
                         f"[Language Model] Response Tokens Type: {type(response_tokens)}"
@@ -2429,12 +2621,14 @@ Here is the remaining text to be converted:
                         for token in step.subtasks
                     ]
                 )
-                print(f"[Language Model] Response Tokens Type: {type(response_tokens)}")
-                print(
+                printer.print_custom(
+                    f"[Language Model] Response Tokens Type: {type(response_tokens)}"
+                )
+                printer.print_custom(
                     f"[Language Model] Response Tokens Item Type: {type(response_tokens[0])}"
                 )
 
-                # print(f"[Language Model] Response Tokens: {response_tokens}")
+                # printer.print_custom(f"[Language Model] Response Tokens: {response_tokens}")
                 with open(save_path, "a") as f:
                     f.write(
                         f"[Language Model] Response Tokens Type: {type(response_tokens)}"
@@ -2450,10 +2644,10 @@ Here is the remaining text to be converted:
                     .replace(",", "")
                 )
                 assert isinstance(response_tokens_string, str)
-                print(
+                printer.print_custom(
                     f"[Language Model] Response Tokens String Type: {type(response_tokens_string)}"
                 )
-                print(
+                printer.print_custom(
                     f"[Language Model] Response Tokens String: {response_tokens_string}"
                 )
                 with open(save_path, "a") as f:
@@ -2464,7 +2658,7 @@ Here is the remaining text to be converted:
                         f"[Language Model] Response Tokens String: {response_tokens_string}"
                     )
             else:
-                print(
+                printer.print_custom(
                     f"[Language Model] Empty Response Tokens: {response_tokens} of type {type(response_tokens)} and length {len(response_tokens)}. Output: {output} \n\n Full Response: {response}"
                 )
                 with open(save_path, "a") as f:
@@ -2473,7 +2667,7 @@ Here is the remaining text to be converted:
                     )
 
         response_token_count = count_tokens(response_tokens_string, model)
-        print(
+        printer.print_custom(
             f"Token count of response: {response_token_count} out of {max_completion_tokens} max tokens."
         )
         with open(save_path, "a") as f:
@@ -2494,7 +2688,7 @@ Here is the remaining text to be converted:
 
             # Before initializing the vectorizer, lets think step by step the best way to use it for this use case. For example, what, if any, arguments should be passed to the TfidfVectorizer constructor? What methods should be called on the vectorizer object? What should be done with the output of those methods?
             # Thinking on it, the best way to use the TfidfVectorizer is to use the default arguments. The default arguments are already set to the best values for this use case. The TfidfVectorizer will be used to convert the text to count vectors. The fit_transform method will be called on the vectorizer object to convert the text to count vectors. The output of the fit_transform method will be stored in a variable called count_matrix. The cosine_similarity_custom method will be called on the count_matrix to calculate the cosine similarity between the existing step and the new step. The cosine similarity will be stored in a variable called similarity.
-            print(
+            printer.print_custom(
                 f"\n[Language Model] This is a recursive call. Current/last plan: {existing_plan} \n\n"
             )
             for step in output.steps:
@@ -2509,7 +2703,7 @@ Here is the remaining text to be converted:
                 if existing_step is not None:
                     if isinstance(existing_step, list) and len(existing_step) > 1:
                         # This indicates that the step has been added multiple times. We need to remove the duplicates by merging them. Call the llm to merge the steps.
-                        print(
+                        printer.print_custom(
                             f"[Language Model] Duplicate step found in existing plan. Merging steps: {existing_step} \n\n"
                         )
                         with open(save_path, "a") as f:
@@ -2532,7 +2726,7 @@ Here is the remaining text to be converted:
                     )
 
                     jac_sim = jaccard_similarity(existing_step_text, new_step_text)
-                    print(
+                    printer.print_custom(
                         f"[Language Model] Cosine Similarity between existing step and new step: {similarity}"
                     )
                     with open(save_path, "a") as f:
@@ -2567,7 +2761,7 @@ Here is the remaining text to be converted:
                                     get_embedding(new_subtask_text),
                                 )
 
-                                print(
+                                printer.print_custom(
                                     f"[Language Model] Cosine Similarity between existing subtask and new subtask: {similarity}"
                                 )
                                 with open(save_path, "a") as f:
@@ -2579,14 +2773,16 @@ Here is the remaining text to be converted:
                 else:
                     existing_plan.steps.append(step)
 
-            print(f"\n[Language Model] Merging Plans: {existing_plan} \n\n")
+            printer.print_custom(
+                f"\n[Language Model] Merging Plans: {existing_plan} \n\n"
+            )
             with open(save_path, "a") as f:
                 f.write(
                     f"\n[Language Model] This is a recursive call. Current/last plan: {existing_plan} \n\n"
                 )
                 f.write(f"\n[Language Model] Merging Plans: {existing_plan} \n\n")
         elif output is None or output.steps is None or len(output.steps) == 0:
-            print(
+            printer.print_custom(
                 f"[Language Model] Plan conversion failed. No steps or subtasks found in response. \n\n {response} \n\n"
             )
             with open(save_path, "a") as f:
@@ -2594,8 +2790,8 @@ Here is the remaining text to be converted:
                     f"[Language Model] Plan conversion failed. No steps or subtasks found in response. \n\n {response} \n\n"
                 )
             if existing_plan is not None:
-                print(
-                    print(
+                printer.print_custom(
+                    printer.print_custom(
                         f"\nReturning converted plan from line {inspect.currentframe().f_lineno + 1}\n"
                     )
                 )
@@ -2606,7 +2802,7 @@ Here is the remaining text to be converted:
                 )
 
         elif recursive_count > 5:
-            print(
+            printer.print_custom(
                 f"[Language Model] Plan conversion incomplete after 5 recursive calls."
             )
             with open(save_path, "a") as f:
@@ -2623,34 +2819,34 @@ Here is the remaining text to be converted:
             )
             # Check if either the new_input_query or the converted_text are empty. If new_input_query is empty, then the conversion is complete. If converted_text is empty, then nothing was converted in the last recursive loop.
             if normalize_whitespace(remove_punctuation(new_input_query)).strip() == "":
-                print(
+                printer.print_custom(
                     f"[Language Model] Plan conversion complete. Returning the final structured plan. Response token count: {response_token_count}. Plan token count: {plan_token_count}, Recursive count: {recursive_count}"
                 )
-                print(
+                printer.print_custom(
                     f"\nReturning converted plan from line {inspect.currentframe().f_lineno + 1}\n"
                 )
                 return existing_plan
             if normalize_whitespace(remove_punctuation(converted_text)).strip() == "":
-                print(
+                printer.print_custom(
                     f"[Language Model] Plan conversion incomplete in last recursive loop. Remaining text to be converted: {new_input_query}"
                 )
                 with open(save_path, "a") as f:
                     f.write(
                         f"[Language Model] Plan conversion incomplete in last recursive loop. Remaining text to be converted: {new_input_query}"
                     )
-                print(
+                printer.print_custom(
                     f"\nReturning converted plan from line {inspect.currentframe().f_lineno + 1}\n"
                 )
 
                 return existing_plan
-            print(
+            printer.print_custom(
                 f"[Language Model] Plan conversion incomplete in last recursive loop. Remaining text to be converted: {new_input_query}"
             )
             with open(save_path, "a") as f:
                 f.write(
                     f"[Language Model] Plan conversion incomplete in last recursive loop. Remaining text to be converted: {new_input_query}"
                 )
-            print(
+            printer.print_custom(
                 f"\nReturning converted plan from line {inspect.currentframe().f_lineno + 1}\n"
             )
 
@@ -2673,7 +2869,7 @@ Here is the remaining text to be converted:
             )
 
             if normalize_whitespace(remove_punctuation(converted_text)).strip() == "":
-                print(
+                printer.print_custom(
                     f"[Language Model] Plan conversion incomplete in last recursive loop. Remaining text to be converted: {new_input_query}"
                 )
                 with open(save_path, "a") as f:
@@ -2681,19 +2877,19 @@ Here is the remaining text to be converted:
                         f"[Language Model] Plan conversion incomplete in last recursive loop. Remaining text to be converted: {new_input_query}"
                     )
                 if existing_plan is not None:
-                    print(
+                    printer.print_custom(
                         f"\nReturning converted plan from line {inspect.currentframe().f_lineno + 1}\n"
                     )
                     return existing_plan
                 elif recursive_count == 1:
 
-                    print(
+                    printer.print_custom(
                         f"\nReturning converted plan from line {inspect.currentframe().f_lineno + 1}\n"
                     )
 
                     return output
                 else:
-                    print(
+                    printer.print_custom(
                         f"Plan conversion incomplete in last recursive loop. Remaining text to be converted: {new_input_query} Recursive count: {recursive_count}"
                     )
 
@@ -2702,14 +2898,14 @@ Here is the remaining text to be converted:
                     )
 
             if normalize_whitespace(remove_punctuation(new_input_query)).strip() == "":
-                print(
+                printer.print_custom(
                     f"[Language Model] Plan conversion complete. Returning the final structured plan. Response token count: {response_token_count}. Plan token count: {plan_token_count}, Recursive count: {recursive_count}"
                 )
-                print(
+                printer.print_custom(
                     f"\nReturning converted plan from line {inspect.currentframe().f_lineno + 1}\n"
                 )
                 if existing_plan is None:
-                    print(
+                    printer.print_custom(
                         f"For some reason, the existing plan is None. Returning the output."
                     )
                 return existing_plan if existing_plan is not None else output
@@ -2726,13 +2922,13 @@ Here is the remaining text to be converted:
                 ),
             )
             # Subtract new_input_query from input_query to get the text that was converted this iteration
-            print(
+            printer.print_custom(
                 f"[Language Model] Jaccard Similarity between input_query and new_input_query: {jaccard_sim}. Note that a Jaccard similarity of 1 means the text is the same. These should be different, looking for a value close to 0."
             )
-            print(
+            printer.print_custom(
                 f"[Language Model] Cosine Similarity between input_query and new_input_query: {cosine_sim}. Note that a Cosine similarity of 1 means the text is the same. These should be different, looking for a value close to 0."
             )
-            # Check if the converted text is the same as the response. If it is too similar, print both texts to check for differences.
+            # Check if the converted text is the same as the response. If it is too similar, printer.print_custom both texts to check for differences.
             if (
                 jaccard_sim > 0.7
                 or cosine_sim > 0.7
@@ -2741,7 +2937,7 @@ Here is the remaining text to be converted:
             ) and (
                 abs(len(new_input_query) - len(input_query)) < (len(input_query) * 0.6)
             ):
-                print(
+                printer.print_custom(
                     f"\n[Language Model] input_query text and new_input_query are the same. input_query text: {input_query} \n\n\n new_input_query: {new_input_query}"
                 )
                 with open(save_path, "a") as f:
@@ -2759,10 +2955,10 @@ Here is the remaining text to be converted:
                     normalize_whitespace(remove_punctuation(response_tokens_string))
                 ),
             )
-            print(
+            printer.print_custom(
                 f"\n[Language Model] Jaccard Similarity between converted text and response: {jac_sim_converted_response}. Note that a Jaccard similarity of 1 means the text is the same. Thinking step by step, this should be close to 1 because the converted text should be similar to the response."
             )
-            print(
+            printer.print_custom(
                 f"[Language Model] Cosine Similarity between converted text and response: {cosine_sim_converted_response}. Note that a Cosine similarity of 1 means the text is the same. Thinking step by step, this should be close to 1 because the converted text should be similar to the response."
             )
 
@@ -2772,7 +2968,7 @@ Here is the remaining text to be converted:
                 or cosine_sim_converted_response < 0.5
                 or cosine_sim_converted_response == 0.0
             ):
-                print(
+                printer.print_custom(
                     f"\n[Language Model] Converted text and response are different. Converted text: {converted_text}. \nResponse: {response_tokens_string}"
                 )
                 with open(save_path, "a") as f:
@@ -2784,8 +2980,8 @@ Here is the remaining text to be converted:
                     f"[Language Model] Jaccard Similarity: {jaccard_sim}. Note that a Jaccard similarity of 1 means the text is the same."
                 )
 
-            # print left over text still to be converted
-            print(
+            # printer.print_custom left over text still to be converted
+            printer.print_custom(
                 f"[Language Model] Plan conversion incomplete. Remaining text to be converted: {new_input_query} at recursive count {recursive_count}"
             )
             with open(save_path, "a") as f:
@@ -2796,7 +2992,7 @@ Here is the remaining text to be converted:
             # We will also  merge the converted parts of the plan into a single Plan object in the next recursive call.
             if recursive_count == 1 or existing_plan is None:
                 if not existing_plan and recursive_count > 1:
-                    print(
+                    printer.print_custom(
                         f"[Language Model] Recursive call {recursive_count} with no existing plan. Creating new plan. Must debug why existing plan is None."
                     )
 
@@ -2804,13 +3000,13 @@ Here is the remaining text to be converted:
 
             recursive_count += 1
             if count_tokens(new_input_query, model) > 20:
-                print(
+                printer.print_custom(
                     f"\nReturning converted plan from line {inspect.currentframe().f_lineno + 1}\n"
                 )
 
                 return convert_plan(new_input_query, existing_plan, recursive_count)
 
-            print(
+            printer.print_custom(
                 f"[Language Model] Plan conversion incomplete. Re-running conversion for remaining text of length {len(new_input_query)} of the original {len(input_query)} characters."
             )
             with open(save_path, "a") as f:
@@ -2818,21 +3014,21 @@ Here is the remaining text to be converted:
                     f"[Language Model] Plan conversion incomplete. Re-running conversion for remaining text of length {len(new_input_query)} of the original {len(input_query)} characters."
                 )
         else:
-            print(
+            printer.print_custom(
                 f"[Language Model] Plan conversion complete. Returning the final structured plan. Response token count: {response_token_count}. Plan token count: {plan_token_count}, Recursive count: {recursive_count}"
             )
             return existing_plan if existing_plan is not None else output
-        print(
-            print(
+        printer.print_custom(
+            printer.print_custom(
                 f"\nReturning converted plan from line {inspect.currentframe().f_lineno + 1}\n"
             )
         )
         return existing_plan
     except Exception as e:
-        print(
+        printer.print_custom(
             f"[Language Model] Error generating plan: {e}. Error occurred on line {sys.exc_info()[-1].tb_lineno}"
         )
-        print(
+        printer.print_custom(
             f"\nReturning converted plan from line {inspect.currentframe().f_lineno + 1}\n"
         )
         return ""
@@ -2850,7 +3046,7 @@ def generate_plan_legacy(input_query: str) -> str:
     """
     openai_api_key = os.getenv("OPENAI_API_KEY")
     if not openai_api_key:
-        print("[Language Model] OpenAI API key not found.")
+        printer.print_custom("[Language Model] OpenAI API key not found.")
         return ""
     openai.api_key = openai_api_key
 
@@ -2876,7 +3072,7 @@ def generate_plan_legacy(input_query: str) -> str:
 
         return plan
     except Exception as e:
-        print(f"[Language Model] Error generating plan: {e}")
+        printer.print_custom(f"[Language Model] Error generating plan: {e}")
         return ""
 
 
@@ -2913,13 +3109,13 @@ def is_complex_llm(
     plan_str = generate_plan_legacy(input_query)
     if not plan_str:
         return 0.0
-    print(f"[Language Model] Generated Plan (Legacy):\n{plan_str} \n\n")
+    printer.print_custom(f"[Language Model] Generated Plan (Legacy):\n{plan_str} \n\n")
     with open(save_path, "a") as f:
         f.write(f"[Language Model] Generated Plan (Legacy):\n{plan_str} \n\n")
     plan = convert_plan(plan_str)
-    print(f"[Language Model] Generated Plan:{plan} \n\n")
-    print(f"[Language Model] Plan Steps: {len(plan.steps)} \n\n")
-    print(f"[Language Model] Plan Type: {type(plan)} \n\n")
+    printer.print_custom(f"[Language Model] Generated Plan:{plan} \n\n")
+    printer.print_custom(f"[Language Model] Plan Steps: {len(plan.steps)} \n\n")
+    printer.print_custom(f"[Language Model] Plan Type: {type(plan)} \n\n")
     with open(save_path, "a") as f:
         f.write(f"[Language Model] Generated Plan:\n{plan} \n\n")
         f.write(f"[Language Model] Plan Steps: {len(plan.steps)} \n\n")
@@ -2961,7 +3157,7 @@ def is_complex_llm(
 
     total_nested_subtasks = 0
     max_subtask_depth = 0
-    print(f"[Language Model] Number of Subtasks: {len(subtasks)}")
+    printer.print_custom(f"[Language Model] Number of Subtasks: {len(subtasks)}")
     with open(save_path, "a") as f:
         f.write(f"[Language Model] Number of Subtasks: {len(subtasks)}")
     for subtask in subtasks:
@@ -2999,7 +3195,7 @@ def is_complex_llm(
         + unique_subtask_weight * unique_subtask_score
     )
     sigmoid_threshold = 1 / (1 + math.exp(-sigmoid_steepness))
-    print(
+    printer.print_custom(
         f"sigmoid_steepness: {sigmoid_steepness}. Sigmoid Threshold: {sigmoid_threshold} Pre-Sigmoid Score: {score}"
     )
     with open(save_path, "a") as f:
@@ -3008,7 +3204,7 @@ def is_complex_llm(
         )
 
     # score = 1 / (1 + math.exp(-sigmoid_steepness * (score - sigmoid_threshold)))
-    print(
+    printer.print_custom(
         f"[Language Model] Substeps: {substeps}, Nested Subtasks: {total_nested_subtasks}, Score: {score}, Depth Score: {depth_score}, Substeps Score: {substeps_score} at a depth of {max_subtask_depth}"
     )
     with open(save_path, "a") as f:
@@ -3039,7 +3235,7 @@ def is_complex_llm_legacy(
     plan = generate_plan(input_query)
     if not plan:
         return 0.0
-    print(f"[Language Model] Generated Plan:\n{plan}")
+    printer.print_custom(f"[Language Model] Generated Plan:\n{plan}")
 
     # Extract steps using regex (assuming steps are numbered or bulleted)
     steps = re.findall(r"^\s*(?:\d+\.|\-|\*|\•)\s*(.*)", plan, re.MULTILINE)
@@ -3059,7 +3255,7 @@ def is_complex_llm_legacy(
 
         # If nesting isnt detected, try to detect subtasks with a different pattern
         nested_subtasks = len(re.findall(r"^\s*-\s*.*", plan, re.MULTILINE))
-        print(
+        printer.print_custom(
             f"[Language Model] No nested subtasks detected. Trying a different pattern. Latest Nested Subtasks: {nested_subtasks}"
         )
 
@@ -3074,7 +3270,7 @@ def is_complex_llm_legacy(
 
         # Remove counts of all the top-level tasks/subtasks from nested_subtasks
         nested_subtasks -= top_level_tasks
-        print(
+        printer.print_custom(
             f"[Language Model] No nested subtasks detected. Trying a different pattern a second time. Latest Nested Subtasks: {nested_subtasks}"
         )
 
@@ -3089,7 +3285,7 @@ def is_complex_llm_legacy(
     # Combined score
     score = substep_weight * substeps_score + depth_weight * depth_score
     score = 1 / (1 + math.exp(-score))
-    print(
+    printer.print_custom(
         f"[Language Model] Substeps: {substeps}, Nested Subtasks: {nested_subtasks}, Score: {score}, Depth Score: {depth_score}, Substeps Score: {substeps_score} at a depth of {depth}"
     )
     return score
@@ -3140,7 +3336,7 @@ def is_complex_graph(
 
     # Combined score
     score = substeps_score * depth_score
-    print(
+    printer.print_custom(
         f"[Graph-Based Approach] Substeps: {substeps}, Max Depth: {max_depth}, Score: {score}"
     )
     with open(save_path, "a") as f:
@@ -3205,7 +3401,7 @@ def is_complex_recursive(
 
     # Combined score
     score = substeps_score * depth_score
-    print(
+    printer.print_custom(
         f"[Recursive Task Decomposition] Substeps: {substeps}, Max Depth: {max_depth}, Score: {score}"
     )
     with open(save_path, "a") as f:
@@ -3244,7 +3440,9 @@ def is_complex_ontology(input_query: str, max_depth_threshold: int = 3) -> float
     score = (
         1 / (1 + math.exp(-max_depth - max_depth_threshold)) / (max_depth_threshold * 2)
     )
-    print(f"[Ontological Mapping] Max Ontology Depth: {max_depth}, Score: {score}")
+    printer.print_custom(
+        f"[Ontological Mapping] Max Ontology Depth: {max_depth}, Score: {score}"
+    )
     with open(save_path, "a") as f:
         f.write(
             f"[Ontological Mapping] Max Ontology Depth: {max_depth}, Score: {score}"
@@ -3291,7 +3489,7 @@ def is_complex_cognitive(input_query: str, complexity_threshold: float = 5.0) ->
         matches = re.findall(r"\b" + re.escape(keyword) + r"\b", input_lower)
         count = len(matches)
         complexity_score += count * score
-        print(
+        printer.print_custom(
             f"[Cognitive Metrics] Keyword '{keyword}' occurrences: {count}, adding {count * score} points."
         )
         with open(save_path, "a") as f:
@@ -3301,7 +3499,7 @@ def is_complex_cognitive(input_query: str, complexity_threshold: float = 5.0) ->
 
     # Normalize score (assuming max possible score is, say, 15)
     normalized_score = min(complexity_score / complexity_threshold, 1.0)
-    print(
+    printer.print_custom(
         f"[Cognitive Metrics] Total Complexity Score: {complexity_score}, Normalized Score: {normalized_score}"
     )
     with open(save_path, "a") as f:
@@ -3350,7 +3548,7 @@ def is_complex_ast(
     # Combined score that considers both substeps and depth and normalizes them to a float between 0 and 1
     score = substeps_score * depth_score
     # score = 1 / (1 + math.exp(-score)) / (substep_threshold + depth_threshold)
-    print(
+    printer.print_custom(
         f"[AST Generation] Substeps: {substeps}, Max Depth: {max_depth}, Score: {score}"
     )
     with open(save_path, "a") as f:
@@ -3376,13 +3574,13 @@ def is_complex_statistical(input_query: str, threshold: float = 0.5) -> float:
         # import cosine_similarity from sklearn.metrics.pairwise
         from sklearn.metrics.pairwise import cosine_similarity
     except ImportError:
-        print(
+        printer.print_custom(
             "scikit-learn is not installed. Please install scikit-learn to use this function."
         )
         return 0.0
     input_vec = vectorizer_stat.transform([input_query])
-    print(f"input_vec dimensions: {len(input_vec.shape)}")
-    print(f"tfidf_stat dimensions: {len(tfidf_stat.shape)}")
+    printer.print_custom(f"input_vec dimensions: {len(input_vec.shape)}")
+    printer.print_custom(f"tfidf_stat dimensions: {len(tfidf_stat.shape)}")
     similarities = cosine_similarity(input_vec, tfidf_stat).flatten()
 
     # Get top 3 similar queries
@@ -3400,7 +3598,9 @@ def is_complex_statistical(input_query: str, threshold: float = 0.5) -> float:
     # weighted_complexity = 1 / (
     #     1 + math.exp(-weighted_complexity)
     # )  # Normalize to [0, 1]
-    print(f"[Statistical Analysis] Weighted Complexity Score: {weighted_complexity}")
+    printer.print_custom(
+        f"[Statistical Analysis] Weighted Complexity Score: {weighted_complexity}"
+    )
     with open(save_path, "a") as f:
         f.write(
             f"[Statistical Analysis] Weighted Complexity Score: {weighted_complexity}"
@@ -3422,7 +3622,7 @@ def generate_follow_up_questions(input_query: str, num_questions: int = 3) -> li
     """
     openai_api_key = os.getenv("OPENAI_API_KEY")
     if not openai_api_key:
-        print("[Interactive Query Expansion] OpenAI API key not found.")
+        printer.print_custom("[Interactive Query Expansion] OpenAI API key not found.")
         return []
     openai.api_key = openai_api_key
 
@@ -3447,14 +3647,16 @@ def generate_follow_up_questions(input_query: str, num_questions: int = 3) -> li
         questions = response.choices[0].message.content
         # Split into individual questions
         question_list = re.findall(r"\d+\.\s+(.*)", questions)
-        print(f"[Interactive Query Expansion] Generated Questions: {question_list}")
+        printer.print_custom(
+            f"[Interactive Query Expansion] Generated Questions: {question_list}"
+        )
         with open(save_path, "a") as f:
             f.write(
                 f"[Interactive Query Expansion] Generated Questions: {question_list}"
             )
         return question_list
     except Exception as e:
-        print(
+        printer.print_custom(
             f"[Interactive Query Expansion] Error generating follow-up questions: {e}"
         )
         with open(save_path, "a") as f:
@@ -3490,7 +3692,7 @@ def is_complex_query_expansion(
 
     # Combined score
     score = substeps_score * depth_score
-    print(
+    printer.print_custom(
         f"[Interactive Query Expansion] Substeps (Follow-ups): {substeps}, Max Depth: {max_depth}, Score: {score}"
     )
     with open(save_path, "a") as f:
@@ -3552,7 +3754,7 @@ def is_complex_psycholinguistic(
     grade = flesch_kincaid_grade(input_query)
     score = min((grade - grade_threshold) / grade_threshold, 1.0)
     # score = 1 / (1 + math.exp(-score))
-    print(
+    printer.print_custom(
         f"[Psycholinguistic Metrics] Flesch-Kincaid Grade Level: {grade}, Score: {score}"
     )
     with open(save_path, "a") as f:
@@ -3591,7 +3793,7 @@ def is_complex_sentiment(
     # Compute sentiment polarity
     blob = TextBlob(input_query)
     sentiment = blob.sentiment.polarity  # Range [-1.0, 1.0]
-    print(f"[Sentiment Analysis] Sentiment Polarity: {sentiment}")
+    printer.print_custom(f"[Sentiment Analysis] Sentiment Polarity: {sentiment}")
     with open(save_path, "a") as f:
         f.write(f"[Sentiment Analysis] Sentiment Polarity: {sentiment}")
 
@@ -3600,7 +3802,7 @@ def is_complex_sentiment(
     for kw in keywords:
         if re.search(r"\b" + re.escape(kw) + r"\b", input_query.lower()):
             keyword_present = True
-            print(f"[Sentiment Analysis] Keyword '{kw}' found.")
+            printer.print_custom(f"[Sentiment Analysis] Keyword '{kw}' found.")
             with open(save_path, "a") as f:
                 f.write(f"[Sentiment Analysis] Keyword '{kw}' found.")
             break
@@ -3610,7 +3812,7 @@ def is_complex_sentiment(
         score = 1.0
     else:
         score = 0.0
-    print(f"[Sentiment Analysis] Complexity Score: {score}")
+    printer.print_custom(f"[Sentiment Analysis] Complexity Score: {score}")
     with open(save_path, "a") as f:
         f.write(f"[Sentiment Analysis] Complexity Score: {score}")
     return score
@@ -3649,7 +3851,9 @@ def is_complex_theorem_proving(input_query: str, step_threshold: int = 5) -> flo
                     )
                     else 1
                 )
-                print(f"[Theorem Proving] Integral result: {integral}, Steps: {steps}")
+                printer.print_custom(
+                    f"[Theorem Proving] Integral result: {integral}, Steps: {steps}"
+                )
                 with open(save_path, "a") as f:
                     f.write(
                         f"[Theorem Proving] Integral result: {integral}, Steps: {steps}"
@@ -3657,13 +3861,13 @@ def is_complex_theorem_proving(input_query: str, step_threshold: int = 5) -> flo
                 score = min(steps / step_threshold, 1.0)
                 return score
     except Exception as e:
-        print(f"[Theorem Proving] Error: {e}")
+        printer.print_custom(f"[Theorem Proving] Error: {e}")
         with open(save_path, "a") as f:
             f.write(f"[Theorem Proving] Error: {e}")
         return 0.0
 
     # If the problem type is not recognized, return 0
-    print("[Theorem Proving] Problem type not recognized. Score: 0.0")
+    printer.print_custom("[Theorem Proving] Problem type not recognized. Score: 0.0")
     with open(save_path, "a") as f:
         f.write("[Theorem Proving] Problem type not recognized. Score: 0.0")
     return 0.0
@@ -3701,7 +3905,7 @@ def is_complex_entropy(input_query: str, entropy_threshold: float = 5.0) -> floa
     """
     entropy = calculate_entropy(input_query)
     score = min(entropy / entropy_threshold, 1.0)
-    print(f"[Entropy Measure] Entropy: {entropy}, Score: {score}")
+    printer.print_custom(f"[Entropy Measure] Entropy: {entropy}, Score: {score}")
     with open(save_path, "a") as f:
         f.write(f"[Entropy Measure] Entropy: {entropy}, Score: {score}")
     return score
@@ -3739,7 +3943,7 @@ def is_complex_temporal(
     for kw in temporal_keywords:
         matches = re.findall(r"\b" + re.escape(kw) + r"\b", input_lower)
         sequences += len(matches)
-        print(
+        printer.print_custom(
             f"[Temporal Analysis] Temporal keyword '{kw}' occurrences: {len(matches)}"
         )
         with open(save_path, "a") as f:
@@ -3749,7 +3953,7 @@ def is_complex_temporal(
 
     # Normalize score
     score = min(sequences / sequence_threshold, 1.0)
-    print(
+    printer.print_custom(
         f"[Temporal Analysis] Total Temporal Sequences Detected: {sequences}, Score: {score}"
     )
     with open(save_path, "a") as f:
@@ -3856,9 +4060,66 @@ def is_complex_final(
 
     # average score_nlp, score_llm, and score_entropy
     avg_nlp_llm_ent = (score_nlp + score_llm + score_entropy) / 3
-    print(f"\n[Average NLP, LLM, Entropy] Average Score: {avg_nlp_llm_ent}\n\n")
+    printer.print_custom(
+        f"\n[Average NLP, LLM, Entropy] Average Score: {avg_nlp_llm_ent}\n\n"
+    )
     with open(save_path, "a") as f:
         f.write(f"\n[Average NLP, LLM, Entropy] Average Score: {avg_nlp_llm_ent}\n\n")
+
+    scores = {}
+    scores["nlp"] = score_nlp
+    scores["srl"] = score_srl
+    scores["ml"] = score_ml
+    scores["llm"] = score_llm
+    scores["graph"] = score_graph
+    scores["recursive"] = score_recursive
+    scores["ontology"] = score_ontology
+    scores["cognitive"] = score_cognitive
+    scores["ast"] = score_ast
+    scores["stat"] = score_stat
+    scores["query_expansion"] = score_query_expansion
+    scores["psycholinguistic"] = score_psycholinguistic
+    scores["sentiment"] = score_sentiment
+    scores["theorem"] = score_theorem
+    scores["entropy"] = score_entropy
+    scores["temporal"] = score_temporal
+
+    # average scores after removing outliers
+    raw_scores = [
+        score_nlp,
+        score_srl,
+        score_ml,
+        score_llm,
+        score_graph,
+        score_recursive,
+        score_ontology,
+        score_cognitive,
+        score_ast,
+        score_stat,
+        score_query_expansion,
+        score_psycholinguistic,
+        score_sentiment,
+        score_theorem,
+        score_entropy,
+        score_temporal,
+    ]
+    # remove outliers by the z-score method
+    z_scores = stats.zscore(raw_scores)
+    threshold = 2
+    scores_without_outliers = [
+        score for score, z_score in zip(raw_scores, z_scores) if z_score < threshold
+    ]
+    avg_score_without_outliers = sum(scores_without_outliers) / len(
+        scores_without_outliers
+    )
+
+    df_finetune = pd.DataFrame(
+        {
+            "query": [input_query],
+            "complex": avg_score_without_outliers,
+        }
+    )
+    finetune_ml_model(df_finetune, model_path_ml)
 
     # Assign weights to each method
     weights = {
@@ -3900,7 +4161,7 @@ def is_complex_final(
         + score_temporal * weights["temporal"]
     )
 
-    print(f"[Final Assessment] Total Weighted Score: {total_score}")
+    printer.print_custom(f"[Final Assessment] Total Weighted Score: {total_score}")
     with open(save_path, "a") as f:
         f.write(f"[Final Assessment] Total Weighted Score: {total_score}")
 
@@ -3915,6 +4176,8 @@ def is_complex_final(
 
 # Example Usage and Testing
 if __name__ == "__main__":
+    debug_ind = DEBUG_INDICATOR if DEBUG_INDICATOR else False
+    printer = printer(debug_ind)
 
     example_queries = [
         "What is the capital of France?",
@@ -3926,9 +4189,9 @@ if __name__ == "__main__":
     ]
 
     for idx, query in enumerate(example_queries, 1):
-        print(f"\n---\nQuery {idx}: {query}\n---")
+        printer.print_custom(f"\n---\nQuery {idx}: {query}\n---")
         complexity, plan = is_complex_final(query)
-        print(f"Is the query complex? {'Yes' if complexity else 'No'}\n")
+        printer.print_custom(f"Is the query complex? {'Yes' if complexity else 'No'}\n")
         with open(save_path, "a") as f:
             f.write(f"\n---\nQuery {idx}: {query}\n---")
             assert isinstance(plan, Plan)

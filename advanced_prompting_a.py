@@ -24,16 +24,16 @@ class PromptEngineeringConfig:
     agents: int = 3  # For Collaborative Multi-Agent Reasoning
 
 
-@dataclass
-class Step:
-    description: str
-    remaining_budget: int
+# @dataclass
+# class Step:
+#     description: str
+#     remaining_budget: int
 
 
-@dataclass
-class Reflection:
-    content: str
-    reward: float
+# @dataclass
+# class Reflection:
+#     content: str
+#     reward: float
 
 
 @dataclass

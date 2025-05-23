@@ -1,0 +1,2 @@
+DEBUG:urllib3.connectionpool:Starting new HTTPS connection (1): huggingface.co:443
+DEBUG:urllib3.connectionpool:https://huggingface.co:443 "HEAD /dbmdz/bert-large-cased-finetuned-conll03-english/resolve/main/config.json HTTP/11" 200 0

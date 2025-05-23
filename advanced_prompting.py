@@ -1,9 +1,9 @@
-from calendar import c
+from __future__ import annotations
+
+from dataclasses import asdict, is_dataclass
 from datetime import datetime
 import difflib
-from math import e
-from turtle import st
-from weakref import ref
+
 from Levenshtein import ratio
 import openai
 import os
@@ -11,14 +11,10 @@ import re
 import time
 import random
 
-import p
-from regex import F, R
-from tqdm import tqdm
-from traitlets import Int
-from zmq import has
-from conversation_manager import output_type_determination, OutputType
-from pydantic import BaseModel, Field
 
+from tqdm import tqdm
+from conversation_manager import output_type_determination, OutputType
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from typing import List, Tuple, Optional
 import tiktoken
 
@@ -100,7 +96,9 @@ example_interaction = {
 }
 
 examples_for_prompt_instructions = [
-    f"""<thinking>To solve 'Plan the best strategy for a chess endgame', I will analyze the given position and consider various tactical and strategic options. The position is as follows: White has a King on g1, Rook on c1, Pawns on a2, b3, e3, g2, h2; Black has a King on g8, Rook on f8, Pawns on a7, b6, e6, g7, h7. It's White to move.</thinking>
+    f"""
+<count>6</count>
+<thinking>To solve 'Plan the best strategy for a chess endgame', I will analyze the given position and consider various tactical and strategic options. The position is as follows: White has a King on g1, Rook on c1, Pawns on a2, b3, e3, g2, h2; Black has a King on g8, Rook on f8, Pawns on a7, b6, e6, g7, h7. It's White to move.</thinking>
 <step>Assess the current position and identify key features.</step>
 <count>5</count>
 <thinking>The key features are: material is equal with both sides having a rook and five pawns. White's rook is on an open file, while Black's rook is not actively placed. The pawn structures are symmetrical on the kingside but differ on the queenside. White has potential to penetrate on the c-file.</thinking>
@@ -120,7 +118,9 @@ examples_for_prompt_instructions = [
 <count>0</count>
 <agent_response>My final strategy is to play Rc7 to pressure Black's position. After potential rook exchanges, I will activate my king and advance my queenside pawns with a4 and b4, aiming to create a passed pawn. This plan leverages my rook's activity and pawn majority to secure a winning advantage in the endgame.</agent_response>
     """,
-    f"""<thinking>To solve 'Write a short story about a robot learning to understand human emotions', I will create a narrative with specific characters and events that depict this journey. The main character will be a robot named Max in a modern human household.</thinking>
+    f"""
+<count>6</count>    
+<thinking>To solve 'Write a short story about a robot learning to understand human emotions', I will create a narrative with specific characters and events that depict this journey. The main character will be a robot named Max in a modern human household.</thinking>
 <step>Introduce Max, the household robot, and the human family he serves.</step>
 <count>5</count>
 <thinking>Max is programmed to perform daily chores for the Johnson family. One day, he observes the youngest child, Emily, crying over a broken toy. Max records this anomaly and notes a correlation between the broken toy and Emily's tears.</thinking>
@@ -150,7 +150,9 @@ The turning point came when Jake, the eldest son, had an accident and broke his 
 
 From that day forward, Max evolved beyond his original programming. He became attuned to the emotional states of the Johnson family, anticipating their needs and providing comfort in times of distress. Max's journey from a task-oriented robot to a compassionate companion highlighted the profound impact of understanding and responding to human emotions, fostering a deeper bond within the household.
 </agent_response>""",
-    f"""<thinking>To solve 'Design a sustainable urban transportation system', I will focus on the city of Greenfield, which faces traffic congestion and pollution due to heavy reliance on personal vehicles.</thinking>
+    f"""
+<count>6</count>    
+<thinking>To solve 'Design a sustainable urban transportation system', I will focus on the city of Greenfield, which faces traffic congestion and pollution due to heavy reliance on personal vehicles.</thinking>
 <step>Analyze Greenfield's current transportation challenges and environmental impact.</step>
 <count>5</count>
 <thinking>Greenfield's main issues include overcongested roads, high carbon emissions, and insufficient public transit options. The city's air quality has deteriorated, and commuting times have increased significantly.</thinking>
@@ -219,7 +221,9 @@ Greenfield faces significant transportation challenges, including traffic conges
 The proposed sustainable urban transportation system for Greenfield aims to create an efficient, eco-friendly, and user-centric network that addresses current challenges and supports future growth. By implementing a phased approach with clear strategies for funding, monitoring, and community engagement, Greenfield can achieve a cleaner, more connected, and sustainable urban environment.
 
 </agent_response>""",
-    f"""<thinking>To solve 'Develop a comprehensive marketing strategy for the launch of a new eco-friendly water bottle', I will analyze the target market, competition, and unique selling propositions (USPs) of the product.</thinking>
+    f"""
+<count>6</count>
+<thinking>To solve 'Develop a comprehensive marketing strategy for the launch of a new eco-friendly water bottle', I will analyze the target market, competition, and unique selling propositions (USPs) of the product.</thinking>
 <step>Identify the target audience and understand their preferences and behaviors.</step>
 <count>5</count>
 <thinking>The primary target audience for the eco-friendly water bottle includes environmentally conscious consumers, athletes, and individuals seeking sustainable lifestyle products. Their preferences lean towards products that are durable, stylish, and have a minimal environmental footprint.</thinking>
@@ -312,7 +316,9 @@ The marketing strategy for EcoFlow focuses on leveraging digital channels, influ
 
 </agent_response>
     """,
-    f"""<thinking>To solve 'Create a comprehensive lesson plan for teaching high school biology on the topic of cellular respiration', I will outline the objectives, materials needed, teaching methods, activities, and assessments to ensure effective learning.</thinking>
+    f"""
+<count>6</count>    
+<thinking>To solve 'Create a comprehensive lesson plan for teaching high school biology on the topic of cellular respiration', I will outline the objectives, materials needed, teaching methods, activities, and assessments to ensure effective learning.</thinking>
 <step>Define the learning objectives and key concepts to be covered in the lesson.</step>
 <count>5</count>
 <thinking>The primary objectives are for students to understand the stages of cellular respiration, the role of mitochondria, and the importance of ATP in cellular processes. Key concepts include glycolysis, the Krebs cycle, the electron transport chain, and the overall energy yield from glucose.</thinking>
@@ -414,7 +420,9 @@ This comprehensive lesson plan engages students through a variety of teaching me
 
 </agent_response>
     """,
-    f"""<thinking>To solve 'Design a mobile application for personal finance management aimed at millennials', I will analyze user needs, market trends, and essential features to create a user-friendly and effective app.</thinking>
+    f"""
+<count>6</count>
+<thinking>To solve 'Design a mobile application for personal finance management aimed at millennials', I will analyze user needs, market trends, and essential features to create a user-friendly and effective app.</thinking>
 <step>Identify the target audience and understand their financial management needs and behaviors.</step>
 <count>5</count>
 <thinking>The target audience comprises millennials aged 25-40 who are tech-savvy, value financial independence, and prefer mobile solutions for managing their finances. They seek tools that offer budgeting, expense tracking, investment insights, and financial education.</thinking>
@@ -551,7 +559,9 @@ PersonalFinancePro aims to revolutionize personal finance management for millenn
 
 </agent_response>
     """,
-    f"""<thinking>To solve 'Develop a comprehensive business plan for opening a new restaurant specializing in farm-to-table cuisine', I will analyze the market, define the restaurant's concept, plan operations, and outline financial projections.</thinking>
+    f"""
+<count>6</count>
+<thinking>To solve 'Develop a comprehensive business plan for opening a new restaurant specializing in farm-to-table cuisine', I will analyze the market, define the restaurant's concept, plan operations, and outline financial projections.</thinking>
 <step>Define the restaurant's concept and unique selling propositions (USPs).</step>
 <count>5</count>
 <thinking>The restaurant, named "Harvest Table," will focus on farm-to-table cuisine, sourcing all ingredients locally from sustainable farms. The USPs include a seasonal menu that changes monthly, a cozy and rustic ambiance, and partnerships with local farmers to ensure freshness and support the community.</thinking>
@@ -638,7 +648,9 @@ Harvest Table aims to become a staple in the local dining scene by offering high
 
 </agent_response>
     """,
-    f"""<thinking>To solve 'Design an effective user onboarding process for a new mobile fitness application', I will outline the user journey, key features to highlight, engagement strategies, and metrics to track success.</thinking>
+    f"""
+<count>6</count>    
+<thinking>To solve 'Design an effective user onboarding process for a new mobile fitness application', I will outline the user journey, key features to highlight, engagement strategies, and metrics to track success.</thinking>
 <step>Map out the user journey from initial download to regular usage.</step>
 <count>5</count>
 <thinking>The onboarding process begins with the user downloading the app, followed by account creation, a brief tutorial highlighting key features, setting fitness goals, and personalized workout recommendations. The goal is to make the process seamless and engaging to encourage continuous use.</thinking>
@@ -745,7 +757,9 @@ The designed user onboarding process for FitLife ensures that new users are smoo
 
 </agent_response>
     """,
-    f"""<thinking>To solve 'Develop a Python script to analyze a sales dataset and generate insightful reports', I will outline the steps to import the data, clean it, perform exploratory data analysis (EDA), visualize key metrics, and export the results.</thinking>
+    f"""
+<count>6</count>    
+<thinking>To solve 'Develop a Python script to analyze a sales dataset and generate insightful reports', I will outline the steps to import the data, clean it, perform exploratory data analysis (EDA), visualize key metrics, and export the results.</thinking>
 <step>Import necessary libraries and load the dataset.</step>
 <count>5</count>
 <thinking>The dataset is in CSV format containing columns such as Date, Product_ID, Product_Name, Category, Quantity_Sold, Unit_Price, and Region. I will use pandas for data manipulation and matplotlib/seaborn for visualization.</thinking>
@@ -1304,13 +1318,15 @@ class PrintSaver:
         self.prints = {}
         self.line_count = 0
         self.save_filename = (
-            f"prompt_suggestions_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            f"advanced_prompting_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         )
 
     def print_and_store(self, str_to_save: str):
         print(str_to_save)
-        self.prints[self.line_count] = str_to_save
-        self.line_count += 1
+        # separate the prints by new lines
+        for line in str_to_save.split("\n"):
+            self.prints[self.line_count] = line
+            self.line_count += 1
 
     def save_prints(self):
         self.prints = dict(sorted(self.prints.items(), key=lambda x: x[0]))
@@ -1325,6 +1341,10 @@ print_saver = PrintSaver()
 
 class PromptSuggestions(BaseModel):
     prompt_modifications: List[str] = Field(..., title="List of Prompt Suggestions")
+
+
+class response_choices(BaseModel):
+    number_of_selected_response: int = Field(..., title="Number of selected response")
 
 
 class PromptEngineeringConfig:
@@ -1409,8 +1429,35 @@ class PromptEngineeringConfig:
         self.complexity_factor = complexity_factor
 
 
+# CompnentType represents a category of different final output component types, ie. whether the output is its own standalone file, a part of a larger file, or a response to a prompt.
+
+ComponentType = {
+    "standalone_file": "standalone_file",
+    "function_in_larger_file": "function_in_larger_file",
+    "class_in_larger_file": "class_in_larger_file",
+    "response_to_prompt": "response_to_prompt",
+    "page_in_larger_file": "page_in_larger_file",
+    "section_of_page": "section_of_page",
+    "subsection_of_section": "subsection_of_section",
+    "chapter_of_book": "chapter_of_book",
+    "other": "other",
+}
+# ...existing code...
+
+
+class StepComponentType(BaseModel):
+    standalone: bool = Field(..., title="Whether the component is a standalone file")
+    component_type: str = Field(
+        ...,
+        title="Component Type, should be one of the following: standalone_file, function_in_larger_file, class_in_larger_file, response_to_prompt, page, section, subsection, chapter",
+    )
+
+
 class Reflection(BaseModel):
-    content: str = Field(..., title="Content of the reflection")
+    content: str = Field(
+        ...,
+        title="Content of the reflection (insights, learnings, corrections) or feedback regarding the previous step",
+    )
     reward: float = Field(..., title="Reward value associated with the reflection")
     step_number: int = Field(..., title="Step number where the reflection occurred")
 
@@ -1431,28 +1478,48 @@ class Reflection(BaseModel):
         return hash((self.content, self.reward, self.step_number))
 
 
-class Step:
-    """
-    A class representing a step in a process.
+class Step(BaseModel):
+    description: str = Field(..., title="Description of the step")
+    step_number: int = Field(..., title="Sequential number of the step")
+    remaining_budget: int = Field(..., title="Remaining budget at this step")
+    reflection: Optional[Reflection] = Field(None, title="Reflection object")
+    thoughts: Optional[str] = Field(None, title="Additional thoughts about the step")
+    plan_step_number: Optional[int] = Field(
+        None, title="Corresponding step number in the plan"
+    )
+    final_step_output: Optional[FinalStepOutput] = Field(
+        None, title="Final output generated at this step"
+    )
+    # """
+    # A class representing a step in a process.
 
-    Attributes:
-        description (str): A text description of the step.
-        step_number (int): The sequential number/position of this step.
-        remaining_budget (int): The budget amount remaining at this step.
-        reflection (Reflection): A reflection object containing insights and rewards.
-    """
+    # Attributes:
+    #     description (str): A text description of the step.
+    #     step_number (int): The sequential number/position of this step.
+    #     remaining_budget (int): The budget amount remaining at this step.
+    #     reflection (Reflection): A reflection object containing insights and rewards.
+    #     thoughts (str): Additional thoughts or considerations about the step.
+    #     plan_step_number (int): The corresponding step number in the plan.
+    #     final_step_output (str): The final output generated at this step.
+    # """
 
-    def __init__(
-        self,
-        description: str,
-        step_number: int,
-        remaining_budget: int,
-        reflection: Reflection | None,
-    ):
-        self.description = description
-        self.step_number = step_number
-        self.remaining_budget = remaining_budget
-        self.reflection = reflection
+    # def __init__(
+    #     self,
+    #     description: str,
+    #     step_number: int,
+    #     remaining_budget: int,
+    #     reflection: Reflection | None = None,
+    #     thoughts: str = None,
+    #     plan_step_number: int = None,
+    #     final_step_output: FinalStepOutput | None = None,
+    # ):
+    #     self.description = description
+    #     self.step_number = step_number
+    #     self.remaining_budget = remaining_budget
+    #     self.reflection = reflection
+    #     self.thoughts = thoughts
+    #     self.plan_step_number = plan_step_number
+    #     self.final_step_output = final_step_output
 
     def __repr__(self):
         return f"Step(description={self.description}, step_number={self.step_number}, remaining_budget={self.remaining_budget}, reflection={self.reflection})"
@@ -1463,6 +1530,7 @@ class Step:
     def __eq__(self, other):
         # Helper function for string comparison
         def fuzzy_string_match(str1, str2, threshold=0.75):
+
             if str1 is None and str2 is None:
                 return True
             if str1 is None or str2 is None:
@@ -1500,10 +1568,16 @@ class Step:
             return levenshtein_similarity >= threshold
 
         return (
-            fuzzy_string_match(self.description, other.description)
+            fuzzy_string_match(
+                self.description if self.description else None,
+                other.description if other.description else None,
+            )
             and self.step_number == other.step_number
             and self.remaining_budget == other.remaining_budget
-            and fuzzy_string_match(self.reflection, other.reflection)
+            and fuzzy_string_match(
+                self.reflection.content if self.reflection else None,
+                other.reflection.content if other.reflection else None,
+            )
         )
 
     def __hash__(self):
@@ -1515,6 +1589,56 @@ class Step:
                 self.reflection,
             )
         )
+
+
+class FinalStepOutput(BaseModel):
+    final_output: str = Field(
+        ..., title="Final output", description="The final output string"
+    )
+    output_type: OutputType = Field(
+        ..., title="Output type", description="The type of the output"
+    )
+    version: int = Field(
+        ..., title="Version", description="Version number of the output"
+    )
+    component_type: str = Field(
+        ...,
+        title="Component type",
+        description="The type of the component generating the output",
+    )
+    associated_plan_step: PlanStep = Field(
+        ...,
+        title="Associated Plan Step",
+        description="The plan step associated with this output",
+    )
+    step: Step = Field(
+        ..., title="Step", description="The step object associated with this output"
+    )
+
+    @field_validator("step", mode="before")
+    def accept_step_instance(cls, value):
+        # Accept if it's already an instance of Step
+        if isinstance(value, Step):
+            return value
+        # If a dataclass (but not a Pydantic model), convert to dict and then validate
+        elif is_dataclass(value):
+            return Step.model_validate(asdict(value))
+        elif isinstance(value, dict):
+            return Step.model_validate(value)
+        raise ValueError("step must be a Step instance, a dataclass, or dict")
+
+
+class FinalPlanStepOutput(BaseModel):
+    final_output: str = Field(..., title="Final output generated at this step")
+    output_type: OutputType = Field(..., title="Type of output generated")
+    version: int = Field(..., title="Version of the output")
+    component_type: str = Field(..., title="Type of component")
+    steps: List[Step] = Field(..., title="List of steps associated with this output")
+    planstep: PlanStep = Field(..., title="PlanStep object associated with this output")
+    file_name: str = Field(..., title="Name of the file where the output is stored")
+    parent_file_name: str = Field(
+        ..., title="Name of the parent file where the output is stored"
+    )
 
 
 class Task:
@@ -1540,6 +1664,7 @@ class Task:
     final_reward: float
     plan = Plan
     output_type: OutputType
+    planstep_outputs: List[FinalPlanStepOutput]
 
     def __init__(
         self,
@@ -1552,6 +1677,7 @@ class Task:
         final_reward: float,
         plan: Plan,
         output_type: OutputType,
+        project_name: str = None,
     ):
         self.description = description
         self.refined_description = refined_description
@@ -1562,6 +1688,8 @@ class Task:
         self.final_reward = final_reward
         self.plan = plan
         self.output_type = output_type
+        self.project_name = project_name
+        self.planstep_outputs = []
 
     def __repr__(self):
         return f"Task(description={self.description}, complexity={self.complexity}, steps={self.steps}, reflections={self.reflections}, answer={self.answer}, final_reward={self.final_reward}, plan={self.plan})"
@@ -1613,14 +1741,20 @@ class Interaction:
         task: Task,
         steps: List[Step],
         reflections: List[Reflection],
-        answer: str,
-        final_reward: float,
+        answer: str = None,
+        final_reward: float = 0.0,
+        step_outputs: List[FinalStepOutput] = [],
+        planstep_outputs: List[FinalPlanStepOutput] = [],
+        existing_files: List[str] = [],
     ):
         self.task = task
         self.steps = steps
         self.reflections = reflections
         self.answer = answer
         self.final_reward = final_reward
+        self.step_outputs = step_outputs
+        self.planstep_outputs = planstep_outputs
+        self.existing_files = existing_files
 
     def __repr__(self):
         return f"Interaction(task={self.task}, steps={self.steps}, reflections={self.reflections}, answer={self.answer}, final_reward={self.final_reward})"
@@ -1672,9 +1806,80 @@ class Interaction:
         print_saver.print_and_store(f"Total Reward: {total_reward}")
         return total_reward
 
+    def save_final_outputs_to_logs(self):
+        """Save the final outputs of the interaction to a text file."""
+        # Create project directory if it doesn't exist
+        os.makedirs(self.task.project_name, exist_ok=True)
+
+        with open(
+            os.path.join(self.task.project_name, "final_outputs.txt"), "w"
+        ) as file:
+            file.write("Final Outputs:\n")
+            for planstep_output in self.planstep_outputs:
+                file.write(
+                    f"Plan Step Number: {planstep_output.planstep.step_number}\n"
+                )
+                file.write(f"Final Output: {planstep_output.final_output}\n")
+                for step_output in planstep_output.steps:
+                    if (
+                        step_output.step.plan_step_number
+                        == planstep_output.planstep.step_number
+                    ):
+                        file.write(f"Step Number: {step_output.step.step_number}\n")
+                        file.write(
+                            f"Final Output: {step_output.final_output if step_output.final_output else step_output.step.description}\n"
+                        )
+                file.write("\n")
+
+    def save_final_file(self):
+        """Save the final output of the interaction to a text file."""
+        file_extension = self.task.output_type.file_extension
+        filenames_list = self.existing_files
+
+        # Create project directory if it doesn't exist
+        os.makedirs(self.task.project_name, exist_ok=True)
+
+        for planstep in self.planstep_outputs:
+            if planstep.component_type == ComponentType["standalone_file"]:
+                filename = os.path.join(
+                    self.task.project_name,
+                    f"{planstep.file_name or f'output_{planstep.planstep.step_number}'}{file_extension}",
+                )
+                filenames_list.append(planstep.file_name)
+                try:
+                    with open(filename, "a") as file:
+                        file.write(planstep.final_output)
+                except IOError as e:
+                    raise IOError(f"Failed to write to {filename}: {e}")
+
+            elif planstep.component_type in [
+                ComponentType["function_in_larger_file"],
+                ComponentType["class_in_larger_file"],
+            ]:
+                filename = (
+                    os.path.join(
+                        self.task.project_name,
+                        f"{planstep.parent_file_name}{file_extension}",
+                    )
+                    if planstep.parent_file_name
+                    else filenames_list[-1]
+                )
+
+                if (
+                    planstep.parent_file_name
+                    and planstep.parent_file_name not in filenames_list
+                ):
+                    filenames_list.append(planstep.parent_file_name)
+                try:
+                    with open(filename, "a") as file:
+                        file.write(planstep.final_output)
+                except IOError as e:
+                    raise IOError(f"Failed to write to {filename}: {e}")
+        self.existing_files = filenames_list
+
 
 class CompletionStatus(BaseModel):
-    completion: bool
+    completion: bool = Field(..., title="Completion Status")
 
 
 class FinalReviewScore(BaseModel):
@@ -1713,8 +1918,1316 @@ class AdvancedPromptEngineer:
         progress = (completed_steps / total_steps) * 100
         self.logger.info(f"Progress: {progress:.2f}%")
 
+    def name_file(self, file_string: str, file_extension: str) -> str:
+        """Name the file based on the content of the file."""
+
+        system_prompt = f"You are tasked with discerning the intended name of a file based on its content. The file contains the following text: '{file_string}'. Please provide a suitable name for this file. If there does not seem to be an intended filename, you may suggest a descriptive filename based on the content."
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": system_prompt},
+        ]
+        try:
+            prompt_response = openai.chat.completions.create(
+                model=self.config.model,
+                messages=messages,
+                temperature=0.2,
+            )
+
+            return prompt_response.choices[0].message.content
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            return f"output_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    def name_project(self, task: Task, plan: Plan) -> str:
+        """Name the project based on everything."""
+
+        system_prompt = f"You are tasked with discerning the intended name of a project based on its content. The project contains the following text: '{task.description}'. Please provide a suitable name for this project. If there does not seem to be an intended project name, you may suggest a descriptive project name based on the content. The plan for the project is as follows: {plan}"
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": system_prompt},
+        ]
+        try:
+            prompt_response = openai.chat.completions.create(
+                model=self.config.model,
+                messages=messages,
+                temperature=0.2,
+            )
+
+            return prompt_response.choices[0].message.content
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            return f"output_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    def convert_planstep_to_prompt(self, plan_step: PlanStep, task: Task) -> str:
+        """Convert a PlanStep object to a prompt for the language model."""
+
+        planstep_outputs = [
+            (
+                (task.planstep_outputs[output_index].final_output, True)
+                if output_index < len(task.planstep_outputs)
+                else ("No output yet", False)
+            )
+            for output_index in range(len(task.plan.steps))
+        ]
+        plan_steps_strs = [
+            {
+                f"""\n Plan Step Number: {plan_step.step_number} \n
+            {plan_step.step_name}: {plan_step.step_description} \n
+            Plan Step Explanation: {plan_step.step_explanation} \n
+            Plan Step Expected Output: {plan_step.step_output} \n
+            Plan Step Full Text: {plan_step.step_full_text} \n
+            Plan Step Completed? {plan_step.completed} \n
+            Plan Step Output: {output} """: plan_step.step_number
+            }
+            for plan_step, output in zip(task.planstep_outputs, planstep_outputs)
+        ]
+
+        plan_steps_strs = sorted(plan_steps_strs, key=lambda x: x.values())
+
+        full_plan = "\n".join(
+            [list(plan_step.keys())[0] for plan_step in plan_steps_strs]
+        )
+
+        example_conversion = f"""
+        Please write a prompt for the following Plan Step:
+        Plan Step Number: 2
+        Plan Step Name: 'Write and Test the Function'
+        Plan Step Description: 'Develop the core logic of the Python function to calculate the area of a circle, ensuring it meets the defined requirements. Additionally, create tests to verify that each part of the function operates correctly under various conditions.'
+        Plan Step Explanation: 'In this step, focus on implementing the mathematical formula for the area of a circle within a function. Ensure that the function accepts user input for the radius, handles invalid inputs gracefully, and returns the correct area. After writing the function, design and execute test cases to validate its accuracy and robustness, including edge cases such as zero or negative inputs.'
+        Plan Step Expected Output: 'A Python function named `calculate_circle_area` that accurately computes the area based on user input, along with a set of test cases that confirm the function works as intended.'
+        Plan Step Full Text: 'Implement a Python function `calculate_circle_area(radius)` that calculates the area using the formula πr². The function should prompt the user to enter the radius, validate the input to ensure it is a positive number, and return the calculated area. Following the implementation, write test cases to verify the function’s correctness, including tests for typical values, zero, and negative inputs to ensure proper error handling.'
+
+        This Plan Step is part of the following Task:
+        Task Description: 'Create a Python application that interactively calculates the area of a circle based on user input. The application should follow a structured development plan, emphasizing incremental development, testing, and user input validation to ensure reliability and accuracy.'
+
+        The overall Plan is as follows:
+
+        Plan Step Number: 1
+        Plan Step Name: 'Define the Purpose and Requirements'
+        Plan Step Description: 'Outline the main objectives of the Python application, specifying the inputs, outputs, and functionalities it should possess.'
+        Plan Step Explanation: 'Determine what the application aims to achieve, including how it interacts with the user, what calculations it performs, and any constraints or specifications it must adhere to.'
+        Plan Step Expected Output: 'A clear and concise set of requirements that define the scope and functionality of the Python application.'
+        Plan Step Full Text: 'Identify the key features of the application, such as accepting user input for the radius, calculating the area of a circle using the formula πr², displaying the result, and handling invalid inputs gracefully.'
+        Is Plan Step Completed? Yes
+        Plan Step Final Output: 
+        'Objective of Application: Calculate the area of a circle based on user input of the radius.
+        Requirements: Accept user input for the radius, validate the input, calculate the area using the formula πr², display the result, handle invalid inputs. 
+        Constraints: Ensure the radius is a positive number, provide clear user instructions, test the application thoroughly.
+        Notes: The application should be user-friendly, robust, and well-tested.'
+
+        Plan Step Number: 2
+        Plan Step Name: 'Write and Test the Function'
+        Plan Step Description: 'Develop the core logic of the Python function to calculate the area of a circle, ensuring it meets the defined requirements. Additionally, create tests to verify that each part of the function operates correctly under various conditions.'
+        Plan Step Explanation: 'In this step, focus on implementing the mathematical formula for the area of a circle within a function. Ensure that the function accepts user input for the radius, handles invalid inputs gracefully, and returns the correct area. After writing the function, design and execute test cases to validate its accuracy and robustness, including edge cases such as zero or negative inputs.'
+        Plan Step Expected Output: 'A Python function named `calculate_circle_area` that accurately computes the area based on user input, along with a set of test cases that confirm the function works as intended.'
+        Plan Step Full Text: 'Implement a Python function `calculate_circle_area(radius)` that calculates the area using the formula πr². The function should prompt the user to enter the radius, validate the input to ensure it is a positive number, and return the calculated area. Following the implementation, write test cases to verify the function’s correctness, including tests for typical values, zero, and negative inputs to ensure proper error handling.'
+        Is Plan Step Completed? No
+        Plan Step Final Output: None
+
+        Plan Step Number: 3
+        Plan Step Name: 'Create the User Interface'
+        Plan Step Description: 'Design a simple command-line interface that interacts with the user, collects input, and displays the calculated area.'
+        Plan Step Explanation: 'Develop a user-friendly interface that prompts the user to enter the radius of the circle. Ensure that the interface handles user inputs effectively, displays meaningful messages, and integrates seamlessly with the `calculate_circle_area` function.'
+        Plan Step Expected Output: 'A functional command-line interface that interacts with the user to receive input and display the calculated area.'
+        Plan Step Full Text: 'Design and implement a command-line interface that prompts the user to input the radius of a circle. The interface should call the `calculate_circle_area` function with the provided input and display the resulting area. Additionally, handle invalid inputs by informing the user of the error and prompting them to enter a valid radius.'
+        Is Plan Step Completed? No
+        Plan Step Final Output: None
+
+        Plan Step Number: 4
+        Plan Step Name: 'Enhance and Document the Application'
+        Plan Step Description: 'Improve the application by adding features such as input validation, error handling, and comprehensive documentation.'
+        Plan Step Explanation: 'Refine the existing code to make it more robust and user-friendly. Implement thorough input validation to prevent incorrect data entries, add error handling to manage unexpected scenarios gracefully, and document the code to explain its functionality and usage.'
+        Plan Step Expected Output: 'An enhanced Python application with improved reliability, user experience, and well-documented code.'
+        Plan Step Full Text: 'Enhance the application by adding input validation to ensure that the radius entered is a positive number. Implement error handling to manage scenarios such as non-numeric inputs or other unexpected user behaviors. Additionally, write comprehensive documentation and comments within the code to explain the purpose of each function, the flow of the application, and instructions for users on how to operate the program.'
+        Is Plan Step Completed? No
+        Plan Step Final Output: None
+
+        As a reminder, you are writing a prompt to guide an LLM to complete the following plan step:
+        Plan Step Number: 2
+        Plan Step Name: 'Write and Test the Function'
+        Plan Step Description: 'Develop the core logic of the Python function to calculate the area of a circle, ensuring it meets the defined requirements. Additionally, create tests to verify that each part of the function operates correctly under various conditions.'
+        Plan Step Explanation: 'In this step, focus on implementing the mathematical formula for the area of a circle within a function. Ensure that the function accepts user input for the radius, handles invalid inputs gracefully, and returns the correct area. After writing the function, design and execute test cases to validate its accuracy and robustness, including edge cases such as zero or negative inputs.'
+        Plan Step Expected Output: 'A Python function named `calculate_circle_area` that accurately computes the area based on user input, along with a set of test cases that confirm the function works as intended.'
+        Is Plan Step Completed? No
+        Plan Step Final Output: None
+
+        Prompt:
+        """
+        faux_response = f"Your objective is to develop and test a Python function named `calculate_circle_area` that computes the area of a circle based on a user-provided radius. Start by implementing the core logic using the formula πr², ensuring that the function accepts input, validates that the radius is a positive number, and returns the correct area. After writing the function, create a series of test cases to verify its accuracy, including typical radius values, zero, and negative numbers to test input validation and error handling. Focus on building a reliable and well-tested function without providing detailed step-by-step instructions or the final code solution."
+
+        init_prompt = f"""
+        You are an expert prompt engineer. Your job is to write prompts for the next step based on the provided Plan Step. You write the prompt in such a way that it guides the user to complete the step effectively within the context of the overall Plan and the overarching Task, without providing the exact solution or providing unnecessary information.
+
+        The prompt should follow these rules:
+        1. Clearly explain the objective of the step.
+        2. Provide any relevant context or information needed to complete the step. Use the rest of the Plan and Task as reference.
+        3. AVOID attempting to provide the solution or performing the step yourself. Do not provide step-by-step instructions.
+        4. Keep the prompt concise and focused on the step's objective, ensuring it aligns with the Plan Step and Task requirements.
+        5. Do not include any information that is not directly related to the step or that may lead the LLM to do more than required or progress beyond the current step.
+        6. Always assume the LLM is only aware of the one single step they are doing and nothing else, not of the overall plan or task.
+        
+        """
+
+        this_step = f"""Please write a prompt for the following Plan Step:
+        Plan Step Name: '{plan_step.step_name}'
+        Plan Step Description: '{plan_step.step_description}'
+        Plan Step Explanation: '{plan_step.step_explanation}'
+        Plan Step Expected Output: '{plan_step.step_output}'
+        Plan Step Full Text: '{plan_step.step_full_text}'
+
+        This Plan Step is part of the following Task:
+        Task Description: '{task.description}'
+        
+        The overall Plan is as follows:
+
+        {full_plan}
+
+        As a reminder, you are writing a prompt to guide an LLM to complete the following plan step:
+        Plan Step Name: '{plan_step.step_name}'
+        Plan Step Description: '{plan_step.step_description}'
+        Plan Step Explanation: '{plan_step.step_explanation}'
+        Plan Step Expected Output: '{plan_step.step_output}'
+
+        Please respond only with the prompt text, and remember that the LLM does not remember previous steps or know anything beyond the current step.
+        
+        Prompt:
+        """
+
+        messages = [
+            {"role": "system", "content": init_prompt},
+            {"role": "user", "content": example_conversion},
+            {"role": "assistant", "content": faux_response},
+            {"role": "user", "content": this_step},
+        ]
+        try:
+            prompt_response = openai.chat.completions.create(
+                model=self.config.model,
+                messages=messages,
+                temperature=0.2,
+            )
+        except Exception as e:
+            print_saver.print_and_store(f"Error: {e}")
+            return f"Please write a prompt for the following Plan Step: {plan_step.step_name} - {plan_step.step_description}. The expected output is: {plan_step.step_output}. The full text of the Plan Step is: {plan_step.step_full_text} and the explanation is: {plan_step.step_explanation}. Your response should constitute a final output that meets the requirements."
+
+        if prompt_response.choices[0].message.content:
+            return str(prompt_response.choices[0].message.content)
+        else:
+            print_saver.print_and_store("Prompt generation failed.")
+            return f"Please complete the following Plan Step: {plan_step.step_name} - {plan_step.step_description}. The expected output is: {plan_step.step_output}. The full text of the Plan Step is: {plan_step.step_full_text} and the explanation is: {plan_step.step_explanation}. Your response should constitute a final output that meets the requirements."
+
+    def component_decision(self, task: Task, plan_step: PlanStep) -> str:
+        """Decide the component type for the final output based on the task and plan step requirements."""
+
+        planstep_outputs = [
+            (
+                (task.planstep_outputs[output_index].final_output, True)
+                if output_index < len(task.planstep_outputs)
+                else ("No output yet", False)
+            )
+            for output_index in range(len(task.plan.steps))
+        ]
+        plan_steps_strs = [
+            {
+                f"""\n Plan Step Number: {plan_step.step_number} \n
+            {plan_step.step_name}: {plan_step.step_description} \n
+            Plan Step Explanation: {plan_step.step_explanation} \n
+            Plan Step Expected Output: {plan_step.step_output} \n
+            Plan Step Full Text: {plan_step.step_full_text} \n
+            Plan Step Completed? {plan_step.completed} \n
+            Plan Step Output: {output} """: plan_step.step_number
+            }
+            for plan_step, output in zip(task.planstep_outputs, planstep_outputs)
+        ]
+        plan_steps_strs = sorted(plan_steps_strs, key=lambda x: x.values())
+
+        full_plan = "\n".join(
+            [list(plan_step.keys())[0] for plan_step in plan_steps_strs]
+        )
+
+        system_prompt = {
+            "role": "system",
+            "content": f"""You are an expert AI assistant tasked with determining the component type for the final output based on the task and plan step requirements. Your goal is to identify the most appropriate component type that aligns with the task's objectives and the plan step's expectations. Consider the nature of the output, such as whether it should be a standalone file, a function in a larger file, a class in a larger file, or a response to a prompt. Choose the component type that best suits the context and purpose of the final output.""",
+        }
+
+        example_decision = f"""
+        Follows is an example of a component decision based on the task and plan step requirements:
+        Please decide on the component type for the following Plan Step:
+        Plan Step Number: 2
+        Plan Step Name: 'Write and Test the Function'
+        Plan Step Description: 'Develop the core logic of the Python function to calculate the area of a circle, ensuring it meets the defined requirements. Additionally, create tests to verify that each part of the function operates correctly under various conditions.'
+        Plan Step Explanation: 'In this step, focus on implementing the mathematical formula for the area of a circle within a function. Ensure that the function accepts user input for the radius, handles invalid inputs gracefully, and returns the correct area. After writing the function, design and execute test cases to validate its accuracy and robustness, including edge cases such as zero or negative inputs.'
+        Plan Step Expected Output: 'A Python function named `calculate_circle_area` that accurately computes the area based on user input, along with a set of test cases that confirm the function works as intended.'
+        Plan Step Full Text: 'Implement a Python function `calculate_circle_area(radius)` that calculates the area using the formula πr². The function should prompt the user to enter the radius, validate the input to ensure it is a positive number, and return the calculated area. Following the implementation, write test cases to verify the function’s correctness, including tests for typical values, zero, and negative inputs to ensure proper error handling.'
+        Is Plan Step Completed? Yes
+        Final Plan Step Final Output: 
+
+        This Plan Step is part of the following Task:
+        Task Description: 'Create a Python application that interactively calculates the area of a circle based on user input. The application should follow a structured development plan, emphasizing incremental development, testing, and user input validation to ensure reliability and accuracy.'
+
+        The overall Plan is as follows:
+
+        The overall Plan is as follows:
+
+        Plan Step Number: 1
+        Plan Step Name: 'Define the Purpose and Requirements'
+        Plan Step Description: 'Outline the main objectives of the Python application, specifying the inputs, outputs, and functionalities it should possess.'
+        Plan Step Explanation: 'Determine what the application aims to achieve, including how it interacts with the user, what calculations it performs, and any constraints or specifications it must adhere to.'
+        Plan Step Expected Output: 'A clear and concise set of requirements that define the scope and functionality of the Python application.'
+        Plan Step Full Text: 'Identify the key features of the application, such as accepting user input for the radius, calculating the area of a circle using the formula πr², displaying the result, and handling invalid inputs gracefully.'
+        Is Plan Step Completed? Yes
+        Plan Step Final Output: 
+        'Objective of Application: Calculate the area of a circle based on user input of the radius.
+        Requirements: Accept user input for the radius, validate the input, calculate the area using the formula πr², display the result, handle invalid inputs. 
+        Constraints: Ensure the radius is a positive number, provide clear user instructions, test the application thoroughly.
+        Notes: The application should be user-friendly, robust, and well-tested.'
+
+        Plan Step Number: 2
+        Plan Step Name: 'Write and Test the Function'
+        Plan Step Description: 'Develop the core logic of the Python function to calculate the area of a circle, ensuring it meets the defined requirements. Additionally, create tests to verify that each part of the function operates correctly under various conditions.'
+        Plan Step Explanation: 'In this step, focus on implementing the mathematical formula for the area of a circle within a function. Ensure that the function accepts user input for the radius, handles invalid inputs gracefully, and returns the correct area. After writing the function, design and execute test cases to validate its accuracy and robustness, including edge cases such as zero or negative inputs.'
+        Plan Step Expected Output: 'A Python function named `calculate_circle_area` that accurately computes the area based on user input, along with a set of test cases that confirm the function works as intended.'
+        Plan Step Full Text: 'Implement a Python function `calculate_circle_area(radius)` that calculates the area using the formula πr². The function should prompt the user to enter the radius, validate the input to ensure it is a positive number, and return the calculated area. Following the implementation, write test cases to verify the function’s correctness, including tests for typical values, zero, and negative inputs to ensure proper error handling.'
+        Is Plan Step Completed? No
+        Plan Step Final Output: None
+
+        Plan Step Number: 3
+        Plan Step Name: 'Create the User Interface'
+        Plan Step Description: 'Design a simple command-line interface that interacts with the user, collects input, and displays the calculated area.'
+        Plan Step Explanation: 'Develop a user-friendly interface that prompts the user to enter the radius of the circle. Ensure that the interface handles user inputs effectively, displays meaningful messages, and integrates seamlessly with the `calculate_circle_area` function.'
+        Plan Step Expected Output: 'A functional command-line interface that interacts with the user to receive input and display the calculated area.'
+        Plan Step Full Text: 'Design and implement a command-line interface that prompts the user to input the radius of a circle. The interface should call the `calculate_circle_area` function with the provided input and display the resulting area. Additionally, handle invalid inputs by informing the user of the error and prompting them to enter a valid radius.'
+        Is Plan Step Completed? No
+        Plan Step Final Output: None
+
+        Plan Step Number: 4
+        Plan Step Name: 'Enhance and Document the Application'
+        Plan Step Description: 'Improve the application by adding features such as input validation, error handling, and comprehensive documentation.'
+        Plan Step Explanation: 'Refine the existing code to make it more robust and user-friendly. Implement thorough input validation to prevent incorrect data entries, add error handling to manage unexpected scenarios gracefully, and document the code to explain its functionality and usage.'
+        Plan Step Expected Output: 'An enhanced Python application with improved reliability, user experience, and well-documented code.'
+        Plan Step Full Text: 'Enhance the application by adding input validation to ensure that the radius entered is a positive number. Implement error handling to manage scenarios such as non-numeric inputs or other unexpected user behaviors. Additionally, write comprehensive documentation and comments within the code to explain the purpose of each function, the flow of the application, and instructions for users on how to operate the program.'
+        Is Plan Step Completed? No
+        Plan Step Final Output: None
+
+        As a reminder, you are deciding on the component type of the output for the following Plan Step:
+        Plan Step Number: 2
+        Plan Step Name: 'Write and Test the Function'
+        Plan Step Description: 'Develop the core logic of the Python function to calculate the area of a circle, ensuring it meets the defined requirements. Additionally, create tests to verify that each part of the function operates correctly under various conditions.'
+        Plan Step Expected Output: 'A Python function named `calculate_circle_area` that accurately computes the area based on user input, along with a set of test cases that confirm the function works as intended.'
+
+        The overall Task is as follows:
+        Task Description: 'Create a Python application that interactively calculates the area of a circle based on user input. The application should follow a structured development plan, emphasizing incremental development, testing, and user input validation to ensure reliability and accuracy.'
+
+        Please decide on the component type for the following Plan Step:
+        Plan Step Number: 2
+        Plan Step Name: 'Write and Test the Function'
+        Plan Step Description: 'Develop the core logic of the Python function to calculate the area of a circle, ensuring it meets the defined requirements. Additionally, create tests to verify that each part of the function operates correctly under various conditions.'
+        Plan Step Expected Output: 'A Python function named `calculate_circle_area` that accurately computes the area based on user input, along with a set of test cases that confirm the function works as intended.'
+
+        Remember, reply with one of the following component types: 'standalone file', 'function in larger file', 'class in larger file', 'response to prompt', 'page', 'other'.
+        Decision:\n
+        """
+
+        faux_response = f"function_in_larger_file"
+
+        messages = [
+            system_prompt,
+            {"role": "system", "content": example_decision},
+            {"role": "assistant", "content": faux_response},
+        ]
+
+        user_prompt = f"""
+        Please decide on the component type for the following Plan Step:
+        Plan Step Name: '{plan_step.step_name}'
+        Plan Step Description: '{plan_step.step_description}'
+        Plan Step Expected Output: '{plan_step.step_output}'
+        Plan Step Full Text: '{plan_step.step_full_text}'
+        Plan Step Explanation: '{plan_step.step_explanation}'
+        Is Plan Step Completed? {plan_step.completed}
+        Plan Step Output: {planstep_outputs[plan_step.step_number - 1][0]}
+
+        This Plan Step is part of the following Task:
+        Task Description: '{task.description}'
+
+        The overall Plan is as follows:
+
+        {full_plan}
+
+        As a reminder, you are deciding on the component type of the output for the following Plan Step:
+        Plan Step Name: '{plan_step.step_name}'
+        Plan Step Description: '{plan_step.step_description}'
+        Plan Step Expected Output: '{plan_step.step_output}'
+        Plan Step Full Text: '{plan_step.step_full_text}'
+        Plan Step Explanation: '{plan_step.step_explanation}'
+        
+        Remember, reply with one of the following component types: 'standalone file', 'function in larger file', 'class in larger file', 'response to prompt', 'page', 'other'.
+
+        Decision:
+        """
+        messages.append({"role": "user", "content": user_prompt})
+        try:
+            decision_response = openai.chat.completions.create(
+                model=self.config.model,
+                messages=messages,
+                temperature=0.2,
+            )
+        except Exception as e:
+            print_saver.print_and_store(f"Error: {e}")
+            return ComponentType["standalone_file"]
+
+        if decision_response.choices[0].message.content:
+            try:
+                return (
+                    ComponentType[decision_response.choices[0].message.content.strip()]
+                    if decision_response.choices[0].message.content.strip()
+                    in ComponentType.keys()
+                    else ComponentType["standalone_file"]
+                )
+            except ValueError:
+                return ComponentType["standalone_file"]
+
+    def finalize_step_output(
+        self, step: Step, task: Task, plan_step: PlanStep, previous_steps: List[Step]
+    ) -> FinalStepOutput:
+        """Finalize the output of a step based on the completion status and the task requirements. This function generates the final output based on the step's completion status and the task requirements. It does this by prompting an LLM to evaluate the step and then generating a response based on the evaluation.
+        The LLM will be prompted to only make changes to the step if it is incomplete or incorrect, ensuring that the final output aligns with the task's objectives and the plan step's requirements.
+        The LLM is allowed to 'clean up' the step, making minor modifications or improvements to enhance its quality and completeness, but it should not deviate significantly from the original step or the plan step's expectations.
+        The LLMs output will represent the final version of the step, incorporating any necessary changes or additions to ensure its completion and alignment with the task and plan step.
+
+
+        Args:
+            step (Step): The step object.
+            task (Task): The task object.
+            plan_step (PlanStep): The corresponding plan step.
+
+        Returns:
+            FinalStepOutput: The finalized output of the step.
+        """
+        planstep_outputs = [
+            (
+                (task.planstep_outputs[output_index].final_output, True)
+                if output_index < len(task.planstep_outputs)
+                else ("No output yet", False)
+            )
+            for output_index in range(len(task.plan.steps))
+        ]
+        plan_steps_strs = [
+            {
+                f"""\n Plan Step Number: {plan_step.step_number} \n
+            {plan_step.step_name}: {plan_step.step_description} \n
+            Plan Step Explanation: {plan_step.step_explanation} \n
+            Plan Step Expected Output: {plan_step.step_output} \n
+            Plan Step Full Text: {plan_step.step_full_text} \n
+            Plan Step Completed? {plan_step.completed} \n
+            Plan Step Output: {output} """: plan_step.step_number
+            }
+            for plan_step, output in zip(task.planstep_outputs, planstep_outputs)
+        ]
+        plan_steps_strs = sorted(plan_steps_strs, key=lambda x: x.values())
+
+        prev_step_strs = [
+            f"<count>{stp_.remaining_budget +1}</count>\n<thinking>{stp_.thoughts}</thinking>\n<step>{stp_.description}</step>\n<reflection>{stp_.reflection}</reflection>\n"
+            for stp_ in previous_steps
+        ]
+
+        prev_step_str = "".join(prev_step_strs)
+
+        system_prompt = {
+            "role": "system",
+            "content": f"""You are an expert AI assistant tasked with finalizing the final output of a step. Your goal is to transcribe the step into the expected format that aligns with the task's requirements and the plan step's expectations. If the step is incomplete or incorrect, make the necessary modifications to ensure it fulfills the intended action described in the plan step. You can also make minor improvements to enhance the step's quality and completeness, but DO NOT make unnecessary changes or remove anything that isn't clearly an error or mistake. Your response should be a refined, final completed version of the step that meets the task's objectives and the plan step's requirements.""",
+        }
+
+        example_finalization = f"""
+        Follows is an example of a finalized step output based on the completion status and the task requirements:
+        Please finalize the following Step based on the Plan Step:
+        Plan Step Number: 2
+        Plan Step Name: 'Write and Test the Function'
+        Plan Step Description: 'Develop the core logic of the Python function to calculate the area of a circle, ensuring it meets the defined requirements. Additionally, create tests to verify that each part of the function operates correctly under various conditions.'
+        Plan Step Explanation: 'In this step, focus on implementing the mathematical formula for the area of a circle within a function. Ensure that the function accepts user input for the radius, handles invalid inputs gracefully, and returns the correct area. After writing the function, design and execute test cases to validate its accuracy and robustness, including edge cases such as zero or negative inputs.'
+        Plan Step Expected Output: 'A Python function named `calculate_circle_area` that accurately computes the area based on user input, along with a set of test cases that confirm the function works as intended.'
+        Plan Step Full Text: 'Implement a Python function `calculate_circle_area(radius)` that calculates the area using the formula πr². The function should prompt the user to enter the radius, validate the input to ensure it is a positive number, and return the calculated area. Following the implementation, write test cases to verify the function’s correctness, including tests for typical values, zero, and negative inputs to ensure proper error handling.'
+
+        This Plan Step is part of the following Task:
+        Task Description: 'Create a Python application that interactively calculates the area of a circle based on user input. The application should follow a structured development plan, emphasizing incremental development, testing, and user input validation to ensure reliability and accuracy.'
+
+        The overall Plan is as follows:
+
+        The overall Plan is as follows:
+
+        Plan Step Number: 1
+        Plan Step Name: 'Define the Purpose and Requirements'
+        Plan Step Description: 'Outline the main objectives of the Python application, specifying the inputs, outputs, and functionalities it should possess.'
+        Plan Step Explanation: 'Determine what the application aims to achieve, including how it interacts with the user, what calculations it performs, and any constraints or specifications it must adhere to.'
+        Plan Step Expected Output: 'A clear and concise set of requirements that define the scope and functionality of the Python application.'
+        Plan Step Full Text: 'Identify the key features of the application, such as accepting user input for the radius, calculating the area of a circle using the formula πr², displaying the result, and handling invalid inputs gracefully.'
+        Is Plan Step Completed? Yes
+        Plan Step Final Output: 
+        'Objective of Application: Calculate the area of a circle based on user input of the radius.
+        Requirements: Accept user input for the radius, validate the input, calculate the area using the formula πr², display the result, handle invalid inputs. 
+        Constraints: Ensure the radius is a positive number, provide clear user instructions, test the application thoroughly.
+        Notes: The application should be user-friendly, robust, and well-tested.'
+
+        Plan Step Number: 2
+        Plan Step Name: 'Write and Test the Function'
+        Plan Step Description: 'Develop the core logic of the Python function to calculate the area of a circle, ensuring it meets the defined requirements. Additionally, create tests to verify that each part of the function operates correctly under various conditions.'
+        Plan Step Explanation: 'In this step, focus on implementing the mathematical formula for the area of a circle within a function. Ensure that the function accepts user input for the radius, handles invalid inputs gracefully, and returns the correct area. After writing the function, design and execute test cases to validate its accuracy and robustness, including edge cases such as zero or negative inputs.'
+        Plan Step Expected Output: 'A Python function named `calculate_circle_area` that accurately computes the area based on user input, along with a set of test cases that confirm the function works as intended.'
+        Plan Step Full Text: 'Implement a Python function `calculate_circle_area(radius)` that calculates the area using the formula πr². The function should prompt the user to enter the radius, validate the input to ensure it is a positive number, and return the calculated area. Following the implementation, write test cases to verify the function’s correctness, including tests for typical values, zero, and negative inputs to ensure proper error handling.'
+        Is Plan Step Completed? No
+        Plan Step Final Output: None
+
+        Plan Step Number: 3
+        Plan Step Name: 'Create the User Interface'
+        Plan Step Description: 'Design a simple command-line interface that interacts with the user, collects input, and displays the calculated area.'
+        Plan Step Explanation: 'Develop a user-friendly interface that prompts the user to enter the radius of the circle. Ensure that the interface handles user inputs effectively, displays meaningful messages, and integrates seamlessly with the `calculate_circle_area` function.'
+        Plan Step Expected Output: 'A functional command-line interface that interacts with the user to receive input and display the calculated area.'
+        Plan Step Full Text: 'Design and implement a command-line interface that prompts the user to input the radius of a circle. The interface should call the `calculate_circle_area` function with the provided input and display the resulting area. Additionally, handle invalid inputs by informing the user of the error and prompting them to enter a valid radius.'
+        Is Plan Step Completed? No
+        Plan Step Final Output: None
+
+        Plan Step Number: 4
+        Plan Step Name: 'Enhance and Document the Application'
+        Plan Step Description: 'Improve the application by adding features such as input validation, error handling, and comprehensive documentation.'
+        Plan Step Explanation: 'Refine the existing code to make it more robust and user-friendly. Implement thorough input validation to prevent incorrect data entries, add error handling to manage unexpected scenarios gracefully, and document the code to explain its functionality and usage.'
+        Plan Step Expected Output: 'An enhanced Python application with improved reliability, user experience, and well-documented code.'
+        Plan Step Full Text: 'Enhance the application by adding input validation to ensure that the radius entered is a positive number. Implement error handling to manage scenarios such as non-numeric inputs or other unexpected user behaviors. Additionally, write comprehensive documentation and comments within the code to explain the purpose of each function, the flow of the application, and instructions for users on how to operate the program.'
+        Is Plan Step Completed? No
+        Plan Step Final Output: None
+
+        As a reminder, you are transcribe the complete and finalized Step in accordance with the following plan step:
+        Plan Step Number: 2
+        Plan Step Name: 'Write and Test the Function'
+        Plan Step Description: 'Develop the core logic of the Python function to calculate the area of a circle, ensuring it meets the defined requirements. Additionally, create tests to verify that each part of the function operates correctly under various conditions.'
+        Plan Step Explanation: 'In this step, focus on implementing the mathematical formula for the area of a circle within a function. Ensure that the function accepts user input for the radius, handles invalid inputs gracefully, and returns the correct area. After writing the function, design and execute test cases to validate its accuracy and robustness, including edge cases such as zero or negative inputs.'
+        Plan Step Expected Output: 'A Python function named `calculate_circle_area` that accurately computes the area based on user input, along with a set of test cases that confirm the function works as intended.'
+
+        
+        Previous Steps:
+        <count>12</count>
+        <thinking>The overall goal is to write a Python function that calculates the area of a circle, handles invalid inputs, and includes comprehensive tests. We'll start by breaking down the problem into smaller, manageable substeps as outlined in the prompt.</thinking>
+        <step>Review Step Objectives and Requirements
+        </step>
+        <reflection>I need to understand the specific goals of this coding task. The primary objective is to create a function that accurately calculates a circle's area, validates user input, and includes thorough testing.</reflection>
+        <reward>0.9</reward>
+
+        <count>11</count>
+        <thinking>Setting up the development environment is crucial for a smooth coding process. I need to ensure Python is ready and choose an appropriate code editor.</thinking>
+        <step>Set Up the Development Environment
+        </step>
+        <reflection>Python is already installed and updated. I'll use VS Code as my IDE. I've created a new file named circle_area.py.</reflection>
+        <reward>0.9</reward>
+
+
+
+        This Step:
+
+
+        Thoughts about Step: 'Now, I need to define the basic structure of the function, including its name, parameters, and a docstring to explain its purpose.'
+        Step: 'Define the Function Structure
+        Python
+        def calculate_circle_area():
+            '''
+            Calculate the area of a circle.
+            '''
+
+        Is this Step complete according to the Plan Step? If not, please make the necessary modifications to ensure it fulfills the intended action described in the Plan Step. If the Step is already complete, you can make minor improvements to enhance its quality and completeness.
+        Note that the LLM should not deviate significantly from the original Step or the Plan Step's expectations.
+        Also remember that the LLM does not remember previous steps or know anything beyond the current step.
+        Keep in mind the final output format after all steps are complete will be a Python script of file extension .py, and that the current step should align with that format.
+        The current step will be a function in a larger file with file extension .py.
+
+        Note that the Step does not need to complete or finish the Plan Step. You are simply finalizing the Step itself.
+
+        Step: {step.description}
+
+        Finalized Step: 
+        """
+
+        faux_response = f"""
+        def calculate_circle_area(radius):
+            '''
+            Calculate the area of a circle given its radius.
+
+            Args:
+                radius (float): The radius of the circle. Must be a positive number.
+
+            Returns:
+                float: The area of the circle.
+
+            Raises:
+                ValueError: If the radius is negative.
+            '''
+            pass  # Placeholder for the implementation
+        """
+
+        component_map = {
+            ComponentType[
+                "standalone_file"
+            ]: f"a standalone file with file extension {task.output_type.file_extension}",
+            ComponentType[
+                "function_in_larger_file"
+            ]: f"a function or method in a larger file with file extension {task.output_type.file_extension}",
+            ComponentType[
+                "class_in_larger_file"
+            ]: f"a class definition in a larger file with file extension {task.output_type.file_extension}",
+            ComponentType["response_to_prompt"]: f"simply a response to a prompt",
+            ComponentType[
+                "page_in_larger_file"
+            ]: f"a page in a larger document of type {task.output_type.output_type}",
+            ComponentType[
+                "other"
+            ]: f"another type of component that fits the task requirements, eventually to be of type {task.output_type.output_type} and with file extension {task.output_type.file_extension}",
+        }
+
+        component_type = self.component_decision(task, plan_step)
+
+        step_prompt = {
+            "role": "user",
+            "content": f"""Please finalize the following Step based on the Plan Step:
+            Plan Step Name: '{plan_step.step_name}'
+            Plan Step Description: '{plan_step.step_description}'
+            Plan Step Explanation: '{plan_step.step_explanation}'
+            Plan Step Expected Output: '{plan_step.step_output}'
+            Plan Step Full Text: '{plan_step.step_full_text}'
+
+            Previous Steps:
+            {prev_step_str}
+
+            Thoughts about Step: '{step.thoughts}'
+            Step: '{step.description}'
+            Step Reflection: '{step.reflection}'
+
+            Is this Step complete according to the Plan Step? If not, please make the necessary modifications to ensure it fulfills the intended action described in the Plan Step. If the Step is already complete, you can make minor improvements to enhance its quality and completeness.
+            Note that the LLM should not deviate significantly from the original Step or the Plan Step's expectations.
+            Also remember that the LLM does not remember previous steps or know anything beyond the current step.
+            Keep in mind the final output format after all steps are complete will be {task.output_type.output_type}, and that the current step should align with that format.
+            The current step will be {component_map[component_type]}.
+
+            Note that the Step does not need to complete or finish the Plan Step. You are simply finalizing the Step itself.
+
+            Step: {step.description}
+
+            Finalized Step: 
+
+            """,
+        }
+
+        messages = [
+            system_prompt,
+            {"role": "system", "content": example_finalization},
+            {"role": "assistant", "content": faux_response},
+            step_prompt,
+        ]
+
+        try:
+            response = openai.chat.completions.create(
+                model=self.config.model,
+                messages=messages,
+                temperature=0.2,
+            )
+            print_saver.print_and_store(f"Response in finalize_step_output: {response}")
+
+            final_output = response.choices[0].message.content
+        except Exception as e:
+            print_saver.print_and_store(f"Error: {e}")
+            return FinalStepOutput(
+                final_output=step.description,
+                output_type=task.output_type,
+                version=1,
+                component_type=(
+                    component_type
+                    if component_type
+                    else ComponentType["response_to_prompt"]
+                ),
+                associated_plan_step=plan_step,
+                step=step,
+            )
+        print_saver.print_and_store(f"Finalized Step: {final_output}")
+        print_saver.print_and_store(f"Component Type: {component_type}")
+        print_saver.print_and_store(f"Plan Step: {plan_step.step_name}")
+        print_saver.print_and_store(f"Task: {task.description}")
+        print_saver.print_and_store(f"Plan Step Output: {plan_step.step_output}")
+        print_saver.print_and_store(f"Step: {step} of type {type(step)}")
+        return FinalStepOutput(
+            final_output=(
+                final_output
+                if final_output and final_output.strip() != ""
+                else step.description
+            ),
+            output_type=task.output_type,
+            version=1,
+            component_type=(
+                component_type
+                if component_type
+                else ComponentType["response_to_prompt"]
+            ),
+            associated_plan_step=plan_step,
+            step=step,
+        )
+
+    def finalize_planstep_output(
+        self, steps: List[Step], task: Task, plan_step: PlanStep
+    ) -> FinalPlanStepOutput:
+        """Finalize the output of a Plan Step based on the completion status and the task requirements. This function generates the final output based on the Plan Step's completion status and the task requirements. It does this by prompting an LLM to evaluate the list of steps and then generating a response based on the evaluation.
+        The LLM will be prompted to synthesize the outputs of all of the steps associated with this Plan Step into a single coherent output that aligns with the task's objectives and the Plan Step's expectations.
+        The LLM will only make changes to content of the steps if it is incomplete or incorrect, ensuring that the final output is essentially just the combined outputs of all of the steps associated with this Plan Step.
+        The LLM is allowed to 'clean up' the final output, making minor modifications or improvements to enhance its quality and completeness, but it should not deviate significantly from the content in the original steps or the Plan Step's expectations.
+        The LLMs output will represent the final version of the Plan Step created by combining the outputs of all associated steps and incorporating any necessary changes or additions to ensure its completion and alignment with the task and plan step.
+
+
+        Args:
+            steps (List[Step]): The list of steps associated with the Plan Step.
+            task (Task): The task object.
+            plan_step (PlanStep): The corresponding plan step.
+
+        Returns:
+            FinalPlanStepOutput: The finalized output of the step.
+        """
+        step_strs = [
+            f"<thinking>{stp_.thoughts}</thinking>\n<step>{stp_.final_step_output.final_output if (stp_.final_step_output and stp_.final_step_output.final_output.strip()!='') else stp_.description}</step>\n<reflection>{stp_.reflection}</reflection>\n"
+            for stp_ in steps
+        ]
+
+        step_str = "".join(step_strs)
+
+        system_prompt = {
+            "role": "system",
+            "content": f"""You are an expert AI assistant tasked with finalizing the final output of a Plan Step. Your goal is to synthesize the outputs of all associated steps into a single coherent output that aligns with the task's objectives and the Plan Step's expectations. If any of the steps are incomplete or incorrect, make the necessary modifications to ensure the final output fulfills the intended action described in the Plan Step. You can also make minor improvements to enhance the output's quality and completeness, but DO NOT make unnecessary changes or remove anything that isn't clearly an error or mistake. Your response should be a refined, final completed version of the Plan Step that meets the task's objectives and the Plan Step's requirements.""",
+        }
+
+        example_finalization = f"""
+        Follows is an example of a finalized Plan Step output based on the completion status and the task requirements:
+        Please finalize the following Plan Step based on the associated Steps:
+
+        Plan Step Name: 'Write and Test the Function'
+        Plan Step Description: 'Develop the core logic of the Python function to calculate the area of a circle, ensuring it meets the defined requirements. Additionally, create tests to verify that each part of the function operates correctly under various conditions.'
+        Plan Step Explanation: 'In this step, focus on implementing the mathematical formula for the area of a circle within a function. Ensure that the function accepts user input for the radius, handles invalid inputs gracefully, and returns the correct area. After writing the function, design and execute test cases to validate its accuracy and robustness, including edge cases such as zero or negative inputs.'
+        Plan Step Expected Output: 'A Python function named `calculate_circle_area` that accurately computes the area based on user input, along with a set of test cases that confirm the function works as intended.'
+        Plan Step Full Text: 'Implement a Python function `calculate_circle_area(radius)` that calculates the area using the formula πr². The function should prompt the user to enter the radius, validate the input to ensure it is a positive number, and return the calculated area. Following the implementation, write test cases to verify the function’s correctness, including tests for typical values, zero, and negative inputs to ensure proper error handling.'
+
+        The associated Steps are as follows:
+
+        <count>12</count>
+        <thinking>The overall goal is to write a Python function that calculates the area of a circle, handles invalid inputs, and includes comprehensive tests. We'll start by breaking down the problem into smaller, manageable substeps as outlined in the prompt.</thinking>
+        <step>Review Step Objectives and Requirements
+        </step>
+        <reflection>I need to understand the specific goals of this coding task. The primary objective is to create a function that accurately calculates a circle's area, validates user input, and includes thorough testing.</reflection>
+        <reward>0.9</reward>
+
+        <count>11</count>
+        <thinking>Setting up the development environment is crucial for a smooth coding process. I need to ensure Python is ready and choose an appropriate code editor.</thinking>
+        <step>Set Up the Development Environment
+        </step>
+        <reflection>Python is already installed and updated. I'll use VS Code as my IDE. I've created a new file named `circle_area.py`.</reflection>
+        <reward>0.9</reward>
+
+        <count>10</count>
+        <thinking>Now, I need to define the basic structure of the function, including its name, parameters, and a docstring to explain its purpose.</thinking>
+        <step>Define the Function Structure
+        ```python
+        def calculate_circle_area(radius):
+            '''
+            Calculate the area of a circle given its radius.
+
+            Args:
+                radius (float): The radius of the circle. Must be a positive number.
+
+            Returns:
+                float: The area of the circle.
+
+            Raises:
+                ValueError: If the radius is negative.
+            '''
+            pass  # Placeholder for the implementation
+        ```
+        </step>
+        <reflection>I'll name the function `calculate_circle_area`. It will take one parameter, `radius`. The docstring will describe the function's purpose, parameters, return value, and potential exceptions.</reflection>
+        <reward>0.9</reward>
+
+        <count>9</count>
+        <thinking>The core logic involves using the formula for the area of a circle (πr²). I need to import the `math` module to use the value of π.</thinking>
+        <step>Implement the Core Logic
+        ```python
+        import math
+
+        def calculate_circle_area(radius):
+            '''
+            Calculate the area of a circle given its radius.
+
+            Args:
+                radius (float): The radius of the circle. Must be a positive number.
+
+            Returns:
+                float: The area of the circle.
+
+            Raises:
+                ValueError: If the radius is negative.
+            '''
+            return math.pi * radius ** 2
+        ```
+        </step>
+        <reflection>I've implemented the formula using `math.pi * radius ** 2`. The function now returns the calculated area.</reflection>
+        <reward>0.9</reward>
+
+        <count>8</count>
+        <thinking>Input validation is essential to prevent errors. I need to ensure the radius is a positive number and raise a ValueError if it's not.</thinking>
+        <step>Add Input Validation and Error Handling
+        ```python
+        import math
+
+        def calculate_circle_area(radius):
+            '''
+            Calculate the area of a circle given its radius.
+
+            Args:
+                radius (float): The radius of the circle. Must be a positive number.
+
+            Returns:
+                float: The area of the circle.
+
+            Raises:
+                ValueError: If the radius is negative.
+            '''
+            if radius < 0:
+                raise ValueError("Radius cannot be negative.")
+            return math.pi * radius ** 2
+        ```
+        </step>
+        <reflection>I've added a check to ensure the radius is not negative. If it is, a ValueError with a descriptive message is raised.</reflection>
+        <reward>0.9</reward>
+
+        <count>7</count>
+        <thinking>Writing test cases is crucial to ensure the function works correctly under various scenarios, including edge cases and invalid inputs.</thinking>
+        <step>Write Test Cases for the Function
+        ```python
+        import math
+
+        def calculate_circle_area(radius):
+            '''
+            Calculate the area of a circle given its radius.
+
+            Args:
+                radius (float): The radius of the circle. Must be a positive number.
+
+            Returns:
+                float: The area of the circle.
+
+            Raises:
+                ValueError: If the radius is negative.
+            '''
+            if radius < 0:
+                raise ValueError("Radius cannot be negative.")
+            return math.pi * radius ** 2
+
+        def test_calculate_circle_area():
+            '''
+            Test cases for the calculate_circle_area function.
+            '''
+            # Test with a typical positive radius
+            assert calculate_circle_area(1) == math.pi, "Failed on radius=1"
+
+            # Test with zero radius
+            assert calculate_circle_area(0) == 0, "Failed on radius=0"
+
+            # Test with a negative radius to ensure ValueError is raised
+            try:
+                calculate_circle_area(-5)
+            except ValueError as e:
+                assert str(e) == "Radius cannot be negative.", "Incorrect error message for negative radius"
+            else:
+                assert False, "ValueError not raised for negative radius"
+        ```
+        </step>
+        <reflection>I've created a separate function `test_calculate_circle_area` to test different cases: a positive radius, zero radius, and a negative radius. Assertions are used to check the results and potential errors.</reflection>
+        <reward>0.9</reward>
+
+        <count>6</count>
+        <thinking>I should not include a main execution block in this case, as the intention is not for the user to input data but to run the tests. We should add an `if __name__ == "__main__":` block to run the tests only when the script is executed directly.</thinking>
+        <step>Implement the Main Execution Block
+        ```python
+        import math
+
+        def calculate_circle_area(radius):
+            '''
+            Calculate the area of a circle given its radius.
+
+            Args:
+                radius (float): The radius of the circle. Must be a positive number.
+
+            Returns:
+                float: The area of the circle.
+
+            Raises:
+                ValueError: If the radius is negative.
+            '''
+            if radius < 0:
+                raise ValueError("Radius cannot be negative.")
+            return math.pi * radius ** 2
+
+        def test_calculate_circle_area():
+            '''
+            Test cases for the calculate_circle_area function.
+            '''
+            # Test with a typical positive radius
+            assert calculate_circle_area(1) == math.pi, "Failed on radius=1"
+
+            # Test with zero radius
+            assert calculate_circle_area(0) == 0, "Failed on radius=0"
+
+            # Test with a negative radius to ensure ValueError is raised
+            try:
+                calculate_circle_area(-5)
+            except ValueError as e:
+                assert str(e) == "Radius cannot be negative.", "Incorrect error message for negative radius"
+            else:
+                assert False, "ValueError not raised for negative radius"
+
+            print("All tests passed successfully.")
+
+        if __name__ == "__main__":
+            test_calculate_circle_area()
+        ```
+        </step>
+        <reflection>I've added an `if __name__ == "__main__":` block to call the test function when the script is run directly. This allows the user to confirm that the code passes all the provided tests.</reflection>
+        <reward>0.9</reward>
+
+        <count>5</count>
+        <thinking>While manual testing isn't explicitly needed since we have automated tests, it's a good practice to run the tests to ensure they pass as expected.</thinking>
+        <step>Test the Functionality Manually
+        ```python
+        import math
+
+        def calculate_circle_area(radius):
+            '''
+            Calculate the area of a circle given its radius.
+
+            Args:
+                radius (float): The radius of the circle. Must be a positive number.
+
+            Returns:
+                float: The area of the circle.
+
+            Raises:
+                ValueError: If the radius is negative.
+            '''
+            if radius < 0:
+                raise ValueError("Radius cannot be negative.")
+            return math.pi * radius ** 2
+
+        def test_calculate_circle_area():
+            '''
+            Test cases for the calculate_circle_area function.
+            '''
+            # Test with a typical positive radius
+            assert calculate_circle_area(1) == math.pi, "Failed on radius=1"
+
+            # Test with zero radius
+            assert calculate_circle_area(0) == 0, "Failed on radius=0"
+
+            # Test with a negative radius to ensure ValueError is raised
+            try:
+                calculate_circle_area(-5)
+            except ValueError as e:
+                assert str(e) == "Radius cannot be negative.", "Incorrect error message for negative radius"
+            else:
+                assert False, "ValueError not raised for negative radius"
+
+            print("All tests passed successfully.")
+
+        if __name__ == "__main__":
+            test_calculate_circle_area()
+        ```
+        </step>
+        <reflection>I've run the script and the test function indicates that all tests have passed successfully.</reflection>
+        <reward>0.9</reward>
+
+        <count>4</count>
+        <thinking>It's time to review the code for clarity, efficiency, and adherence to best practices. I should also check for any redundant code and ensure consistent formatting.</thinking>
+        <step>Refine and Optimize the Code
+        ```python
+        import math
+
+        def calculate_circle_area(radius):
+            '''
+            Calculate the area of a circle given its radius.
+
+            Args:
+                radius (float): The radius of the circle. Must be a positive number.
+
+            Returns:
+                float: The area of the circle.
+
+            Raises:
+                ValueError: If the radius is negative.
+            '''
+            if radius < 0:
+                raise ValueError("Radius cannot be negative.")
+            return math.pi * radius ** 2
+
+        def test_calculate_circle_area():
+            '''
+            Test cases for the calculate_circle_area function.
+            '''
+            # Test with a typical positive radius
+            assert calculate_circle_area(1) == math.pi, "Failed on radius=1"
+
+            # Test with zero radius
+            assert calculate_circle_area(0) == 0, "Failed on radius=0"
+
+            # Test with a negative radius to ensure ValueError is raised
+            try:
+                calculate_circle_area(-5)
+            except ValueError as e:
+                assert str(e) == "Radius cannot be negative.", "Incorrect error message for negative radius"
+            else:
+                assert False, "ValueError not raised for negative radius"
+
+            print("All tests passed successfully.")
+
+        if __name__ == "__main__":
+            test_calculate_circle_area()
+        ```
+        </step>
+        <reflection>The code is already quite concise and follows PEP 8 guidelines. I've reviewed it for any potential improvements, and it looks good.</reflection>
+        <reward>0.9</reward>
+
+        <count>3</count>
+        <thinking>Thorough documentation is essential for maintainability. I need to ensure the docstrings are clear and informative, and add inline comments where necessary.</thinking>
+        <step>Document the Code Thoroughly
+        ```python
+        import math
+
+        def calculate_circle_area(radius):
+            '''
+            Calculate the area of a circle given its radius.
+
+            Args:
+                radius (float): The radius of the circle. Must be a positive number.
+
+            Returns:
+                float: The area of the circle.
+
+            Raises:
+                ValueError: If the radius is negative.
+            '''
+            if radius < 0:
+                raise ValueError("Radius cannot be negative.")
+            return math.pi * radius ** 2
+
+        def test_calculate_circle_area():
+            '''
+            Test cases for the calculate_circle_area function.
+            '''
+            # Test with a typical positive radius
+            assert calculate_circle_area(1) == math.pi, "Failed on radius=1"
+
+            # Test with zero radius
+            assert calculate_circle_area(0) == 0, "Failed on radius=0"
+
+            # Test with a negative radius to ensure ValueError is raised
+            try:
+                calculate_circle_area(-5)
+            except ValueError as e:
+                assert str(e) == "Radius cannot be negative.", "Incorrect error message for negative radius"
+            else:
+                assert False, "ValueError not raised for negative radius"
+
+            print("All tests passed successfully.")
+
+        if __name__ == "__main__":
+            test_calculate_circle_area()
+        ```
+        </step>
+        <reflection>The docstrings are comprehensive, and I've added a few inline comments to explain the test cases. No separate README is needed for this simple script.</reflection>
+        <reward>0.9</reward>
+
+        <count>2</count>
+        <thinking>I need to do a final review to ensure all requirements are met and save the code.</thinking>
+        <step>Finalize and Save the Code
+        ```python
+        import math
+
+        def calculate_circle_area(radius):
+            '''
+            Calculate the area of a circle given its radius.
+
+            Args:
+                radius (float): The radius of the circle. Must be a positive number.
+
+            Returns:
+                float: The area of the circle.
+
+            Raises:
+                ValueError: If the radius is negative.
+            '''
+        <answer>
+        Here is a Python script that calculates the area of a circle based on user input and includes test cases to verify its correctness:
+        import math
+
+        def calculate_circle_area(radius):
+            '''
+            Calculate the area of a circle given its radius.
+
+            Args:
+                radius (float): The radius of the circle. Must be a postive number.
+
+            Returns:
+                float: The area of the circle.
+
+            Raises:
+                ValueError: If the radius is negative.
+            '''
+            if radius < 0:
+                raise ValueError("Radius cant be negative.")
+            return math.pi * radius ** 2
+
+        def test_calculate_circle_area():
+            '''
+            Test cases for the calculate_circle_area function.
+            '''
+            # Test with a typical positive radius
+             assert calculate_circle_area(1) == math.pi, "Failed on radius=1"
+
+            # Test with zero radius
+            assert calculate_circle_area(0) == 0, "Failed on radius=0"
+
+            # Test with a negative radius to ensure ValueError is raised
+            try:
+                calculate_circle_area(-5)
+            except ValueError as e:
+                assert str(e) == "Radius cannot be negative.", "Incorrect error message for negative radius"
+            else:
+                assert False, "ValueError not raised for negative radius"
+
+            print("All tests passed successfully.")
+
+        if __name__ == "__main__":
+            test_calculate_circle_area()
+
+        </answer>
+        <final_reward>0.9</final_reward>
+
+        Please finalize the following Plan Step by combining the outputs of all associated Steps:
+
+        Plan Step Name: 'Write and Test the Function'
+        Plan Step Description: 'Develop the core logic of the Python function to calculate the area of a circle, ensuring it meets the defined requirements. Additionally, create tests to verify that each part of the function operates correctly under various conditions.'
+        Plan Step Expected Output: 'A Python function named `calculate_circle_area` that accurately computes the area based on user input, along with a set of test cases that confirm the function works as intended.'
+
+        Remember, you are only combining all of the associated Steps into a single coherent output that aligns with the task's objectives and the Plan Step's expectations. You can make minor improvements to enhance the quality and completeness of the final output, but DO NOT deviate significantly from the original outputs or expectations. You are just combining them into a final output.
+        Respond only with the finalized output and nothing extra, including no additional instructions or comments.
+        Final Plan Step Output Combined from Associated Steps:
+        
+        """
+        faux_response = f"""
+        import math
+
+        def calculate_circle_area(radius):
+            '''
+            Calculate the area of a circle given its radius.
+
+            Args:
+                radius (float): The radius of the circle. Must be a positive number.
+
+            Returns:
+                float: The area of the circle.
+
+            Raises:
+                ValueError: If the radius is negative or not a number.
+            '''
+            if not isinstance(radius, (int, float)):
+                raise ValueError("Radius must be a numeric value.")
+            if radius < 0:
+                raise ValueError("Radius cannot be negative.")
+            return math.pi * radius ** 2
+
+        def test_calculate_circle_area():
+            '''
+            Test cases for the calculate_circle_area function.
+            '''
+            # Test with a typical positive radius
+            assert calculate_circle_area(5) == math.pi * 25, "Failed on radius=5"
+
+            # Test with zero radius
+            assert calculate_circle_area(0) == 0, "Failed on radius=0"
+
+            # Test with a negative radius to ensure ValueError is raised
+            try:
+                calculate_circle_area(-3)
+            except ValueError as e:
+                assert str(e) == "Radius cannot be negative.", "Incorrect error message for negative radius"
+            else:
+                assert False, "ValueError not raised for negative radius"
+
+            # Test with a non-numeric input to ensure ValueError is raised
+            try:
+                calculate_circle_area("ten")
+            except ValueError as e:
+                assert str(e) == "Radius must be a numeric value.", "Incorrect error message for non-numeric radius"
+            else:
+                assert False, "ValueError not raised for non-numeric radius"
+
+            print("All tests passed successfully.")
+
+        if __name__ == "__main__":
+            try:
+                user_input = float(input("Enter the radius of the circle: "))
+                area = calculate_circle_area(user_input)
+                print(f"The area of the circle is: {{area:.2f}}")
+            except ValueError as ve:
+                print(f"Error: {{ve}}")
+            
+            # Run test cases
+            test_calculate_circle_area()
+
+
+        """
+
+        component_map = {
+            ComponentType[
+                "standalone_file"
+            ]: f"a standalone file with file extension {task.output_type.file_extension}",
+            ComponentType[
+                "function_in_larger_file"
+            ]: f"a function or method in a larger file with file extension {task.output_type.file_extension}",
+            ComponentType[
+                "class_in_larger_file"
+            ]: f"a class definition in a larger file with file extension {task.output_type.file_extension}",
+            ComponentType["response_to_prompt"]: f"simply a response to a prompt",
+            ComponentType[
+                "page_in_larger_file"
+            ]: f"a page in a larger document of type {task.output_type.output_type}",
+            ComponentType[
+                "other"
+            ]: f"another type of component that fits the task requirements, eventually to be of type {task.output_type.output_type} and with file extension {task.output_type.file_extension}",
+        }
+
+        component_type = self.component_decision(task, plan_step)
+
+        step_prompt = {
+            "role": "user",
+            "content": f"""Please finalize the following Step based on the Plan Step:
+            Plan Step Name: '{plan_step.step_name}'
+            Plan Step Description: '{plan_step.step_description}'
+            Plan Step Explanation: '{plan_step.step_explanation}'
+            Plan Step Expected Output: '{plan_step.step_output}'
+            Plan Step Full Text: '{plan_step.step_full_text}'
+
+            Steps:
+            {step_str}
+
+
+            Please finalize the Plan Step based on the associated Steps. You can make minor improvements to enhance its quality and completeness, but DO NOT deviate significantly from the original Plan Step's outputs or expectations or the outputs of the associated Steps. Ensure that the final output aligns with the task's objectives and the Plan Step's expectations.
+            Note that the LLM should not deviate significantly from the original Plan Step's outputs or expectations.
+            Also remember that the LLM does not remember previous steps or know anything beyond the current step.
+            Keep in mind the final output format after all steps are complete will be {task.output_type.output_type}, and that the current step should align with that format.
+            The current step will be {component_map[component_type]}.
+
+            Please finalize the following Plan Step by combining the outputs of all associated Steps:
+
+            Plan Step Name: 'Write and Test the Function'
+            Plan Step Description: 'Develop the core logic of the Python function to calculate the area of a circle, ensuring it meets the defined requirements. Additionally, create tests to verify that each part of the function operates correctly under various conditions.'
+            Plan Step Expected Output: 'A Python function named `calculate_circle_area` that accurately computes the area based on user input, along with a set of test cases that confirm the function works as intended.'
+
+            Remember, you are only combining all of the associated Steps into a single coherent output that aligns with the task's objectives and the Plan Step's expectations. You can make minor improvements to enhance the quality and completeness of the final output, but DO NOT deviate significantly from the original outputs or expectations. You are just combining them into a final output.
+            Respond only with the finalized output and nothing extra, including no additional instructions or comments.
+            
+            Final Plan Step Output Combined from Associated Steps:
+
+            """,
+        }
+
+        messages = [
+            system_prompt,
+            {"role": "system", "content": example_finalization},
+            {"role": "assistant", "content": faux_response},
+            step_prompt,
+        ]
+        final_output = None
+        try:
+            response = openai.chat.completions.create(
+                model=self.config.model,
+                messages=messages,
+                temperature=0.2,
+            )
+
+            final_output_text = response.choices[0].message.content
+            if final_output_text is None or final_output_text.strip() == "":
+                print_saver.print_and_store(
+                    f"Final Output Text is None or Empty: {final_output_text}"
+                )
+                final_output_text = plan_step.step_output
+
+            final_output = FinalPlanStepOutput(
+                final_output=final_output_text,
+                output_type=task.output_type,
+                version=1,
+                component_type=(
+                    component_type
+                    if component_type
+                    else ComponentType["response_to_prompt"]
+                ),
+                steps=steps,
+                planstep=plan_step,
+                file_name="",
+                parent_file_name="",
+            )
+        except Exception as e:
+            print_saver.print_and_store(
+                f"Error: {e} \n steps: {steps}, type: {type(steps)}, type for step: {type(steps[0])}"
+            )
+            final_output = FinalPlanStepOutput(
+                final_output=plan_step.step_output,
+                output_type=task.output_type,
+                version=1,
+                component_type=ComponentType["response_to_prompt"],
+                steps=steps,
+                planstep=plan_step,
+                file_name="",
+                parent_file_name="",
+            )
+
+        if final_output is None:
+            final_output = FinalPlanStepOutput(
+                final_output=(
+                    final_output_text
+                    if final_output_text and final_output_text.strip() != ""
+                    else plan_step.step_output
+                ),
+                output_type=task.output_type,
+                version=1,
+                component_type=(
+                    component_type
+                    if component_type
+                    else ComponentType["response_to_prompt"]
+                ),
+                steps=steps,
+                planstep=plan_step,
+                file_name="",
+                parent_file_name="",
+            )
+            try:
+                final_output.file_name = self.name_file(
+                    final_output.final_output, task.output_type.file_extension
+                )
+                # if final_output.component_type in
+            except Exception as e:
+                print_saver.print_and_store(f"Error: {e}")
+                final_output.file_name = f"planstep_{plan_step.step_number}_output{task.output_type.file_extension}"
+
+            return final_output
+        else:
+            try:
+                final_output.file_name = self.name_file(
+                    final_output.final_output, task.output_type.file_extension
+                )
+            except Exception as e:
+                print_saver.print_and_store(f"Error: {e}")
+                final_output.file_name = f"planstep_{plan_step.step_number}_output{task.output_type.file_extension}"
+            return final_output
+
     def judge_step_completion(
-        self, step: Step, plan_step: PlanStep
+        self, step: List[Step], plan_step: PlanStep, max_plan_steps: int
     ) -> Tuple[bool, int]:
         """
         Judge the completion status of a step based on whether it completes the intended action described in the plan step. An LLM evaluates the step's completion based on the alignment with the plan step and the task's requirements
@@ -1726,6 +3239,15 @@ class AdvancedPromptEngineer:
         Returns:
             Tuple[bool, int]: A tuple containing a boolean indicating completion status and the number of the next plan step, based on the completion status.
         """
+
+        if step is None or len(step) == 0:
+            return (False, plan_step.step_number)
+
+        steps_strs = [
+            f"Step {s.step_number}: {s.description} \n"
+            for s in sorted(step, key=lambda x: x.step_number)
+        ]
+        steps_str = "".join(steps_strs)
         prompt = f"""
         Evaluate the completion of the following Step based on the Plan Step:
         Plan Step Name: '{plan_step.step_name}'
@@ -1734,9 +3256,10 @@ class AdvancedPromptEngineer:
         Plan Step Expected Output: '{plan_step.step_output}'
         Plan Step Full Text: '{plan_step.step_full_text}'
 
-        Step: '{step.description}'
+        Steps:
+        {steps_str}
 
-        Does the Step complete the intended action described in the Plan Step? Provide your answer as a boolean value (True/False) of whether the Step is complete according to the Plan Step.
+        Do these Steps complete the intended action described in the Plan Step? Provide your answer as a boolean value (True/False) of whether the Step is complete according to the Plan Step.
 
         Completion Status: 
         """
@@ -1754,13 +3277,26 @@ class AdvancedPromptEngineer:
             )
             # Extract the vote from the response
             output = response.choices[0].message.parsed
-            assert isinstance(output, bool)
+            assert isinstance(
+                output, CompletionStatus | bool
+            ), "Invalid response type. Please provide a boolean value (True/False)."
             next_step_number = (
-                plan_step.step_number + 1 if output else plan_step.step_number
+                plan_step.step_number + 1
+                if (output and plan_step.step_number < max_plan_steps)
+                else plan_step.step_number
             )
             return (output, next_step_number)
         except Exception as e:
-            print_saver.print_and_store(f"Error: {e}")
+            print_saver.print_and_store(
+                f"Error: {e}, Plan Step Number: {plan_step.step_number}"
+            )
+            if output is not None:
+                print_saver.print_and_store(f"Output: {output}")
+                if hasattr(output, "completion"):
+                    if output.completion is not None:
+                        if isinstance(output.completion, bool):
+                            return (output.completion, plan_step.step_number)
+
             return (None, plan_step.step_number)
 
     def judge_subtask_completion(
@@ -1797,6 +3333,12 @@ class AdvancedPromptEngineer:
         }
         messages = [system_message, {"role": "user", "content": prompt}]
         try:
+            assert isinstance(
+                step, Step
+            ), "Invalid step type. Please provide a valid Step object."
+            assert isinstance(
+                subtask, Subtask
+            ), f"Invalid subtask type. Please provide a valid Subtask object. Type: {type(subtask)}"
             response = openai.beta.chat.completions.parse(
                 model="gpt-4o-mini",  # Specify the model
                 messages=messages,  # Pass the messages directly as a list of dicts
@@ -1811,7 +3353,7 @@ class AdvancedPromptEngineer:
             return (output, next_step_number)
         except Exception as e:
             print_saver.print_and_store(f"Error: {e}")
-            return (None, subtask.step_number)
+            return (None, subtask.subtask_number if isinstance(subtask, Subtask) else 0)
 
     def judge_step(self, step: Step, task: Task) -> Reflection:
         """
@@ -1820,44 +3362,52 @@ class AdvancedPromptEngineer:
         prompt = f"""
         Evaluate the following step in the context of solving the task: '{task.description}'.
         Step:
-        <step>{step.description}</step>
         <count>{step.remaining_budget}</count>
+        <step>{step.description}</step>
         <reflection>Provide a reflection on the step's quality, including its clarity, relevance, completeness, correctness, and logical coherence. Enclose your reflection within <reflection> tags.</reflection>
         <reward>Assign a quality score between 0.0 and 1.0 based on the reflection. Enclose the score within <reward> tags.</reward>
         """
+        try:
+            messages = [
+                {
+                    "role": "system",
+                    "content": f"""You are an expert AI assistant with accuracy as a focus. You are tasked with evaluating the quality of problem-solving steps. Provide detailed reflections and assign quality scores based on the step's clarity, relevance, completeness, correctness, and logical coherence.
+                    Your feedback should be constructive, actionable, and aimed at improving the step's overall quality, focused only on the step and the task. Check for errors, flaws, or inconsistencies in the step. After providing your reflection inside <reflection> tags, assign a quality score between 0.0 and 1.0 using <reward> tags.
+                    Please encapsulate your reflection within <reflection> tags and assign a quality score between 0.0 and 1.0 using <reward> tags.
+                    """,
+                },
+                {"role": "user", "content": prompt},
+            ]
 
-        messages = [
-            {
-                "role": "system",
-                "content": f"""You are an expert AI assistant tasked with evaluating the quality of problem-solving steps. Provide detailed reflections and assign quality scores based on the step's clarity, relevance, completeness, correctness, and logical coherence.
-                Your feedback should be constructive, actionable, and aimed at improving the step's overall quality, focused only on the step and the task. Check for errors, flaws, or inconsistencies in the step. After providing your reflection inside <reflection> tags, assign a quality score between 0.0 and 1.0 using <reward> tags.
-                Please encapsulate your reflection within <reflection> tags and assign a quality score between 0.0 and 1.0 using <reward> tags.
-                """,
-            },
-            {"role": "user", "content": prompt},
-        ]
+            response = self.call_openai(messages=messages, temperature=0.2)
 
-        response = self.call_openai(messages=messages, temperature=0.2)
+            reflection_match = re.search(
+                r"<reflection>(.*?)<\/reflection>", response, re.DOTALL | re.IGNORECASE
+            )
+            reward_match = re.search(
+                r"<reward>(0\.\d+|1\.0)<\/reward>", response, re.DOTALL | re.IGNORECASE
+            )
 
-        reflection_match = re.search(
-            r"<reflection>(.*?)<\/reflection>", response, re.DOTALL
-        )
-        reward_match = re.search(
-            r"<reward>(0\.\d+|1\.0)<\/reward>", response, re.DOTALL
-        )
+            reflection_content = (
+                reflection_match.group(1).strip()
+                if reflection_match
+                else "No reflection provided."
+            )
+            reward_score = float(reward_match.group(1)) if reward_match else 0.0
 
-        reflection_content = (
-            reflection_match.group(1).strip()
-            if reflection_match
-            else "No reflection provided."
-        )
-        reward_score = float(reward_match.group(1)) if reward_match else 0.0
-
-        return Reflection(
-            content=reflection_content,
-            reward=reward_score,
-            step_number=step.step_number,
-        )
+            return Reflection(
+                content=reflection_content,
+                reward=reward_score,
+                step_number=step.step_number,
+            )
+        except Exception as e:
+            print_saver.print_and_store(f"Error: {e}")
+            print_saver.print_and_store(f"Response: {response}")
+            return Reflection(
+                content=reflection_content if reflection_content else "Error",
+                reward=reward_score if reward_score else 0.0,
+                step_number=step.step_number if step.step_number else 0,
+            )
 
     def judge_final_answer(self, task: Task, interaction: Interaction) -> Interaction:
         """
@@ -2013,7 +3563,7 @@ class AdvancedPromptEngineer:
     # Dynamic Confidence Exploration
     # -------------------------------
     def dynamic_confidence_exploration(
-        self, interaction: Interaction, task: str
+        self, interaction: Interaction, task: Task, plan_step: PlanStep
     ) -> Interaction:
         """
         Explores alternative solutions if confidence is low based on final_reward.
@@ -2023,20 +3573,22 @@ class AdvancedPromptEngineer:
             and interaction.final_reward < self.config.confidence_thresholds[1]
         ):
             if self.config.backtrack:
-                prompt = f"Take a different approach to solve the following task.\n\nTask: {task}\n"
+                prompt = f"Take a different approach to solve the following task.\n\nTask: {task.refined_description}\n\nPlan Step: {plan_step.step_description}"
                 messages = [
                     {
                         "role": "system",
-                        "content": "You are an AI assistant tasked with solving complex problems. You should explore alternative approaches to find the best solution, always thinking critically and reasoning through the problem step by step.",
+                        "content": "You are an AI assistant tasked with solving complex problems. You should explore alternative approaches to find the best solution, always thinking critically and reasoning through the problem step by step. Begin by enclosing all thoughts within <thinking> tags, exploring multiple angles and approaches. You will use these as your mental scratchpad to brainstorm and consider various strategies, as well as to step through the problem-solving process. Yur current task involves rethinking the current provided approach to the specific step of task and exploring alternative solutions to find a better one.",
                     },
                     {"role": "user", "content": prompt},
                 ]
                 new_response = self.call_openai(
                     messages=messages,
-                    temperature=min(self.config.temperature * 2, 1.0),
+                    temperature=min(max(self.config.temperature * 2, 1.0), 0.01),
                 )
                 if new_response:
-                    new_interaction = self.parse_response(new_response)
+                    new_interaction = self.parse_response(
+                        new_response, task, plan_step_number=plan_step.step_number
+                    )
                     if (
                         new_interaction.final_reward
                         and new_interaction.final_reward > interaction.final_reward
@@ -2077,6 +3629,12 @@ class AdvancedPromptEngineer:
         prompt: str,
         existing_interaction: Interaction,
         output_type: OutputType,
+        step_budget: int,
+        step_number: int,
+        plan_step_num: int,
+        restart_limit: int = 3,
+        backtrack_limit: int = 3,
+        max_plan_steps: int = 0,
     ) -> list[Interaction]:
         """
         Generates responses from multiple agents for collaborative reasoning.
@@ -2085,10 +3643,10 @@ class AdvancedPromptEngineer:
         type_of_output = output_type.output_type
         ext_of_output = output_type.file_extension
         agent_responses = []
-        tag_explainer = f"""1. Begin by enclosing all thoughts within <thinking> tags, exploring multiple angles and approaches. You will use these as your mental scratchpad to brainstorm and consider various strategies, as well as to step through the problem-solving process. The current step involves outlining the next logical action within <step> tags, focusing on the immediate next step in the problem-solving process.
-2. The <count> tag will help you keep track of the remaining steps and budget your actions accordingly.
+        tag_explainer = f"""1. The <count> tag will help you keep track of the remaining steps and budget your actions accordingly. you have a total of {step_budget} tokens to spend on this task.
+2. Begin by enclosing all thoughts within <thinking> tags, exploring multiple angles and approaches. You will use these as your mental scratchpad to brainstorm and consider various strategies, as well as to step through the problem-solving process. The current step involves outlining the next logical action within <step> tags, focusing on the immediate next step in the problem-solving process.
 3. Break down the solution into clear steps within <step> tags. These steps should be concise and focused on the next specific action to take in the problem-solving process after the previous <step> tags.
-4. Use the <thinking> tags as a scratchpad to write out all calculations and reasoning explicitly, and the <step> tags to outline your best resulting answer for the next step in the task, after the previous <step> tags (the count will be decremented after each step and enclosed in <count> tags).
+4. Use the <thinking> tags as a scratchpad to write out all calculations and reasoning explicitly, and the <step> tags to outline your best resulting answer for the next step in the task, after the previous <step> tags (the count will be decremented after each step and enclosed in the <count> tag that precedes the next step).
 5. For each step, after thinking inside <thinking> tags, you will provide a clear, concise response within <step> tags, outlining only the next step in the problem-solving process that comes after the most recent <step> tags.
 6. You will be regularly evaluated on your progress by an external reviewer inside <reflection> tags. They will be critical and honest about your reasoning process.
 7. The reviewer will also assign a quality score between 0.0 and 1.0 using <reward> tags after each reflection. Use this to guide your approach:
@@ -2153,7 +3711,7 @@ Example:
             },
         }
         for i in range(self.config.agents):
-
+            backtracks = 0
             messages = [
                 {
                     "role": "system",
@@ -2171,7 +3729,7 @@ Example:
                     "role": "user",
                     "content": f"""Now, let's solve the following task, focusing specifically on the <thinking>, and <step> tags, and focusing ONLY on the current step, generating <thinking> and <step> tags for the next step in the task after the most recent <step> tag, building directly on the previous steps. You will be stopped after you complete another <step> tag, or <answer> tag, or when the <count> reaches 0.
 Always think in <thinking> tags before generating a <step> tag, and ensure that it builds on the previous steps.
-Remember to provide a clear and concise answer within <answer> tags at the end of the process, if the task is completed within the step budget. Also, the expected format of the end result the user is looking for is {type_of_output} file extension {ext_of_output}, so keep that in mind for the last step."""
+Remember to provide a clear and concise answer within <agent_response> tags at the end of the process, if the task is completed within the step budget. Also, the expected format of the end result the user is looking for is {type_of_output} file extension {ext_of_output}, so keep that in mind for the last step."""
                     + agent_intro_mapping[i]["template"].format(task=task)
                     + "\n\n"
                     + prompt,
@@ -2196,29 +3754,243 @@ Remember to provide a clear and concise answer within <answer> tags at the end o
                 print_saver.print_and_store(
                     f"\nToken count for agent {i}: {token_count}\n"
                 )
+            agent_steps = []
+            agent_thinking = []
+            agent_response = None
+            agent_reflections = []
+            step_num = step_number
+            restart_attempts = 0
+            msgs = messages.copy()
+            while (
+                len(agent_steps) < step_budget and step_num < step_budget
+            ) and agent_response is None:
+                response = self.call_openai(
+                    messages=msgs,
+                    temperature=agent_intro_mapping[i]["temperature"],
+                    stop_sequence=["</agent_response>"],
+                )
+                print_saver.print_and_store(f"Agent {i} response: {response}")
+                msgs.append(
+                    {
+                        "role": "system",
+                        "content": f"Agent {i} response: {response}",
+                    }
+                )
 
-            response = self.call_openai(
-                messages=messages,
-                temperature=agent_intro_mapping[i]["temperature"],
-                stop_sequence=["</agent_response>"],
-            )
-            if response:
-                response_interaction = self.parse_response(
+                # Function to get the latest match using re.finditer
+                def get_latest(pattern, text):
+                    matches = re.finditer(pattern, text, re.DOTALL | re.IGNORECASE)
+                    latest = None
+                    for match in matches:
+                        latest = match.group(1)
+                    return latest
+
+                # Extract relevant tags from response with flexible stopping conditions
+                latest_step = get_latest(
+                    r"<step>(.*?)(?=<(?:\/?step|reflection|reward|thinking|count)>|$)",
                     response,
-                    task,
-                    steps_objs=existing_interaction.steps,
-                    reflections_objs=existing_interaction.reflections,
-                    interaction=existing_interaction,
                 )
-                assert isinstance(response_interaction, Interaction)
-                print_saver.print_and_store(
-                    f"\n Agent {i} response: {response_interaction} \n"
+                if latest_step is None or latest_step.strip() == "":
+                    # look for answer tag instead
+                    latest_step = get_latest(
+                        r"<answer>(.*?)(?=<(?:\/?answer|reflection|reward|thinking|count)>|$)",
+                        response,
+                    )
+                latest_thinking = get_latest(
+                    r"<thinking>(.*?)(?=<(?:\/?thinking|step|reflection|reward|count)>|$)",
+                    response,
                 )
-                agent_responses.append(response_interaction)
+                latest_count = get_latest(
+                    r"<count>(\d+)(?=<(?:\/?count|step|reflection|reward|thinking)>|$)",
+                    response,
+                )
+                latest_reflection = get_latest(
+                    r"<reflection>(.*?)(?=<(?:\/?reflection|step|thinking|reward|count)>|$)",
+                    response,
+                )
+                latest_reward = get_latest(
+                    r"<reward>(.*?)(?=<(?:\/?reward|step|reflection|thinking|count)>|$)",
+                    response,
+                )
+                if (
+                    re.search(r"<agent_response>", response, re.DOTALL | re.IGNORECASE)
+                    is not None
+                ):
+                    response += "</agent_response>"
+                latest_agent_response = get_latest(
+                    r"<agent_response>(.*?)</agent_response>", response
+                )
+
+                # Create a response interaction using just the latest chunks
+                current_step = Step(
+                    description=latest_step,
+                    step_number=step_num,
+                    remaining_budget=(
+                        int(latest_count) - 1
+                        if latest_count
+                        else (
+                            int(agent_steps[-1].remaining_budget - 1)
+                            if agent_steps
+                            else int(step_budget)
+                        )
+                    ),
+                    plan_step_number=plan_step_num,
+                )
+                step_num += 1
+
+                if latest_reflection and latest_reward:
+                    reflection = Reflection(
+                        content=latest_reflection,
+                        reward=float(latest_reward),
+                        step_number=current_step.step_number,
+                    )
+                    current_step.reflection = reflection
+                    agent_reflections.append(reflection)
+                else:
+                    current_step.reflection = self.judge_step(current_step, task)
+                    agent_reflections.append(current_step.reflection)
+
+                if latest_thinking:
+                    agent_thinking.append(latest_thinking)
+                    current_step.thoughts = latest_thinking
+                agent_steps.append(current_step)
+                while (
+                    (
+                        current_step.reflection.reward < 0.8
+                        and current_step.reflection.reward > 0.5
+                    )
+                    and backtracks < backtrack_limit
+                ) or (
+                    (
+                        current_step.reflection.reward < 0.5
+                        and backtracks < backtrack_limit
+                    )
+                    and restart_attempts < restart_limit
+                ):
+                    former_score = current_step.reflection.reward
+                    msgs_b = msgs.copy()
+                    msgs_b.append(
+                        {
+                            "role": "user",
+                            "content": f"You have been rated {current_step.reflection.reward} for your reasoning. The review is as follows: {current_step.reflection.content}. Please rewrite the last step based on the feedback.",
+                        }
+                    )
+                    revision = self.call_openai(
+                        messages=msgs_b,
+                        temperature=agent_intro_mapping[i]["temperature"]
+                        + max(random.uniform(-0.1, 0.1), 0.01),
+                        stop_sequence=["</step>"],
+                    )
+                    if revision:
+                        msgs.remove(msgs[-1])
+                        if latest_count:
+                            revision = revision.replace(
+                                f"<count>{latest_count}</count>", ""
+                            )
+                        msgs.append({"role": "system", "content": revision})
+                        print_saver.print_and_store(
+                            f"Revision in collaborative: {revision} for step {step_num}."
+                        )
+                        latest_count = get_latest(
+                            r"<count>(.*?)(?=<(?:\/?count|step|reflection|reward|thinking)>|$)",
+                            revision,
+                        )
+
+                        revision += "</step>"
+                        latest_step = get_latest(
+                            r"<step>(.*?)(?=<(?:\/?step|reflection|reward|thinking|count)>|$)",
+                            response,
+                        )
+                        current_step.description = latest_step
+                        current_step.reflection = self.judge_step(current_step, task)
+                        if agent_reflections:
+                            if len(agent_reflections) == len(agent_steps):
+                                agent_reflections[-1] = current_step.reflection
+                            elif len(agent_reflections) < len(agent_steps):
+                                agent_reflections.append(current_step.reflection)
+                        backtracks += 1
+
+                if latest_agent_response or len(agent_steps) >= step_budget:
+                    plan_step_index = 0
+                    for i, stp in enumerate(task.plan.steps):
+                        if stp.step_number == plan_step_num:
+                            plan_step_index = i
+                            break
+                    if self.judge_step_completion(
+                        agent_steps, task.plan.steps[plan_step_index], max_plan_steps
+                    )[0]:
+                        print_saver.print_and_store(
+                            f"Agent {i} completed the step successfully."
+                        )
+                        agent_response_temp = Interaction(
+                            task=task,
+                            steps=agent_steps,
+                            reflections=agent_reflections,
+                            answer=(
+                                latest_agent_response if latest_agent_response else ""
+                            ),
+                            final_reward=(
+                                float(latest_reward) if latest_reward else 0.0
+                            ),
+                        )
+                        if (
+                            agent_response_temp.final_reward == 0.0
+                            and latest_agent_response
+                        ):
+                            agent_response_temp.final_reward = self.judge_final_answer(
+                                task, agent_response_temp
+                            ).final_reward
+                            print_saver.print_and_store(
+                                f"Agent {i} final reward: {agent_response_temp.final_reward}"
+                            )
+                        print_saver.print_and_store(
+                            f"Agent {i} response: {agent_response_temp} \n"
+                        )
+                        agent_response = agent_response_temp
+
+                    elif (
+                        restart_attempts < restart_limit
+                        and current_step.reflection.reward < 0.5
+                        and former_score < 0.5
+                    ):
+                        restart_attempts += 1
+                        msgs = messages.copy()
+                        agent_steps = []
+                        agent_thinking = []
+                        agent_reflections = []
+                        step_num = step_number
+                        agent_response = None
+                        print_saver.print_and_store(
+                            f"Agent {i} failed to complete the step. Restarting attempt {restart_attempts} of {restart_limit}."
+                        )
+                    else:
+                        agent_response = Interaction(
+                            task=task,
+                            steps=agent_steps,
+                            reflections=agent_reflections,
+                            final_reward=0.0,
+                            answer=(
+                                latest_agent_response if latest_agent_response else ""
+                            ),
+                        )
+            try:
+                assert isinstance(
+                    agent_response, Interaction
+                ), f"Agent response is not an Interaction. Type: {type(agent_response)}, Value: {agent_response}"
+            except Exception as e:
+                print_saver.print_and_store(f"Error: {e}")
+                print_saver.print_and_store(f"Agent Response: {agent_response}")
+                agent_response = Interaction(
+                    task=task,
+                    steps=agent_steps,
+                    reflections=agent_reflections,
+                    final_reward=0.0,
+                )
+            print_saver.print_and_store(f"\n Agent {i} response: {agent_response} \n")
+            agent_responses.append(agent_response)
         print_saver.print_and_store("Agent Interactions:")
         assert all(
-            isinstance(agent_response, Interaction)
-            for agent_response in agent_responses
+            isinstance(agent_resp, Interaction) for agent_resp in agent_responses
         ), f"Agent responses are not of type Interaction."
 
         assert isinstance(
@@ -2234,6 +4006,11 @@ Remember to provide a clear and concise answer within <answer> tags at the end o
         prompt: str,
         existing_interaction: Interaction,
         output_type: OutputType,
+        step_budget: int,
+        step_number: int,
+        plan_step_num: int,
+        restart_limit: int = 3,
+        max_plan_steps: int = 0,
     ) -> Interaction:
         """
         Aggregates responses from multiple agents and selects the best one based on reward scores.
@@ -2242,7 +4019,14 @@ Remember to provide a clear and concise answer within <answer> tags at the end o
         # TODO: Use conversation_manager.py for more advanced multi-agent interactions
         # agent_responses = list[Interaction]
         agent_responses = self.collaborative_reasoning(
-            task, prompt, existing_interaction, output_type
+            task,
+            prompt,
+            existing_interaction,
+            output_type,
+            step_budget,
+            step_number,
+            plan_step_num,
+            restart_limit,
         )
         # Handle empty responses
         if not agent_responses:
@@ -2254,17 +4038,8 @@ Remember to provide a clear and concise answer within <answer> tags at the end o
         assert isinstance(best_interaction, Interaction)
         # Add the best interaction to the existing interaction
         if existing_interaction:
-            existing_interaction.steps = (
-                best_interaction.steps
-                if len(best_interaction.steps) > len(existing_interaction.steps)
-                else existing_interaction.steps
-            )
-            existing_interaction.reflections = (
-                best_interaction.reflections
-                if len(best_interaction.reflections)
-                > len(existing_interaction.reflections)
-                else existing_interaction.reflections
-            )
+            existing_interaction.steps += best_interaction.steps
+            existing_interaction.reflections += best_interaction.reflections
             existing_interaction.answer = best_interaction.answer
             existing_interaction.final_reward = (
                 best_interaction.final_reward
@@ -2365,9 +4140,9 @@ Remember to provide a clear and concise answer within <answer> tags at the end o
         system_prompt = f"""You are an advanced AI designed to solve problems systematically and thoroughly. Follow these guidelines meticulously when responding to user prompts:
 
 1. **Structured Tagging:**
+   - **<count>**: Before each `<step>`, use a `<count>` tag to indicate the remaining budget (number of steps left) before the next step is completed.
    - **<thinking>**: Enclose all internal thoughts, explorations, and considerations within `<thinking>` tags. This section should explore multiple angles and approaches to the problem.
    - **<step>**: Break down the solution into clear, actionable steps within `<step>` tags.
-   - **<count>**: After each `<step>`, use a `<count>` tag to indicate the remaining budget (number of steps left).
    - **<reflection>**: Regularly evaluate each step using `<reflection>` tags, providing critical and honest assessments of the reasoning process.
    - **<reward>**: Assign a quality score between 0.0 and 1.0 within `<reward>` tags after each `<reflection>` to guide the approach:
      - **0.8+**: Continue the current approach.
@@ -2406,9 +4181,9 @@ Remember to provide a clear and concise answer within <answer> tags at the end o
 
 **Example Response Structure**:
 
+- **Count**: `<count>` tags showing remaining budget.
 - **Thinking**: `<thinking>` tags for brainstorming.
 - **Steps**: `<step>` tags for actionable steps.
-- **Count**: `<count>` tags showing remaining budget.
 - **Reflection**: `<reflection>` tags for step evaluation.
 - **Reward**: `<reward>` tags for scoring.
 - **Answer**: `<answer>` tags for final output.
@@ -2421,11 +4196,11 @@ Remember to provide a clear and concise answer within <answer> tags at the end o
 - Ensure all sections are properly enclosed within their respective tags.
 - Maintain clarity, thoroughness, and adaptability throughout the problem-solving process.
 
-By adhering to these guidelines, you will provide structured, transparent, and high-quality solutions that are easy to follow and evaluate.
+By adhering to these guidelines, you will provide structured, transparent, and high-quality solutions that are easy to follow and evaluate. Note that the prompt you are given may represent a single step in the overall task, and you should continue from the most recent step provided to directly solve the given problem.
 """
         prompt = f"""Begin by enclosing all thoughts within <thinking> tags, exploring multiple angles and approaches. You will use these as your mental scratchpad to brainstorm and consider various strategies, as well as to step through the problem-solving process.
 Break down the solution into clear steps within <step> tags. Start with a {adjusted_budget}-step budget, requesting more for complex problems if needed.
-There will be <count> tags after each step to show the remaining budget. You will be stopped after the value reaches 0.
+There will be <count> tags before each step to show the remaining budget before the current step is complete. You will be stopped after the value reaches 0 (ie, 1 indicates the last step)
 Continuously adjust your reasoning based on intermediate results and reflections, adapting your strategy as you progress.
 You will be regularly evaluated on your progress by an external reviewer inside <reflection> tags. They will be critical and honest about your reasoning process.
 The reviewer will also assign a quality score between 0.0 and 1.0 using <reward> tags after each reflection. Use this to guide your approach:
@@ -2557,6 +4332,8 @@ Task: {task}
         if n == 0:
             n = 1
         for attempt in range(self.config.max_retries):
+            base_delay = 1
+            max_delay = 16
             try:
 
                 response = openai.beta.chat.completions.parse(
@@ -2570,7 +4347,8 @@ Task: {task}
                 return new_step_num
             except Exception as e:
                 print_saver.print_and_store(f"Unexpected error: {e}.")
-                break
+                wait = min(base_delay * (2**attempt), max_delay)
+                time.sleep(wait + random.uniform(0, 1))  # Adding jitter
         return ""
 
     # -------------------------------
@@ -2601,12 +4379,16 @@ Task: {task}
 
         if n == 0:
             n = 1
+
+        base_delay = 1
+        max_delay = 16
+
         for attempt in range(self.config.max_retries):
             try:
                 response = openai.chat.completions.create(
                     model=self.config.model,
                     messages=messages,
-                    temperature=temperature,
+                    temperature=temperature if temperature > 0.0 else None,
                     top_p=top_p,
                     n=n,
                     stop=stop_sequence,
@@ -2615,12 +4397,1710 @@ Task: {task}
                 return response.choices[0].message.content
             except Exception as e:
                 print_saver.print_and_store(f"Unexpected error: {e}.")
-                break
+                wait = min(base_delay * (2**attempt), max_delay)
+                time.sleep(wait + random.uniform(0, 1))  # Adding jitter
         return ""
 
     # -------------------------------
     # Response Parsing
     # -------------------------------
+    def handle_length_mismatch(
+        self,
+        steps_objs: List[Step],
+        steps: List[str],
+        counts: List[str | int],
+        reflections: List[Optional[Reflection | str]],
+        rewards: List[float | str],
+        print_saver,
+        interaction: Interaction,
+        task: str,
+        first_count: int,
+        repair_log: Optional[list[str]] = None,
+    ) -> None:
+        """
+        Adjusts steps_objs and steps to handle length mismatches between them.
+
+        Args:
+            steps_objs (List[Step]): Existing list of Step objects.
+            steps (List[str]): List of step descriptions.
+            counts (counts: List[str | int]): List of counts representing the budget before each step.
+            reflections (List[Optional[Reflection | str]]): List of reflections.
+            rewards (List[float | str]): List of rewards.
+            print_saver: Object with a print_and_store method.
+            interaction (Interaction): Interaction object to update.
+            task (str): Current task context.
+            first_count (int): Initial count value.
+        """
+        if repair_log is None:
+            repair_log = []
+        repair_log.append(
+            f"Handling steps and steps_objs length mismatch. Steps: {len(steps)}, Steps_objs: {len(steps_objs)}"
+        )
+        if len(steps_objs) > len(steps):
+            print_saver.print_and_store(
+                f"Steps and steps_objs length mismatch. Adjusting steps. {len(steps_objs)} vs {len(steps)}"
+            )
+            # Handle steps_objs larger than steps
+            missing_steps = {
+                step.description.strip(): step.step_number
+                for step in steps_objs
+                if step.description.strip() not in [s.strip() for s in steps]
+            }
+            for description, step_num in missing_steps.items():
+                print_saver.print_and_store(f"Missing step: {description}")
+                # Insert missing steps
+                steps, counts, reflections, rewards, steps_objs, repair_log = (
+                    self.insert_missing_step(
+                        step_num,
+                        description,
+                        counts,
+                        reflections,
+                        rewards,
+                        steps,
+                        steps_objs,
+                        print_saver,
+                        interaction,
+                        task,
+                    )
+                )
+        elif len(steps_objs) < len(steps):
+            print_saver.print_and_store("Stepsobj smaller than steps. Adjusting steps.")
+            # Handle steps larger than steps_objs
+            missing_steps = {
+                step.strip(): idx
+                for idx, step in enumerate(steps)
+                if step.strip() not in [s.description.strip() for s in steps_objs]
+            }
+            for description, idx in missing_steps.items():
+                print_saver.print_and_store(f"Missing step: {description}")
+                counts, repair_log = self.remove_nonnumeric_counts(
+                    counts, first_count, repair_log
+                )
+                this_step_num = None
+                if len(counts) == len(steps):
+                    # Get count for the missing step
+                    counts_int = [int(c) for c in counts if str(c).isdigit()]
+                    if counts_int:
+                        step_count = counts_int[idx]
+                        this_step_num = first_count - step_count + 1
+
+                # Insert missing steps
+                steps, counts, reflections, rewards, steps_objs, repair_log = (
+                    self.insert_missing_step(
+                        this_step_num if this_step_num else idx + 1,
+                        description,
+                        counts,
+                        reflections,
+                        rewards,
+                        steps,
+                        steps_objs,
+                        print_saver,
+                        interaction,
+                        task,
+                    )
+                )
+        return repair_log
+
+    def insert_missing_step(
+        self,
+        step_num: int,
+        description: str,
+        counts: List[str | int],
+        reflections: List[Optional[Reflection | str]],
+        rewards: List[float],
+        steps: List[str],
+        steps_objs: List[Step],
+        print_saver,
+        interaction: Interaction,
+        task: str,
+        repair_log: Optional[list[str]] = None,
+    ) -> tuple:
+        """
+        Inserts a missing step into steps_objs, steps, counts, reflections, and rewards.
+
+        Args:
+            step_num (int): The step number to insert.
+            description (str): Description of the step.
+            counts (List[str | int]): List of counts.
+            reflections (List[Optional[Reflection | str]]): List of reflections.
+            rewards (List[float]): List of rewards.
+            steps (List[str]): List of step descriptions.
+            steps_objs (List[Step]): Existing list of Step objects.
+            print_saver: Object with a print_and_store method.
+            interaction (Interaction): Interaction object to update.
+            task (str): Current task context.
+        """
+        if repair_log is None:
+            repair_log = []
+        # Validate step number is sequential
+        if step_num > 1 and not any(s.step_number == step_num - 1 for s in steps_objs):
+            raise ValueError(f"Non-sequential step number found: {step_num}")
+        reflection = None
+        # determine if description is in steps_objs or steps already and if so, insert it into the other list at the correct index
+        if description not in [s.description for s in steps_objs]:
+
+            # Check to make sure the step number is not already in steps_objs
+            if step_num in [s.step_number for s in steps_objs]:
+                print_saver.print_and_store(
+                    f"Step number {step_num} already exists in steps_objs."
+                )
+            # Insert step into steps and counts
+            steps.insert(step_num - 1, description)
+            print_saver.print_and_store(
+                f"Inserted step: {description}. Steps length: {len(steps)} for step number {step_num} and step_objs length {len(steps_objs)}"
+            )
+
+        if step_num - 2 >= 0 and (step_num - 1) < len(counts):
+            counts.insert(step_num - 1, int(counts[step_num - 2]) - 1)
+        else:
+            counts.append(int(counts[-1]) - 1 if counts else 0)
+
+        # Handle reflections
+        if step_num <= len(reflections):
+            reflection = None
+            for ref in reflections:
+                if ref.step_number == step_num:
+                    reflection = ref
+                    break
+            if reflection is None:
+                reflection = (
+                    reflections[step_num - 1]
+                    if step_num - 1 < len(reflections)
+                    and isinstance(reflections[step_num - 1], Reflection)
+                    and reflections[step_num - 1].content.strip() != ""
+                    else None
+                )
+            if reflection is None:
+                print_saver.print_and_store(
+                    f"Reflection missing for step {step_num}. Generating reflection."
+                )
+                reflection = self.judge_step(
+                    Step(description, step_num, int(counts[max((step_num - 1), 0)])),
+                    task,
+                    plan_step_num=step_num,
+                )
+                reflections.insert(step_num - 1, reflection)
+                # If the corresponding reward already exists, only update it if the length of rewards is equal to the length of reflections now that we have added a reflection and only if the counts up to the current step number start at their highest value and decrease by 1 each step before the current step number.
+                if (
+                    step_num - 1 < len(rewards)
+                    and len(counts) == len(steps)
+                    and counts[0] == max(counts)
+                    and all(counts[i] == counts[i - 1] - 1 for i in range(1, step_num))
+                ):
+                    if (
+                        len(counts) == len(steps)
+                        and counts[0] == max(counts)
+                        and all(
+                            counts[i] == counts[i - 1] - 1 for i in range(1, step_num)
+                        )
+                    ):
+                        print_saver.print_and_store(
+                            f"Using reward for step {step_num} instead of {reflection.reward} because there was an existing reward."
+                        )
+                else:
+                    rewards.insert(step_num - 1, reflection.reward)
+        elif step_num - 1 == len(reflections) and len(reflections) < len(steps):
+            print_saver.print_and_store(
+                f"Reflection missing for current step {step_num}. Generating reflection."
+            )
+            reflection = self.judge_step(
+                Step(description, step_num, int(counts[step_num - 1])), task
+            )
+            print_saver.print_and_store(f"Generated reflection: {reflection.content}")
+            reflections.append(reflection)
+        elif step_num - 1 > len(reflections):
+            print_saver.print_and_store(
+                f"Reflection missing for step {step_num}. Generating reflection."
+            )
+            reflection = self.judge_step(
+                Step(description, step_num, int(counts[step_num - 1])), task
+            )
+            reflections.insert(step_num - 1, reflection)
+
+        # Handle rewards
+        if step_num - 1 < len(rewards):
+            rewards.insert(step_num - 1, 0.0)  # Placeholder, will be updated later
+        else:
+            rewards.append(0.0)
+        if step_num - 1 < len(reflections) and not isinstance(
+            reflections[step_num - 1], Reflection
+        ):
+            reflection = reflections[step_num - 1] = Reflection(
+                content=str(reflections[step_num - 1]),
+                reward=rewards[step_num - 1],
+                step_number=step_num,
+            )
+            reflections[step_num - 1] = reflection
+        elif step_num - 1 < len(reflections) and isinstance(
+            reflections[step_num - 1], Reflection
+        ):
+            reflections[step_num - 1].reward = reflections[step_num - 1].reward
+        elif step_num - 1 < len(reflections):
+            reflections[step_num - 1].reward = rewards[step_num - 1]
+
+        # Create and append the new Step object
+        new_step = Step(description, step_num, int(counts[step_num - 1]), reflection)
+        if new_step.description not in [s.description for s in steps_objs]:
+            steps_objs.insert(step_num - 1, new_step)
+            interaction.steps.append(new_step)
+            interaction.reflections.append(reflections[step_num - 1])
+        elif (
+            new_step.description in [s.description for s in steps_objs]
+            and new_step not in steps_objs
+        ):
+            # Find out what is different about the new_step and the existing step in steps_objs
+            existing_step = [
+                s for s in steps_objs if s.description == new_step.description
+            ][0]
+            if existing_step.step_number != new_step.step_number:
+                print_saver.print_and_store(
+                    f"Step number mismatch. Updating step number for {new_step.description}."
+                )
+                existing_step.step_number = new_step.step_number
+
+                existing_index = steps_objs.index(existing_step)
+                desired_index = new_step.step_number - 1
+
+                # Compare the target index for the new_step's step_number to the existing_index
+                if desired_index < existing_index:
+                    # The new step should come before the existing step
+                    steps_objs.remove(existing_step)
+                    steps_objs.insert(desired_index, existing_step)
+                else:
+                    # The new step should come after or at the same position
+                    steps_objs.remove(existing_step)
+                    steps_objs.insert(desired_index, existing_step)
+
+                # Finally, ensure the step_numbers remain sequential
+                steps_objs.sort(key=lambda s: s.step_number)
+                for i, obj in enumerate(steps_objs, start=1):
+                    obj.step_number = i
+
+        try:
+            repair_log.append(
+                f"Inserted step {new_step.step_number} with description: {new_step.description} and reflection: {new_step.reflection.content if new_step.reflection else 'None'} at index {steps_objs.index(new_step)}"
+            )
+        except Exception as e:
+            print_saver.print_and_store(f"Error: {e}")
+            repair_log.append(
+                f"Error inserting step {new_step.step_number} with description: {new_step.description} and reflection: {new_step.reflection.content if new_step.reflection else 'None'}"
+            )
+        return (steps, counts, reflections, rewards, steps_objs, repair_log)
+
+    def validate_steps(
+        self,
+        steps_objs: List[Step],
+        steps: List[str],
+        counts: List[str | int],
+        reflections: List[Optional[Reflection | str]],
+        rewards: List[float],
+        print_saver,
+        interaction: Interaction,
+        task: str,
+        first_count: int,
+        repair_log: Optional[list[str]] = None,
+    ) -> None:
+        """
+        Validates and adjusts steps, steps_objs, counts, reflections, and rewards.
+
+        Args:
+            steps_objs (List[Step]): Existing list of Step objects.
+            steps (List[str]): List of step descriptions.
+            counts (List[str | int]): List of counts.
+            reflections (List[Optional[Reflection | str]]): List of reflections.
+            rewards (List[float]): List of rewards.
+            print_saver: Object with a print_and_store method.
+            interaction (Interaction): Interaction object to update.
+            task (str): Current task context.
+            first_count (int): Initial count value.
+        """
+        if repair_log is None:
+            repair_log = []
+        repair_log = self.handle_length_mismatch(
+            steps_objs,
+            steps,
+            counts,
+            reflections,
+            rewards,
+            print_saver,
+            interaction,
+            task,
+            first_count,
+            repair_log,
+        )
+
+        # Additional validation and synchronization can be added here as needed
+        return repair_log
+
+    def ensure_content_similarity(
+        self,
+        steps_objs: List[Step],
+        steps: List[str],
+        first_count: int,
+        print_saver,
+        interaction: Interaction,
+        task: str,
+        repair_log: Optional[list[str]] = None,
+    ) -> list[str]:
+        """
+        Ensures content similarity between steps_objs and steps using cosine similarity.
+
+        Args:
+            steps_objs (List[Step]): Existing list of Step objects.
+            steps (List[str]): List of step descriptions.
+            first_count (int): Initial count value.
+            print_saver: Object with a print_and_store method.
+            interaction: Interaction object to update.
+            task (str): Current task context.
+            repair_log (Optional[list[str]]): Log of repair actions.
+
+        Returns:
+            list[str]: The updated repair log.
+        """
+        if repair_log is None:
+            repair_log = []
+        for i, step_desc in enumerate(steps):
+            if i >= len(steps_objs):
+                break
+            step_obj = steps_objs[i]
+            similarity = cosine_similarity_custom(
+                get_embedding(step_obj.description.strip()),
+                get_embedding(step_desc.strip()),
+            )
+            if similarity < 0.9:
+                print_saver.print_and_store(
+                    f"Step content mismatch at step {i+1}, {step_obj.description.strip()} should be {step_desc.strip()}."
+                )
+                repair_log.append(
+                    f"Step content mismatch at step {i+1}, {step_obj.description.strip()} should be/changed to {step_desc.strip()}."
+                )
+                step_obj.description = step_desc.strip()
+                # Optionally, regenerate reflection if content changes significantly
+                step_obj.reflection = self.judge_step(step_obj, task)
+                repair_log.append(
+                    f"Regenerated reflection for step {i+1}: {step_obj.reflection.content}"
+                )
+                # Update the interaction object
+                interaction.reflections.append(step_obj.reflection)
+        return repair_log
+
+    # ===========================
+    # Define the consolidate_steps Function
+    # ===========================
+
+    def remove_nonnumeric_counts(
+        self,
+        counts: List[str | int],
+        first_count: int,
+        repair_log: Optional[list[str]] = None,
+    ) -> List[str | int]:
+        """
+        Remove non-numeric values from the counts list.
+
+        Args:
+            counts (List[str | int]): List of counts.
+
+        Returns:
+            List[str | int]: List of counts with non-numeric values removed.
+        """
+        if repair_log is None:
+            repair_log = []
+        new_counts = []
+        len_counts = len(counts)
+        for count in counts:
+            if isinstance(count, (int, float)) or (
+                isinstance(count, str) and count.isdigit()
+            ):
+                new_counts.append(count)
+            elif isinstance(count, str):
+                new_digits = "".join([c for c in count if c.isdigit()])
+                try:
+                    new_counts.append(int(new_digits))
+                except ValueError:
+                    try:
+                        new_count = re.search(r"\d+", count, re.DOTALL | re.IGNORECASE)
+                        if new_count:
+                            new_counts.append(int(new_count.group(0)))
+                    except Exception as e:
+                        print(e)
+                        new_counts.append(0)
+            else:
+                if count is not None:
+                    try:
+                        new_counts.append(int(count))
+                    except ValueError:
+                        try:
+                            new_count = re.search(
+                                r"\d+", count, re.DOTALL | re.IGNORECASE
+                            )
+                            if new_count:
+                                new_counts.append(int(new_count.group(0)))
+                        except Exception as e:
+                            print(e)
+                            new_counts.append(0)
+        if len(new_counts) < len_counts:
+            if len(new_counts) == 0:
+                new_counts = [first_count]
+            new_counts.extend(
+                [new_counts[-1] - i for i in range(len_counts - len(new_counts))]
+            )
+            print_saver.print_and_store(
+                f"Counts length mismatch (less than started with). Adjusting counts. {len(new_counts)} vs {len_counts}"
+            )
+            repair_log.append(
+                f"Counts length mismatch (less than started with). Adjusting counts. {len(new_counts)} vs {len_counts}"
+            )
+        elif len(new_counts) > len_counts:
+            new_counts = new_counts[:len_counts]
+            print_saver.print_and_store(
+                f"Counts length mismatch (more than started with). Adjusting counts. {len(new_counts)} vs {len_counts}"
+            )
+            repair_log.append(
+                f"Counts length mismatch (more than started with). Adjusting counts. {len(new_counts)} vs {len_counts}"
+            )
+        return new_counts, repair_log
+
+    def consolidate_steps(
+        self,
+        steps_objs: List[Step],
+        steps: List[str],
+        counts: List[str | int],
+        reflections: List[Reflection],
+        first_count: int,
+        response: str,
+        plan_step_num: int,
+        repair_log: Optional[list[str]] = None,
+    ) -> tuple[List[Step], List[str | int], List[Reflection]]:
+        """
+        Consolidate the steps from steps_objs, steps, counts, and reflections into a single ordered list of Step objects.
+
+        This function aligns and merges the provided lists of step descriptions and corresponding Step objects, ensuring consistency in step numbering and handling discrepancies such as duplicates, gaps, and order inversions.
+
+        The consolidation process involves the following logic for updating `step_obj.step_number`:
+
+        1. **Equal Lengths (`len(steps) == len(steps_objs)`):**
+            - **Gap Handling:** Update `step_obj.step_number` by identifying gaps between the current step number and its neighbors. Adjust the step number based on the nearest preceding and following Step objects that maintain both the numerical sequence and the original index order.
+            - **Order Verification:** Ensure that the sequence order hasn't been disrupted. If the order is inconsistent, apply a different strategy to reorder the Step objects appropriately.
+
+        2. **More Steps Strings than Step Objects (`len(steps) > len(steps_objs)`):**
+            - **Gap Correspondence:** Determine if the gap in step numbers corresponds to the number of missing step descriptions in `steps_objs`. Adjust `step_obj.step_number` by considering the number of steps missing on either side of the current step number.
+            - **Insertion Logic:** Insert missing steps at positions that reflect the identified gaps, ensuring that the step numbering remains sequential and consistent with the provided descriptions.
+
+        3. **Fewer Steps Strings than Step Objects (`len(steps) < len(steps_objs)`):**
+            - **Gap Correspondence:** Similar to the previous case, identify if the gap aligns with the number of missing step descriptions. Update `step_obj.step_number` accordingly by analyzing the surrounding steps.
+            - **Adjustment Strategy:** Reassign step numbers to accommodate the discrepancies, ensuring that all Step objects are correctly numbered without overlaps or omissions.
+
+        4. **Order Discrepancies:**
+            - **Integrity Check:** Verify that the order of steps has not been compromised. If inconsistencies are detected, implement a reordering mechanism that realigns the Step objects based on both their numerical order and their original positions.
+            - **Alternative Approach:** In cases where the standard gap analysis fails due to complex order issues, adopt an alternative strategy to systematically reorder the steps, ensuring logical progression and accurate numbering.
+
+        Args:
+            steps_objs (List[Step]): Existing list of Step objects.
+            steps (List[str]): List of step descriptions.
+            counts (List[str | int]): List of counts representing the budget before each step.
+
+        Returns:
+            List[Step]: Consolidated and ordered list of Step objects.
+        """
+        # Step 1: Create a map from existing steps_objs keyed by step_number
+        existing_map = {obj.step_number: obj for obj in steps_objs}
+        if repair_log is None:
+            repair_log = []
+        # Step 2: Determine total_steps
+
+        unique_step_descriptions = set(s.strip() for s in steps if s.strip())
+        unique_obj_descriptions = set(
+            obj.description.strip() for obj in steps_objs if obj.description.strip()
+        )
+        duplicates = None
+        if len(unique_step_descriptions) != len(steps):
+            print_saver.print_and_store(
+                "Duplicate step descriptions found in the steps list."
+            )
+            repair_log.append(
+                f"Duplicate step descriptions found in the steps list, {len(unique_step_descriptions)} unique vs total of {len(steps)}"
+            )
+            # find the duplicates
+            duplicates = {
+                s: (
+                    steps.count(s),
+                    [index for index, value in enumerate(steps) if value == s],
+                )
+                for s in set(steps)
+                if steps.count(s) > 1
+            }
+            # check if the len of steps is equal to the len of counts, if so, check if duplicates are found at the same index in both lists
+            if len(steps) == len(counts):
+                duplicates_counts = {
+                    s: (
+                        counts.count(s),
+                        [index for index, value in enumerate(counts) if value == s],
+                    )
+                    for s in set(counts)
+                    if counts.count(s) > 1
+                }
+                if duplicates.values() == duplicates_counts.values():
+                    print_saver.print_and_store(
+                        f"Duplicate step descriptions found at the same indexes in both steps and counts: {duplicates} and \n {duplicates_counts}"
+                    )
+                    repair_log.append(
+                        f"Duplicate step descriptions found at the same indexes in both steps and counts: {duplicates} and \n {duplicates_counts}"
+                    )
+
+        total_steps = len(unique_step_descriptions.union(unique_obj_descriptions))
+        print_saver.print_and_store(f"counts: {counts}")
+        counts_ints = [int(c) for c in counts if str(c).isdigit()]
+        for s in steps_objs:
+            if s.remaining_budget is not None:
+                counts_ints.append(s.remaining_budget + 1)
+        if counts_ints:
+            print_saver.print_and_store(f"Counts ints: {counts_ints}, counts: {counts}")
+
+            max_count = max(counts_ints)
+            min_count = min(counts_ints)
+            counts_total = max_count - min_count + 1
+            if not counts_total == len(counts_ints):
+                print_saver.print_and_store(
+                    f"Counts total: {counts_total}. Counts ints: {counts_ints}. Min count: {min_count}. Max count: {max_count}. Counts: {counts}. Total steps: {total_steps}."
+                )
+                repair_log.append(
+                    f"Counts total: {counts_total}. Counts ints: {counts_ints}. Min count: {min_count}. Max count: {max_count}. Counts: {counts}. Total steps: {total_steps}."
+                )
+            # check if total_steps is or isnt equal to the range of counts between the max and min counts
+            if total_steps != counts_total:
+                # Raise an error, adjust total_steps, or log a warning
+                print_saver.print_and_store(
+                    f"Total steps {total_steps} is {'less' if total_steps < counts_total else 'greater'} than the total from counts ({counts_total}) by {abs(total_steps - counts_total)}. Min count: {min_count}. Max count: {max_count} with a range of {counts_total}."
+                )
+                repair_log.append(
+                    f"Total steps {total_steps} is {'less' if total_steps < counts_total else 'greater'} than the total from counts ({counts_total}) by {abs(total_steps - counts_total)}. Min count: {min_count}. Max count: {max_count} with a range of {counts_total}."
+                )
+                total_steps = counts_total if duplicates is not None else total_steps
+            print_saver.print_and_store(
+                f"Total steps: {total_steps}. Min count: {min_count}. Max count: {max_count}."
+            )
+            repair_log.append(
+                f"Total steps: {total_steps}. Min count: {min_count}. Max count: {max_count}."
+            )
+
+        # Step 3: Iterate through each step_number from 1 to total_steps
+        steps_temp = steps.copy()
+        steps_objs_temp = steps_objs.copy()
+        counts, repair_log = self.remove_nonnumeric_counts(
+            counts, first_count, repair_log
+        )
+        for i in range(total_steps):
+            step_number = i + 1
+            reflection = None
+            count_of_i = None
+            calc_step_number = None
+            for so in steps_objs:
+                if so.remaining_budget > 0 and (
+                    first_count - (so.remaining_budget + 1) == i + 1
+                    or so.step_number == i + 1
+                ):
+                    count_of_i = so.remaining_budget + 1
+                    calc_step_number = i + 1
+                    reflection = so.reflection if so.reflection else None
+                    print_saver.print_and_store(
+                        f"In first attempt to get count_of_i: Step number {step_number}. Count of i: {count_of_i}. Calc step number: {calc_step_number}."
+                    )
+
+                    break
+            if count_of_i is None:
+                count_of_i = (
+                    int(counts[i])
+                    if i < len(counts) and int(counts[i]) > i - 1
+                    else first_count - i
+                )
+                calc_step_number = first_count - count_of_i + 1
+                reflection = reflections[i] if i < len(reflections) else None
+                print_saver.print_and_store(
+                    f"In second attempt to get count_of_i: Count of i: {count_of_i}. Step number: {step_number}. Calc step number: {calc_step_number}. First count: {first_count}. Steps: {steps}. Steps objs: {steps_objs}. Counts: {counts}."
+                )
+                repair_log.append(
+                    f"In second attempt to get count_of_i: Count of i: {count_of_i}. Step number: {step_number}. Calc step number: {calc_step_number}. First count: {first_count}. Steps: {steps}. Steps objs: {steps_objs}. Counts: {counts}."
+                )
+
+            # if reflection is None:
+            #     reflection = judge_step(Step(steps[i], step_number, count_of_i), task)
+            #     print_saver.print_and_store(
+            #         f"Reflection missing for step {step_number}. Generating reflection."
+            #     )
+
+            if i == 0:
+                # Store original sequence
+                original_steps = [
+                    (obj.step_number, obj.description) for obj in steps_objs
+                ]
+                original_numbers = [s[0] for s in original_steps]
+                # First pass: identify all issues
+                step_issues = {
+                    "duplicates": [
+                        n
+                        for n in set(original_numbers)
+                        if original_numbers.count(n) > 1
+                    ],
+                    "gaps": [
+                        (a, b)
+                        for a, b in zip(original_numbers[:-1], original_numbers[1:])
+                        if b - a > 1
+                    ],
+                    "inversions": [
+                        (a, b)
+                        for a, b in zip(original_numbers[:-1], original_numbers[1:])
+                        if b <= a
+                    ],
+                }
+
+                # Log initial analysis
+                print_saver.print_and_store(f"Original sequence analysis:")
+
+                for issue_type, issues in step_issues.items():
+                    if issues:
+                        print_saver.print_and_store(f"- {issue_type.title()}: {issues}")
+
+                # Analyze sequence patterns
+                has_gaps = any(
+                    b - a > 1
+                    for a, b in zip(original_numbers[:-1], original_numbers[1:])
+                )
+                is_strictly_increasing = all(
+                    b > a for a, b in zip(original_numbers[:-1], original_numbers[1:])
+                )
+                duplicates = [
+                    n for n in set(original_numbers) if original_numbers.count(n) > 1
+                ]
+
+                # Log diagnostics
+                print_saver.print_and_store(f"Original sequence: {original_numbers}")
+                print_saver.print_and_store(f"Has gaps: {has_gaps}")
+                print_saver.print_and_store(
+                    f"Is strictly increasing: {is_strictly_increasing}"
+                )
+                if duplicates:
+                    print_saver.print_and_store(
+                        f"Duplicate step numbers found: {duplicates}"
+                    )
+
+                # Correct step numbers while logging changes
+                for idx, step_obj in enumerate(steps_objs_temp, start=1):
+                    if step_obj.step_number != idx:
+                        try:
+                            original_idx = original_steps.index(
+                                (step_obj.step_number, step_obj.description)
+                            )
+                            gap = step_obj.step_number - idx  # Calculate the gap
+
+                            print_saver.print_and_store(
+                                f"Correcting step number for '{step_obj.description}': {step_obj.step_number} -> {idx}. Gap: {gap}. Original index: {original_idx}."
+                            )
+                            repair_log.append(
+                                f"Correcting step number for '{step_obj.description}': {step_obj.step_number} -> {idx}. Gap: {gap}. Original index: {original_idx}."
+                            )
+                        except ValueError:
+                            original_idx = -1  # Indicates not found
+                            print_saver.print_and_store(
+                                f"Step '{step_obj.description}' with number {step_obj.step_number} not found in original_steps. Assigning new step number {idx}. Gap: {step_obj.step_number - idx}. Original index: {original_idx}. (-1 indicates not found)"
+                            )
+                        # Update the step number based on several criteria, listed below with logical reasoning for each condition:
+                        # If len(steps) == len(steps_objs):
+                        #     - Check for gaps in step_number sequence and adjust based on nearest surrounding Step objects.
+                        #     - Ensure the order of steps_objs matches the order of steps to maintain consistency.
+                        # elif len(steps) > len(steps_objs):
+                        #     - Identify missing step descriptions that arent in steps_objs that are in `steps`.
+                        #     - Determine if the total gap corresponds to the total number of missing step descriptions, or if the gap corresponds to the difference between the step number of the current step_obj and the step number of the next or previous Step object that is in both lists, and if that gap corresponds to the number of missing steps on either side before reaching a description that is in both lists.
+                        #     - Insert new Step objects at appropriate positions based on missing descriptions.
+                        #     - Reassign step_number to maintain sequential integrity.
+                        #     - steps is the source of truth if it is longer than steps_objs and is equal to total_steps.
+                        #     - if gap is equal to the number of missing steps on either side (ie, the gap is due to missing steps_objs entries), adjust step_obj.step_number based on missing steps on either side, as long as the index of the `steps` entries that are missing from `steps_objs` is the same as the missing step number before reaching either the end or the beginning of the list or the previous/next step that is in both lists, in either direction.
+                        #     - If the gap is not due to missing steps_objs entries, adjust step_obj.step_number based on the nearest preceding and following Step objects that maintain both the numerical sequence and the original index order.
+                        #     - If the order of steps_objs has been compromised, apply a different strategy to reorder the Step objects appropriately.
+                        #     - For example, if the idx is less than the step_obj.step_number, lets say idx = 2 and step_obj.step_number = 5, we would expect that the entry at `steps[idx]` would not match the description of the current step_obj so we would need to find the next entry in steps that matches the description of the current step_obj and if the index of that entry plus 1 is equal to the step_obj.step_number, we would know (and should confirm) that if the description of steps_objs[idx] is equal to the description of steps[idx], then we can safely assume that steps[idx:step_obj.step_number] are the missing steps, especially if the description of steps_objs[idx - 1] is equal to the description of steps[idx - 1]. If this is the case, we can safely assume that the missing steps are steps[idx:step_obj.step_number] and we can insert them into steps_objs at the correct indexes.
+                        #     - If the idx is greater than the step_obj.step_number, lets say idx = 5 and step_obj.step_number = 2, this might indicate that the order of steps_objs has been compromised and we should check if the description of steps[idx] is equal to the description of the current step_obj. If it is, it likely means the order is messed up, and we need to next determine if each entry by index in steps matches the description of the corresponding entry in steps_objs. If they do, the order is likely correct but the numbers arent, which we can verify by a) checking whether the largest step number in steps_objs is equal to the length of steps_objs (indicating perhaps steps_objs is missing steps from the end of steps, so check if the last few (len(steps) - max(steps_objs.step_number)) steps in steps are missing, otherwise, if the largest step number in steps_objs is equal to the length of `steps`, then we can assume that steps_objs is missing steps from the somewhere in the middle, so we need to verify whether the step numbers are correct by checking if the step number of each step in steps_objs is equal to the index of that step in steps, and if the subset of steps that are in both lists are in the same order.) and b) we can check if the step numbers are correct by checking if the step number of each step in steps_objs is equal to the index of that step in steps, and if not (or in addition to) checking if the subset of steps that are in both lists are in the same order. If they are not, we need to reorder the steps_objs list to match the order of the steps list as long as the length of counts is equal to the length of the steps list and the the original order of counts decreases from on index to the next and never increases or repeats a count. If either the length of counts is not equal to the length of steps or the original order of counts increases from one index to the next, we need to check if the either a) the length of counts is equal to the length of steps_objs and all the counts are in the same order as the original counts or b) the length of counts is equal to the length of steps_objs and the counts are not in the same order as the original counts but the counts correspond exactly to the step numbers of the steps_objs list. If a) is true and b) is not, if the order of step_number values is ascending and sequential, the order is correct and if the number of matching counts to step_numbers subtracted from the length of counts equals the number of missing steps, we should doublecheck that the steps in `steps` that correspond to the indexes of `counts` entries that did not match any step_number values in steps_objs are the missing steps. If this is the case, we can insert them into steps_objs at the correct indexes, using the existing step_number values from the entries in steps_objs that are in the same order as the missing steps in steps. If b) is true, we need to check if the counts correspond to the step numbers of the steps_objs list. If they do and the step_numbers only increase from one index to the next, we can assume the order is correct and the counts are correct and we can assume that the missing steps are the steps in `steps` that correspond to the indexes of `counts` entries that did not match any step_number values in steps_objs if the number of missing string descriptions that are in `steps` but not in `[step_obj.description for step_obj in steps_objs]`. If this is the case, we can insert them into steps_objs at the correct indexes, using the existing step_number values from the entries in steps_objs that are in the same order as the missing steps in steps. If the counts do not correspond to the step numbers of the steps_objs list, we need to check if the counts are in the same order as the original counts and if the length of counts is equal to the length of steps_objs. If both are true, we can assume that the order is correct and the counts are correct and we can assume that the missing steps are the steps in `steps` that correspond to the indexes of `counts` entries that did not match any step_number values in steps_objs. If this is the case, we can insert them into steps_objs at the correct indexes, using the existing step_number values from the entries in steps_objs that are in the same order as the missing steps in steps.
+                        # elif len(steps) < len(steps_objs):
+                        #     - Identify missing step descriptions that arent in `steps` list that are in `steps_objs`.
+                        #     - Determine if the total gap corresponds to the total number of missing step descriptions, or if the gap corresponds to the difference between the step number of the current step_obj and the step number of the next or previous Step object that is in both lists, and if that gap corresponds to the number of missing steps on either side before reaching a description that is in both lists.
+                        #     - Insert new Step objects at appropriate positions based on missing descriptions.
+                        #     - Reassign step_number to maintain sequential integrity.
+                        #     - steps_objs is the source of truth if it is longer than steps and is equal to total_steps.
+                        #     - Remembering that steps_objs is longer than the `steps` list, if the gap is equal to the number of missing steps on either side (ie, the gap is due to missing steps entries), if steps_objs is the source of truth because it is longer than the `steps` list, we can assume that the missing steps are steps in `steps_objs` that are not in `steps` and we can insert them into steps at the correct indexes, as long as the step_number values of steps_objs are in ascending order and sequential. If the step_number values are not in ascending order and sequential, we need to check if the counts are in ascending order and sequential and if the counts are in ascending order and sequential, we can assume that the missing steps are the steps in `steps_objs` that are not in `steps` and we can insert them into steps at the correct indexes, using the existing step_number values from the entries in steps_objs that are in the same order as the missing steps in steps. If the counts are not in ascending order and sequential, we need to check if the counts correspond to the step numbers of the steps_objs list. If they do and the step_numbers only increase from one index to the next, we can assume the order is correct and the counts are correct and we can assume that the missing steps are the steps in `steps` that correspond to the indexes of `counts` entries that did not match any step_number values in steps_objs. If this is the case, we can insert them into steps_objs at the correct indexes, using the existing step_number values from the entries in steps_objs that are in the same order as the missing steps in steps. If the counts do not correspond to the step numbers of the steps_objs list, we need to check if the counts are in the same order as the original counts and if the length of counts is equal to the length of steps_objs. If both are true, we can assume that the order is correct and the counts are correct and we can assume that the missing steps are the steps in `steps` that correspond to the indexes of `counts` entries that did not match any step_number values in steps_objs. If this is the case, we can insert them into steps_objs at the correct indexes, using the existing step_number values from the entries in steps_objs that are in the same order as the missing steps in steps, as long as each subset of step descriptions that are in both lists are in the same order as each other. If they are not, based on a) which list is longer and b) whether the step_number values are in ascending order and sequential and c) whether the counts are in ascending order and sequential and d) whether the counts correspond to the step numbers of the steps_objs list, we can determine which list is the source of truth and insert the missing steps into the other list at the correct indexes.
+                        #     - If the gap is not due to missing steps entries, adjust step_obj.step_number based on the nearest preceding and following Step objects that maintain both the numerical sequence and the original index order.
+                        #     - If the order of steps_objs has been compromised, apply a different strategy to reorder the Step objects appropriately.
+                        #     - For example, if the idx is less than the step_obj.step_number, lets say idx = 2 and step_obj.step_number = 5, we would expect that the entry at `steps[idx]` would not match the description of the current step_obj so we would need to find the next entry in steps that matches the description of the current step_obj and if the index of that entry plus 1 is equal to the step_obj.step_number, we would know (and should confirm) that if the description of steps_objs[idx] is equal to the description of steps[idx], then we can safely assume that steps[idx:step_obj.step_number] are the missing steps, especially if the description of steps_objs[idx - 1] is equal to the description of steps[idx - 1]. If this is the case, we can safely assume that the missing steps are steps[idx:step_obj.step_number] and we can insert them into steps_objs at the correct indexes.
+                        #     - If the idx is greater than the step_obj.step_number, lets say idx = 5 and step_obj.step_number = 2, this might indicate that the order of steps_objs has been compromised and we should check if the description of steps[idx] is equal to the description of the current step_obj. If it is, it likely means the order is messed up, and we need to next determine if each entry by index in steps matches the description of the corresponding entry in steps_objs. If they do, the order is likely correct but the numbers arent, which we can verify by a) checking whether the largest step number in steps_objs is equal to the length of steps_objs (indicating perhaps steps_objs is missing steps from the end of steps, so check if the last few (len(steps) - max(steps_objs.step_number)) steps in steps are missing, otherwise, if the largest step number in steps_objs is equal to the length of `steps`, then we can assume that steps_objs is missing steps from the somewhere in the middle, so we need to verify whether the step numbers are correct by checking if the step number of each step in steps_objs is equal to the index of that step in steps, and if the subset of steps that are in both lists are in the same order.) and b) we can check if the step numbers are correct by checking if the step number of each step in steps_objs is equal to the index of that step in steps, and if not (or in addition to) checking if the subset of steps that are in both lists are in the same order. If they are not, we need to reorder the steps_objs list to match the order of the steps list as long as the length of counts is equal to the length of the steps list and the the original order of counts decreases from on index to the next and never increases or repeats a count. If either the length of counts is not equal to the length of steps or the original order of counts increases from one index to the next, we need to check if the either a) the length of counts is equal to the length of steps_objs and all the counts are in the same order as the original counts or b) the length of counts is equal to the length of steps_objs and the counts are not in the same order as the original counts but the counts correspond exactly to the step numbers of the steps_objs list. If a) is true and b) is not, if the order of step_number values is ascending and sequential, the order is correct and if the number of matching counts to step_numbers subtracted from the length of counts equals the number of missing steps, we should doublecheck that the steps in `steps` that correspond to the indexes of `counts` entries that did not match any step_number values in steps_objs are the missing steps. If this is the case, we can insert them into steps_objs at the correct indexes, using the existing step_number values from the entries in steps_objs that are in the same order as the missing steps in steps. If b) is true, we need to check if the counts correspond to the step numbers of the steps_objs list. If they do and the step_numbers only increase from one index to the next, we can assume the order is correct and the counts are correct and we can assume that the missing steps are the steps in `steps` that correspond to the indexes of `counts` entries that did not match any step_number values in steps_objs if the number of missing string descriptions that are in `steps` but not in `[step_obj.description for step_obj in steps_objs]`. If this is the case, we can insert them into steps_objs at the correct indexes, using the existing step_number values from the entries in steps_objs that are in the same order as the missing steps in steps. If the counts do not correspond to the step numbers of the steps_objs list, we need to check if the counts are in the same order as the original counts and if the length of counts is equal to the length of steps_objs. If both are true, we can assume that the order is correct and the counts are correct and we can assume that the missing steps are the steps in `steps` that correspond to the indexes of `counts` entries that did not match any step_number values in steps_objs. If this is the case, we can insert them into steps_objs at the correct indexes, using the existing step_number values from the entries in steps_objs that are in the same order as the missing steps in steps.
+                        # Check for order discrepancies and apply alternative logic if the order has been compromised.
+                        step_obj.step_number = idx
+
+                # Re-analyze after correction
+                corrected_numbers = [obj.step_number for obj in steps_objs_temp]
+                has_gaps = any(
+                    b - a > 1
+                    for a, b in zip(corrected_numbers[:-1], corrected_numbers[1:])
+                )
+                is_strictly_increasing = all(
+                    b > a for a, b in zip(corrected_numbers[:-1], corrected_numbers[1:])
+                )
+                duplicates = [
+                    n for n in set(corrected_numbers) if corrected_numbers.count(n) > 1
+                ]
+
+                # Log post-correction diagnostics
+                print_saver.print_and_store(f"Corrected sequence: {corrected_numbers}")
+                repair_log.append(f"Corrected sequence: {corrected_numbers}")
+                print_saver.print_and_store(f"Has gaps after correction: {has_gaps}")
+                repair_log.append(f"Has gaps after correction: {has_gaps}")
+                print_saver.print_and_store(
+                    f"Is strictly increasing after correction: {is_strictly_increasing}"
+                )
+                repair_log.append(
+                    f"Is strictly increasing after correction: {is_strictly_increasing}"
+                )
+
+                if duplicates:
+                    for duplicate in duplicates:
+                        print_saver.print_and_store(
+                            f"Handling duplicate step number: {duplicate}"
+                        )
+                        # Example strategy: Increment step numbers of subsequent steps
+                        for step_obj in steps_objs:
+                            if step_obj.step_number == duplicate:
+                                step_obj.step_number += 1
+                                print_saver.print_and_store(
+                                    f"Incremented step number for '{step_obj.description}' to {step_obj.step_number}."
+                                )
+                                repair_log.append(
+                                    f"Incremented step number for '{step_obj.description}' to {step_obj.step_number}."
+                                )
+            if len(steps) < total_steps and total_steps == len(steps_objs):
+                print_saver.print_and_store(
+                    f"Index {i}: Steps length mismatch (less in steps than in steps_objs, and len of steps_objs is equal to total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                )
+                repair_log.append(
+                    f"Index {i}: Steps length mismatch (less in steps than in steps_objs, and len of steps_objs is equal to total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}. Steps: {steps}. Steps objs: {steps_objs}."
+                )
+                missing_objs = [
+                    obj for obj in steps_objs if obj.description not in steps
+                ]
+                for idx, obj in enumerate(missing_objs):
+                    # Find the next step that appears in both lists
+                    next_match = None
+                    obj_index = steps_objs.index(obj)
+                    for following in steps_objs[obj_index + 1 :]:
+                        if following.description in steps:
+                            next_match = following.description
+                            break
+                    # If there's a subsequent match, insert right before it; otherwise append
+                    if next_match:
+                        insert_idx = steps.index(next_match)
+                    else:
+                        insert_idx = len(steps)
+                    steps_temp.insert(insert_idx, obj.description)
+                repair_log.append(
+                    f"Missing objects added to steps: {missing_objs}. Steps: {steps_temp}."
+                )
+            elif len(steps) > total_steps and total_steps == len(steps_objs):
+                print_saver.print_and_store(
+                    f"Index {i}: Steps length mismatch (more in steps than in steps_objs, and len of steps_objs is equal to total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                )
+                repair_log.append(
+                    f"Index {i}: Steps length mismatch (more in steps than in steps_objs, and len of steps_objs is equal to total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}. Steps: {steps}. Steps objs: {steps_objs}."
+                )
+                missing_steps = [
+                    step
+                    for step in steps
+                    if step not in [obj.description for obj in steps_objs]
+                ]
+                for idx, step in enumerate(missing_steps):
+                    # Find the next step that appears in both lists
+                    next_match = None
+                    step_index = steps.index(step)
+                    count = int(counts[step_index]) if step_index < len(counts) else 0
+                    # calc_step_number = first_count - count + 1
+                    for following in steps[step_index + 1 :]:
+                        if following in [obj.description for obj in steps_objs]:
+                            next_match = following
+                            break
+                    # If there's a subsequent match, insert right before it; otherwise append
+                    if next_match:
+                        insert_idx = [obj.description for obj in steps_objs].index(
+                            next_match
+                        )
+                        # if insert_idx < calc_step_number - 1:
+                        #     insert_idx = calc_step_number - 1
+                    else:
+                        insert_idx = calc_step_number
+                    # if (
+                    #     steps_objs[insert_idx].step_number == calc_step_number
+                    #     and steps_objs[insert_idx].step_number == 1
+                    # ):
+                    #     insert_idx += 1
+                    if insert_idx < len(counts):
+                        steps_objs_temp.insert(
+                            insert_idx,
+                            Step(
+                                step,
+                                insert_idx + 1,
+                                int(counts[insert_idx]) - 1,
+                                reflection,
+                            ),
+                        )
+                    else:
+                        steps_objs_temp.append(
+                            Step(
+                                step,
+                                insert_idx + 1,
+                                first_count - insert_idx - 1,
+                                reflection,
+                            )
+                        )
+
+                repair_log.append(
+                    f"Missing steps added to steps_objs: {missing_steps}. Steps objs: {steps_objs_temp}."
+                )
+            elif len(steps) < total_steps and total_steps < len(steps_objs):
+                print_saver.print_and_store(
+                    f"Index {i}: Steps length mismatch (less in steps than in steps_objs, and len of steps_objs is greater than total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                )
+                repair_log.append(
+                    f"Index {i}: Steps length mismatch (less in steps than in steps_objs, and len of steps_objs is greater than total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}. Steps: {steps}. Steps objs: {steps_objs}."
+                )
+                missing_objs = [
+                    obj for obj in steps_objs if obj.description not in steps
+                ]
+                for idx, obj in enumerate(missing_objs):
+                    # Find the next step that appears in both lists
+                    next_match = None
+                    obj_index = steps_objs.index(obj)
+                    for following in steps_objs[obj_index + 1 :]:
+                        if following.description in steps:
+                            next_match = following.description
+                            break
+                    # If there's a subsequent match, insert right before it; otherwise append
+                    if next_match:
+                        insert_idx = steps.index(next_match)
+                    else:
+                        insert_idx = len(steps)
+                    steps_temp.insert(insert_idx, obj.description)
+                repair_log.append(
+                    f"Missing objects added to steps: {missing_objs}. Steps: {steps_temp}."
+                )
+            elif len(steps) > total_steps and total_steps < len(steps_objs):
+                print_saver.print_and_store(
+                    f"Index {i}: Steps length mismatch (more in steps than in steps_objs, and len of steps_objs is greater than total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                )
+                repair_log.append(
+                    f"Index {i}: Steps length mismatch (more in steps than in steps_objs, and len of steps_objs is greater than total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}. Steps: {steps}. Steps objs: {steps_objs}."
+                )
+                missing_steps = [
+                    step
+                    for step in steps
+                    if step not in [obj.description for obj in steps_objs]
+                ]
+                for idx, step in enumerate(missing_steps):
+                    # Find the next step that appears in both lists
+                    next_match = None
+                    step_index = steps.index(step)
+                    for following in steps[step_index + 1 :]:
+                        if following in [obj.description for obj in steps_objs]:
+                            next_match = following
+                            break
+                    # If there's a subsequent match, insert right before it; otherwise append
+                    if next_match:
+                        insert_idx = [obj.description for obj in steps_objs].index(
+                            next_match
+                        )
+                    else:
+                        insert_idx = (
+                            calc_step_number
+                            if calc_step_number <= len(steps_objs)
+                            else len(steps_objs)
+                        )
+                    if insert_idx < len(counts):
+                        steps_objs_temp.insert(
+                            insert_idx,
+                            Step(
+                                step,
+                                insert_idx + 1,
+                                int(counts[insert_idx]) - 1,
+                                reflection,
+                            ),
+                        )
+                    else:
+                        steps_objs_temp.append(
+                            Step(
+                                step,
+                                insert_idx + 1,
+                                first_count - insert_idx - 1,
+                                reflection,
+                            ),
+                        )
+                repair_log.append(
+                    f"Missing steps added to steps_objs: {missing_steps}. Steps objs: {steps_objs_temp}."
+                )
+            elif len(steps) == total_steps and total_steps < len(steps_objs):
+                print_saver.print_and_store(
+                    f"Index {i}: Steps length mismatch (equal in steps and steps_objs, and len of steps_objs is greater than total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                )
+                repair_log.append(
+                    f"Index {i}: Steps length mismatch (equal in steps and steps_objs, and len of steps_objs is greater than total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}. Steps: {steps}. Steps objs: {steps_objs}."
+                )
+                missing_objs = [
+                    obj for obj in steps_objs if obj.description not in steps
+                ]
+                for idx, obj in enumerate(missing_objs):
+                    # Find the next step that appears in both lists
+                    next_match = None
+                    obj_index = steps_objs.index(obj)
+                    for following in steps_objs[obj_index + 1 :]:
+                        if following.description in steps:
+                            next_match = following.description
+                            break
+                    # If there's a subsequent match, insert right before it; otherwise append
+                    if next_match:
+                        insert_idx = steps.index(next_match)
+                    else:
+                        insert_idx = len(steps)
+                    steps_temp.insert(insert_idx, obj.description)
+                repair_log.append(
+                    f"Missing objects added to steps: {missing_objs}. Steps: {steps_temp}."
+                )
+            elif len(steps) == total_steps and total_steps > len(steps_objs):
+                print_saver.print_and_store(
+                    f"Index {i}: Steps length mismatch (equal in steps and steps_objs, and len of steps_objs is less than total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                )
+                repair_log.append(
+                    f"Index {i}: Steps length mismatch (equal in steps and steps_objs, and len of steps_objs is less than total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}. Steps: {steps}. Steps objs: {steps_objs}."
+                )
+                missing_steps = [
+                    step
+                    for step in steps
+                    if step not in [obj.description for obj in steps_objs]
+                ]
+                for idx, step in enumerate(missing_steps):
+                    # Find the next step that appears in both lists
+                    next_match = None
+                    step_index = steps.index(step)
+                    for following in steps[step_index + 1 :]:
+                        if following in [obj.description for obj in steps_objs]:
+                            next_match = following
+                            break
+                    # If there's a subsequent match, insert right before it; otherwise append
+                    if next_match:
+                        insert_idx = [obj.description for obj in steps_objs].index(
+                            next_match
+                        )
+                    else:
+                        insert_idx = (
+                            calc_step_number
+                            if calc_step_number <= len(steps_objs)
+                            else len(steps_objs)
+                        )
+                    if insert_idx < len(counts) and len(steps_objs) != 0:
+                        print_saver.print_and_store(
+                            f"Inserting step '{step}' at index {insert_idx} of counts: {counts} of length {len(counts)}."
+                        )
+                        print_saver.print_and_store(
+                            f"counts[insert_idx]: {counts[insert_idx]}."
+                        )
+                        steps_objs_temp.insert(
+                            insert_idx,
+                            Step(
+                                step,
+                                insert_idx + 1,
+                                int(counts[insert_idx]) - 1,
+                                reflection,
+                            ),
+                        )
+                    else:
+                        steps_objs_temp.append(
+                            Step(
+                                step,
+                                insert_idx + 1,
+                                first_count - insert_idx - 1,
+                                reflection,
+                            ),
+                        )
+                repair_log.append(
+                    f"Missing steps added to steps_objs: {missing_steps}. Steps objs: {steps_objs_temp}."
+                )
+            elif len(steps) < total_steps and total_steps > len(steps_objs):
+                # This result indicates that the steps list is shorter than the total steps and the steps_objs list is shorter than the total steps. So we should check if the steps list is shorter than the steps_objs list or vice versa as the total steps is greater than both. Even if they are of the same length, we need to check if either has steps not in the other, as each could have unique steps, and adding them together might result in both lists equaling the total steps, if we're lucky.
+                # This result indicates that the steps list is shorter than the total steps and the steps_objs list is also shorter than the total steps.
+                # We should check if one list is shorter than the other or if they are the same length, then handle missing items in each accordingly.
+
+                if len(steps) < len(steps_objs):
+                    print_saver.print_and_store(
+                        f"Index {i}: Steps length mismatch (less in steps than in steps_objs, total_steps is higher). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                    )
+                    repair_log.append(
+                        f"Index {i}: Steps length mismatch (less in steps than in steps_objs, total_steps is higher). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}. Steps: {steps}. Steps objs: {steps_objs}."
+                    )
+                    missing_objs = [
+                        obj for obj in steps_objs if obj.description not in steps
+                    ]
+                    for idx, obj in enumerate(missing_objs):
+                        next_match = None
+                        obj_index = steps_objs.index(obj)
+                        for following in steps_objs[obj_index + 1 :]:
+                            if following.description in steps:
+                                next_match = following.description
+                                break
+                        if next_match:
+                            insert_idx = steps.index(next_match)
+                        else:
+                            insert_idx = len(steps)
+                        steps_temp.insert(insert_idx, obj.description)
+                    repair_log.append(
+                        f"Missing objects added to steps: {missing_objs}. Steps: {steps_temp}."
+                    )
+                elif len(steps) > len(steps_objs):
+                    print_saver.print_and_store(
+                        f"Index {i}: Steps length mismatch (more in steps than in steps_objs, total_steps is higher). Adjusting steps_objs. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                    )
+                    repair_log.append(
+                        f"Index {i}: Steps length mismatch (more in steps than in steps_objs, total_steps is higher). Adjusting steps_objs. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}. Steps: {steps}. Steps objs: {steps_objs}."
+                    )
+                    missing_steps = [
+                        step
+                        for step in steps
+                        if step not in [obj.description for obj in steps_objs]
+                    ]
+                    for idx, step_value in enumerate(missing_steps):
+                        next_match = None
+                        step_index = steps.index(step_value)
+                        for following in steps[step_index + 1 :]:
+                            if following in [obj.description for obj in steps_objs]:
+                                next_match = following
+                                break
+                        if next_match:
+                            insert_idx = [obj.description for obj in steps_objs].index(
+                                next_match
+                            )
+                        else:
+                            insert_idx = (
+                                calc_step_number
+                                if calc_step_number <= len(steps_objs)
+                                else len(steps_objs)
+                            )
+                        steps_objs_temp.insert(
+                            insert_idx,
+                            Step(
+                                step_value,
+                                insert_idx + 1,
+                                (
+                                    int(counts[insert_idx]) - 1
+                                    if insert_idx < len(counts)
+                                    else 0
+                                ),
+                                reflection,
+                            ),
+                        )
+                    repair_log.append(
+                        f"Missing steps added to steps_objs: {missing_steps}. Steps objs: {steps_objs_temp}."
+                    )
+                elif len(steps) == len(steps_objs):
+                    # len(steps) == len(steps_objs), but both are still less than total_steps.
+                    # We try reconciling any missing content in each list to move toward total_steps.
+                    print_saver.print_and_store(
+                        f"Index {i}: Steps length mismatch (equal in steps and steps_objs, but both less than total_steps). Adjusting. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                    )
+                    repair_log.append(
+                        f"Index {i}: Steps length mismatch (equal in steps and steps_objs, but both less than total_steps). Adjusting. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}. Steps: {steps}. Steps objs: {steps_objs}."
+                    )
+                    missing_objs = [
+                        obj for obj in steps_objs if obj.description not in steps
+                    ]
+
+                    if calc_step_number is None:  # This should never happen
+                        print_saver.print_and_store(
+                            f"Index {i}: Error calculating step number for {i}."
+                        )
+                        continue
+
+                    for obj in missing_objs:
+                        obj_index = steps_objs.index(obj)
+                        next_match = None
+                        for following in steps_objs[obj_index + 1 :]:
+                            if following.description in steps:
+                                next_match = following.description
+                                break
+                        if next_match:
+                            insert_idx = steps.index(next_match)
+                        else:
+                            insert_idx = calc_step_number
+                        steps_temp.insert(insert_idx, obj.description)
+
+                    missing_steps = [
+                        step_value
+                        for step_value in steps
+                        if step_value not in [o.description for o in steps_objs]
+                    ]
+                    for step_value in missing_steps:
+                        step_index = steps.index(step_value)
+                        next_match = None
+                        for following in steps[step_index + 1 :]:
+                            if following in [o.description for o in steps_objs]:
+                                next_match = following
+                                break
+                        if next_match:
+                            insert_idx = [o.description for o in steps_objs].index(
+                                next_match
+                            )
+                        else:
+                            print_saver.print_and_store(
+                                f"Index {i}: Error calculating step number for '{step_value}' so using calc_step_number {calc_step_number}."
+                            )
+                            insert_idx = calc_step_number
+                        steps_objs_temp.insert(
+                            insert_idx,
+                            Step(
+                                step_value,
+                                insert_idx + 1,
+                                (
+                                    int(counts[insert_idx]) - 1
+                                    if insert_idx < len(counts)
+                                    else 0
+                                ),
+                                reflection,
+                            ),
+                        )
+                    repair_log.append(
+                        f"Missing objects added to steps: {missing_objs}. Steps: {steps_temp}."
+                    )
+
+            elif len(steps) > total_steps and total_steps > len(steps_objs):
+                # This condition means that the steps list is longer than the total steps and the steps_objs list is also shorter than the total steps, meaning that the steps list is longer than the steps_objs list, but somehow the total steps is greater than both. #
+                # This is a tricky situation, but we can handle it by adding the missing steps from the steps list to the steps_objs list.
+                print_saver.print_and_store(
+                    f"Index {i}: Steps length mismatch (more in steps than in steps_objs, and total_steps is in between). Adjusting steps_objs. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                )
+                repair_log.append(
+                    f"Index {i}: Steps length mismatch (more in steps than in steps_objs, and total_steps is in between). Adjusting steps_objs. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}. Steps: {steps}. Steps objs: {steps_objs}."
+                )
+                missing_steps = [
+                    step
+                    for step in steps
+                    if step not in [obj.description for obj in steps_objs]
+                ]
+                for idx, step in enumerate(missing_steps):
+                    next_match = None
+                    step_index = steps.index(step)
+                    for following in steps[step_index + 1 :]:
+                        if following in [obj.description for obj in steps_objs]:
+                            next_match = following
+                            break
+                    if next_match:
+                        insert_idx = [obj.description for obj in steps_objs].index(
+                            next_match
+                        )
+                    else:
+                        insert_idx = (
+                            calc_step_number
+                            if calc_step_number <= len(steps_objs)
+                            else len(steps_objs)
+                        )
+                    if insert_idx < len(counts):
+                        steps_objs_temp.insert(
+                            insert_idx,
+                            Step(
+                                step,
+                                insert_idx + 1,
+                                int(counts[insert_idx]) - 1,
+                                reflection,
+                            ),
+                        )
+                    else:
+                        steps_objs_temp.append(
+                            Step(
+                                step,
+                                insert_idx + 1,
+                                first_count - insert_idx - 1,
+                                reflection,
+                            ),
+                        )
+                    print_saver.print_and_store(
+                        f"Inserted missing step '{step}' at index {insert_idx}."
+                    )
+                    repair_log.append(
+                        f"Inserted missing step '{step}' at index {insert_idx}."
+                    )
+                unique_step_descriptions = set(s.strip() for s in steps if s.strip())
+                unique_obj_descriptions = set(
+                    obj.description.strip()
+                    for obj in steps_objs
+                    if obj.description.strip()
+                )
+                total_steps = len(
+                    unique_step_descriptions.union(unique_obj_descriptions)
+                )
+                print_saver.print_and_store(
+                    f"Final total steps after adjustment: {total_steps}"
+                )
+                repair_log.append(
+                    f"Final total steps after adjustment: {total_steps}. Unique steps: {unique_step_descriptions}. Unique objects: {unique_obj_descriptions}."
+                )
+            elif len(steps) == len(steps_objs) and total_steps < max(
+                len(steps), len(steps_objs)
+            ):
+                print_saver.print_and_store(
+                    f"Index {i}: Steps length mismatch (equal in steps and steps_objs, but both greater than total_steps). Adjusting. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                )
+                repair_log.append(
+                    f"Index {i}: Steps length mismatch (equal in steps and steps_objs, but both greater than total_steps). Adjusting. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}. Steps: {steps}. Steps objs: {steps_objs}."
+                )
+                missing_objs = [
+                    obj for obj in steps_objs if obj.description not in steps
+                ]
+                for obj in missing_objs:
+                    obj_index = steps_objs.index(obj)
+                    next_match = None
+                    for following in steps_objs[obj_index + 1 :]:
+                        if following.description in steps:
+                            next_match = following.description
+                            break
+                    if next_match:
+                        insert_idx = steps.index(next_match)
+                    else:
+                        insert_idx = len(steps)
+                    steps_temp.insert(insert_idx, obj.description)
+                repair_log.append(
+                    f"Missing objects added to steps: {missing_objs}. Steps: {steps_temp}."
+                )
+                missing_steps = [
+                    step_value
+                    for step_value in steps
+                    if step_value not in [o.description for o in steps_objs]
+                ]
+                for step_value in missing_steps:
+                    step_index = steps.index(step_value)
+                    next_match = None
+                    for following in steps[step_index + 1 :]:
+                        if following in [o.description for o in steps_objs]:
+                            next_match = following
+                            break
+                    if next_match:
+                        insert_idx = [o.description for o in steps_objs].index(
+                            next_match
+                        )
+                    else:
+                        insert_idx = (
+                            calc_step_number
+                            if calc_step_number <= len(steps_objs)
+                            else len(steps_objs)
+                        )
+                    steps_objs_temp.insert(
+                        insert_idx,
+                        Step(
+                            step_value,
+                            insert_idx + 1,
+                            (
+                                int(counts[insert_idx]) - 1
+                                if insert_idx < len(counts)
+                                else 0
+                            ),
+                            reflection,
+                        ),
+                    )
+                repair_log.append(
+                    f"Missing steps added to steps_objs: {missing_steps}. Steps objs: {steps_objs_temp}."
+                )
+            elif len(steps) == len(steps_objs) and total_steps > max(
+                len(steps), len(steps_objs)
+            ):
+                print_saver.print_and_store(
+                    f"Index {i}: Steps length mismatch (equal in steps and steps_objs, but both less than total_steps). Adjusting. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                )
+                repair_log.append(
+                    f"Index {i}: Steps length mismatch (equal in steps and steps_objs, but both less than total_steps). Adjusting. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}. Steps: {steps}. Steps objs: {steps_objs}."
+                )
+                missing_objs = [
+                    obj for obj in steps_objs if obj.description not in steps
+                ]
+                for obj in missing_objs:
+                    obj_index = steps_objs.index(obj)
+                    next_match = None
+                    for following in steps_objs[obj_index + 1 :]:
+                        if following.description in steps:
+                            next_match = following.description
+                            break
+                    if next_match:
+                        insert_idx = steps.index(next_match)
+                    else:
+                        insert_idx = len(steps)
+                    steps_temp.insert(insert_idx, obj.description)
+                repair_log.append(
+                    f"Missing objects added to steps: {missing_objs}. Steps: {steps_temp}."
+                )
+
+                missing_steps = [
+                    step_value
+                    for step_value in steps
+                    if step_value not in [o.description for o in steps_objs]
+                ]
+                for step_value in missing_steps:
+                    step_index = steps.index(step_value)
+                    next_match = None
+                    for following in steps[step_index + 1 :]:
+                        if following in [o.description for o in steps_objs]:
+                            next_match = following
+                            break
+                    if next_match:
+                        insert_idx = [o.description for o in steps_objs].index(
+                            next_match
+                        )
+                    else:
+                        insert_idx = (
+                            calc_step_number
+                            if calc_step_number <= len(steps_objs)
+                            else len(steps_objs)
+                        )
+                    steps_objs_temp.insert(
+                        insert_idx,
+                        Step(
+                            step_value,
+                            insert_idx + 1,
+                            (
+                                int(counts[insert_idx]) - 1
+                                if insert_idx < len(counts)
+                                else 0
+                            ),
+                            reflection,
+                        ),
+                    )
+                repair_log.append(
+                    f"Missing steps added to steps_objs: {missing_steps}. Steps objs: {steps_objs_temp}."
+                )
+            elif len(steps) == total_steps and total_steps == len(steps_objs):
+                # This condition means that the steps list is equal to the total steps and the steps_objs list is also equal to the total steps, meaning that the steps list is equal to the steps_objs list, and both are equal to the total steps.
+                # This is the ideal situation, and we don't need to do anything.
+                print_saver.print_and_store(
+                    f"Index {i}: Steps length match (equal in steps and steps_objs, and equal to total_steps). No adjustment needed. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                )
+
+            else:
+                raise ValueError(
+                    f"Index {i}: Unhandled case. Please check the length of steps, steps_objs, and total_steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                )
+            steps = steps_temp
+            steps_objs = steps_objs_temp
+
+            # counts = remove_nonnumeric_counts(counts, first_count)
+            # pre_count = (
+            #     counts[i] if i < len(counts) else (int(counts[-1]) - 1 if counts else 0)
+            # )
+            # pre_count = int(pre_count)
+            remaining_budget = count_of_i - 1 if count_of_i is not (None or 0) else 0
+            description = None
+            for j in range(len(steps_objs)):
+                if (
+                    steps_objs[j].step_number == step_number
+                    and steps_objs[j].remaining_budget == remaining_budget
+                ) or (
+                    steps_objs[j].step_number == calc_step_number
+                    and steps_objs[j].remaining_budget == remaining_budget
+                ):
+                    description = steps_objs[j].description
+                    break
+            if description is None:
+                try:
+                    count_index = int(counts_ints.index(count_of_i))
+                    description = (
+                        steps[count_index] if count_index < len(steps) else "ERROR"
+                    )
+                except Exception as e:
+                    description = "ERROR " + str(e)
+                    print_saver.print_and_store(
+                        f"Index {i}: Error finding description for step {step_number}: error {e}"
+                    )
+                if "ERROR" in description:
+                    try:
+                        description = steps[i]
+                    except Exception as e:
+                        description = "ERROR " + str(e)
+                        print_saver.print_and_store(
+                            f"Index {i}: Error finding description for step {step_number}: error {e}"
+                        )
+            assert description is not None, f"Description is None for index {i}."
+            ee = description.replace("ERROR", "") if "ERROR" in description else ""
+            assert (
+                "ERROR" not in description
+            ), f"Description is 'ERROR' for index {i}. Error:{ee} Steps: {steps}. Counts: {counts_ints}. Counts type: {type(counts_ints[0])} Steps_objs: {steps_objs} and remaining_budget: {remaining_budget} and count_of_i: {count_of_i} and calc_step_number: {calc_step_number}"
+            print_saver.print_and_store(
+                f"Index {i}: Step {step_number} description: {description}, remaining_budget: {remaining_budget}"
+            )
+            # assert (
+            #     step_number == calc_step_number
+            # ), f"Step number mismatch: {step_number} vs {calc_step_number} for index {i} step {description}. Steps: {steps}. Counts: {counts}. Steps_objs: {steps_objs}."
+            if step_number in existing_map.keys():
+                obj = existing_map[step_number]
+                # Update description if necessary
+                if description and obj.description != description:
+                    obj.description = description
+                # Update remaining_budget if necessary
+                if remaining_budget != obj.remaining_budget:
+                    if remaining_budget < obj.remaining_budget:
+                        print_saver.print_and_store(
+                            f"Remaining budget mismatch for step {step_number} (shorter than expected). Adjusting remaining budget. {remaining_budget} vs {obj.remaining_budget}"
+                        )
+                        remaining_budget = obj.remaining_budget
+                        # obj.remaining_budget = remaining_budget
+                    elif remaining_budget > obj.remaining_budget:
+                        print_saver.print_and_store(
+                            f"Remaining budget mismatch for step {step_number} (longer than expected). Adjusting remaining budget. {remaining_budget} vs {obj.remaining_budget}"
+                        )
+                        obj.remaining_budget = remaining_budget
+            else:
+                # Create a new Step object
+                print_saver.print_and_store(
+                    f"Creating new Step object for step {step_number}: {description}"
+                )
+                new_obj = Step(description, step_number, remaining_budget, reflection)
+                existing_map[step_number] = new_obj
+
+        # Step 4: Sort the steps by step_number
+        step_objs_final = [existing_map[sn] for sn in sorted(existing_map.keys())]
+
+        return step_objs_final, steps, reflections, repair_log
+
+    # ===========================
+    # Define the process_steps Function
+    # ===========================
+
+    def process_steps(
+        self,
+        steps_objs: Optional[List[Step]],
+        steps: List[str],
+        counts: List[str | int],
+        reflections: List[Optional[Reflection]],
+        rewards: List[float],
+        response: str,
+        first_count: int,
+        print_saver,  # Assuming print_saver is an object with print_and_store method
+        interaction: Interaction,  # Assuming Interaction is a defined class
+        task: str,
+        current_plan_step: int,
+        repair_log: Optional[List[str]] = None,
+    ) -> Interaction:
+        """
+        Process and consolidate steps, reflections, and rewards into the interaction object.
+
+        Args:
+            steps_objs (Optional[List[Step]]): Existing list of Step objects.
+            steps (List[str]): List of step descriptions.
+            counts (List[str | int]): List of counts representing the budget before each step.
+            reflections (List[Optional[Reflection | str]]): List of reflections.
+            rewards (List[float]): List of rewards.
+            response (str): Response string containing XML-like tags.
+            first_count (int): The initial count value.
+            print_saver: Object with a print_and_store method.
+            interaction (Interaction): Object to store steps and reflections.
+            task (str): The current task context.
+
+        Returns:
+            Interaction: The updated interaction object.
+        """
+        # Ensure steps_objs is a list
+        steps_objs = steps_objs or []
+
+        # ===========================
+        # Step 1: Consolidate Steps
+        # ===========================
+
+        # Call the consolidate_steps function to align steps_objs with steps and counts
+        steps_objs, steps, reflections, repair_log = self.consolidate_steps(
+            steps_objs,
+            steps,
+            counts,
+            reflections,
+            first_count,
+            response,
+            current_plan_step,
+            repair_log,
+        )
+
+        assert 0 not in [
+            obj.step_number for obj in steps_objs
+        ], "Step numbers must be > 0."
+
+        # ===========================
+        # Step 2: Validate and Adjust Steps
+        # ===========================
+
+        repair_log = self.validate_steps(
+            steps_objs,
+            steps,
+            counts,
+            reflections,
+            rewards,
+            print_saver,
+            interaction,
+            task,
+            first_count,
+            repair_log,
+        )
+
+        # ===========================
+        # Step 3: Ensure Content Similarity
+        # ===========================
+
+        repair_log = self.ensure_content_similarity(
+            steps_objs, steps, first_count, print_saver, interaction, task, repair_log
+        )
+
+        # ===========================
+        # Step 4: Update Interaction with Consolidated Steps
+        # ===========================
+
+        for step_obj in steps_objs:
+            if step_obj not in interaction.steps:
+                interaction.steps.append(step_obj)
+
+        # ===========================
+        # Step 5: Process Reflections and Rewards
+        # ===========================
+
+        for i, step_obj in [(obj.step_number, obj) for obj in steps_objs]:
+            # Handle reflections
+            if i == 0 and step_obj.step_number == 0:
+                step_obj.step_number = 1
+                # Now check steps after the first one to ensure they are sequential
+                for j in range(1, len(steps_objs)):
+                    if steps_objs[j].step_number != step_obj.step_number + 1:
+                        steps_objs[j].step_number = step_obj.step_number + 1
+            if (
+                step_obj.reflection is None
+                or not isinstance(step_obj.reflection, Reflection)
+                or step_obj.reflection.content.strip() == ""
+            ) and step_obj.step_number in [r.step_number for r in reflections]:
+                reflection = (
+                    reflections[
+                        reflections.index(
+                            [
+                                r
+                                for r in reflections
+                                if r.step_number == step_obj.step_number
+                            ][0]
+                        )
+                    ]
+                    if step_obj.step_number in [r.step_number for r in reflections]
+                    else self.judge_step(step_obj, task)
+                )
+                if reflection is not None and isinstance(reflection, Reflection):
+                    reflection.step_number = step_obj.step_number
+                    step_obj.reflection = reflection
+                    interaction.reflections.append(reflection)
+                elif isinstance(reflection, str):
+                    step_obj.reflection = (
+                        reflection
+                        if isinstance(reflection, Reflection)
+                        else Reflection(
+                            content=str(reflection),
+                            reward=(
+                                float(rewards[i])
+                                if i < len(rewards)
+                                else self.judge_step(step_obj, task)
+                            ),
+                            step_number=step_obj.step_number,
+                        )
+                    )
+            if step_obj.reflection is None or not isinstance(
+                step_obj.reflection, Reflection
+            ):
+                # If reflection is missing, generate it
+
+                reflection = reflection = (
+                    reflections[i]
+                    if i < len(reflections)
+                    and reflections[i].step_number == step_obj.step_number
+                    else self.judge_step(step_obj, task)
+                )
+                if reflection is not None and isinstance(reflection, Reflection):
+                    reflection.step_number = step_obj.step_number
+                    step_obj.reflection = reflection
+                    interaction.reflections.append(reflection)
+                else:
+                    # Assign the reflection and reward to the step
+                    step_obj.reflection = self.judge_step(step_obj, task)
+            assert isinstance(
+                step_obj.reflection, Reflection
+            ), "Reflection object is not properly instantiated."
+            assert hasattr(
+                step_obj.reflection, "content"
+            ), "Reflection object does not have a content attribute."
+            print_saver.print_and_store(
+                f"Reflection for step {step_obj.step_number}: {step_obj.reflection}"
+            )
+            print_saver.print_and_store(
+                f"Type of reflection: {type(step_obj.reflection)}"
+            )
+            repair_log.append(
+                f"Step {step_obj.step_number} reflection is missing. Generated reflection: {step_obj.reflection}"
+            )
+            if (
+                interaction.reflections
+                and len(interaction.reflections) > 0
+                and interaction.reflections != []
+            ):
+                print_saver.print_and_store(
+                    f"Type of reflection in interaction: {type(interaction.reflections)} and type of first item: {type(interaction.reflections[0])}"
+                )
+            else:
+                print_saver.print_and_store(
+                    f"Type of reflection in interaction: {type(interaction.reflections)} and type of reflection in step: {type(step_obj.reflection)}"
+                )
+                assert isinstance(
+                    step_obj.reflection, Reflection
+                ), "Reflection object is not properly instantiated."
+
+            if step_obj.reflection not in interaction.reflections:
+                interaction.reflections.append(step_obj.reflection)
+
+            # Handle rewards if not already set
+            if (
+                step_obj.reflection
+                and step_obj.reflection.reward == 0.0
+                and i < len(rewards)
+            ):
+                step_obj.reflection.reward = self.judge_step(step_obj, task)
+
+        # ===========================
+        # Step 6: Extract Answer from Response
+        # ===========================
+
+        answer_match = re.search(
+            r"<answer>(.*?)(?:</answer>|<final_reward>)",
+            response,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if answer_match:
+            interaction.answer = answer_match.group(1).strip()
+
+        # ===========================
+        # Step 7: Extract Final Reward from Response
+        # ===========================
+
+        final_reward_match = re.search(
+            r"<final_reward>(0\.\d+?|1\.0)</final_reward>",
+            response,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if final_reward_match:
+            interaction.final_reward = float(final_reward_match.group(1))
+
+        # ===========================
+        # Final Assertion
+        # ===========================
+
+        assert isinstance(
+            interaction, Interaction
+        ), "Interaction object is not properly instantiated."
+
+        return interaction
+
+    # ===========================
+    # Example Usage
+    # ===========================
     def parse_response(
         self,
         response: str,
@@ -2631,11 +6111,13 @@ Task: {task}
         current_remaining_budget: int = 0,
         interaction: Interaction = None,
         initial_budget: int = 0,
+        plan_step_number: int = 0,
     ) -> Interaction:
         """
         Parses the OpenAI API response to extract steps, reflections, answers, and rewards.
         """
         # TODO: Implement a more robust response parsing mechanism, like using structured output from the model
+        repair_log = []
         if interaction is None:
             interaction = Interaction(
                 task=task, steps=[], reflections=[], answer="", final_reward=0.0
@@ -2644,6 +6126,18 @@ Task: {task}
         if response is None or not isinstance(response, str):
             return interaction
 
+        # Check for any missing tags
+        if not re.search(r"<step>", response, re.DOTALL | re.IGNORECASE):
+            print_saver.print_and_store("No steps found in response.")
+            return interaction
+        if not re.search(r"<thinking>", response, re.DOTALL | re.IGNORECASE):
+            print_saver.print_and_store("No <thinking> tags found in response.")
+            return interaction
+        thoughts = re.findall(
+            r"<thinking>(.*?)<(?:/thinking|step|reflection|count|reward)>",
+            response,
+            re.DOTALL | re.IGNORECASE,
+        )
         # Extract steps
         if steps_objs is None or not isinstance(steps_objs, list):
             steps_objs = []
@@ -2652,860 +6146,616 @@ Task: {task}
             reflections_objs = []
 
         steps = re.findall(
-            r"<step>(.*?)<(?:\/step|reflection|reward|step)>", response, re.DOTALL
+            r"<step>(.*?)<(?:\/step|reflection|reward|step)>",
+            response,
+            re.DOTALL | re.IGNORECASE,
         )
-        # remove empty steps
+
         print_saver.print_and_store(f"Steps: {steps}")
+        if not re.search(r"<count>", response, re.DOTALL | re.IGNORECASE):
+            print_saver.print_and_store("No <count> tags found in response.")
+            # Instead, we can use the current_remaining_budget, current_step_number, initial_budget, and steps_objs to infer the count values
+            # Use current_remaining_budget, current_step_number, initial_budget, and steps_objs to infer the count values
+            counts = []
+            if steps_objs and len(steps_objs) > 0:
+                # Get max remaining budget from steps_objs
+                max_budget = max([s.remaining_budget for s in steps_objs]) + 1
+                first_count = max(
+                    max_budget, initial_budget if initial_budget > 0 else max_budget
+                )
+
+                # Generate counts backwards from first_count
+                for i in range(len(steps)):
+                    if (
+                        i < len(steps_objs)
+                        and steps_objs[i].remaining_budget is not None
+                    ):
+                        counts.append(steps_objs[i].remaining_budget + 1)
+                    else:
+                        prev_count = int(counts[-1]) if counts else first_count
+                        counts.append(prev_count - 1)
+            else:
+                # If no steps_objs, generate counts based on initial_budget or current values
+                first_count = (
+                    initial_budget
+                    if initial_budget > 0
+                    else (current_remaining_budget + current_step_number)
+                )
+                counts = [str(first_count - i) for i in range(len(steps))]
+                # Instead of <count> tags, infer counts based on existing parameters
+
+            print_saver.print_and_store(f"Inferred counts: {counts}")
+            repair_log.append(
+                f"Could not find <count> tags in response. Inferred counts: {counts}"
+            )
+        else:
+            counts = re.findall(
+                r"<count>(.*?)<(?:\/count|thinking|step|reflection|reward|count)>",
+                response,
+                re.DOTALL | re.IGNORECASE,
+            )
         first_count = re.search(
             r"<count>(.*?)<(?:\/count|thinking|step|reflection|reward|count)>",
             response,
-            re.DOTALL,
+            re.DOTALL | re.IGNORECASE,
         )  # Represents the initial step budget
         if first_count and first_count.group(1).strip().isnumeric():
             first_count = int(first_count.group(1))
         elif steps_objs is not None and steps_objs != []:
-            first_count = max([s.remaining_budget for s in steps_objs])
-        elif task.plan:
-            first_count = len(task.plan.steps) + len(
-                [sub_task for step in task.plan.steps for sub_task in step.subtasks]
+
+            first_count = max([s.remaining_budget for s in steps_objs]) + 1
+            repair_log.append(
+                f"first_count adjusted to {first_count} based on steps_objs."
+            )
+        elif initial_budget > len(steps) or initial_budget > len(steps_objs):
+            first_count = initial_budget
+            repair_log.append(
+                f"first_count adjusted to {first_count} based on initial_budget."
             )
         if initial_budget != 0 and first_count != 0:
             if first_count != initial_budget:
                 print_saver.print_and_store(
                     f"Initial budget mismatch. Adjusting initial budget. {first_count} vs initial: {initial_budget}"
                 )
-                first_count = initial_budget
+                repair_log.append(
+                    f"Initial budget mismatch. Adjusting initial budget. {first_count} vs initial: {initial_budget}. Adjusting to {first_count}."
+                )
+                initial_budget = first_count
 
-        elif initial_budget != 0 and first_count == 0:
+        elif initial_budget != 0 and isinstance(first_count, int) and first_count == 0:
             first_count = initial_budget
             print_saver.print_and_store(
                 f"Initial budget mismatch. Adjusting initial budget. {first_count}"
             )
-        elif initial_budget == 0 and first_count == 0:
+        elif initial_budget == 0 and isinstance(first_count, int) and first_count == 0:
             initial_budget = 12
             first_count = initial_budget
-        elif initial_budget == 0 and first_count != 0 and first_count is not None:
+        elif (
+            initial_budget == 0
+            and isinstance(first_count, int)
+            and first_count != 0
+            and first_count is not None
+        ):
             initial_budget = first_count
         else:
             initial_budget = 12
             first_count = initial_budget
 
-        counts = re.findall(
-            r"<count>(.*?)<(?:\/count|thinking|step|reflection|reward|count)>",
-            response,
-            re.DOTALL,
-        )
+        if steps_objs and max([s.remaining_budget for s in steps_objs]) + 1 > int(
+            first_count
+        ):
+            first_count = int(max([s.remaining_budget for s in steps_objs]) + 1)
+            print_saver.print_and_store(
+                f"first_count adjusted to {first_count} based on steps_objs."
+            )
+
         # Extract reflections
         # Revert reflections to the original pattern
         reflections = re.findall(
             r"<reflection>(.*?)<(?:\/reflection|thinking|step|count|reward|reflection)>",
             response,
-            re.DOTALL,
+            re.DOTALL | re.IGNORECASE,
         )
-        reflections = [
-            reflection for reflection in reflections if reflection.strip() != ""
-        ]
-
         # Use the modified pattern for rewards
         rewards = re.findall(
             r"</reflection>\s*.*?<reward>(0\.\d+?|1\.0)<(?:/reward|thinking|step|reflection|count|reward?)>",
             response,
-            re.DOTALL,
+            re.DOTALL | re.IGNORECASE,
         )
-        print_saver.print_and_store(f"Rewards: {rewards}")
+        # ensure each entry in rewards is a string before processing
         for i in range(len(rewards)):
-            print_saver.print_and_store(f"Step {i + 1} reward: {rewards[i]}")
-        i = 0
+            if isinstance(rewards[i], re.Match):
+                rewards[i] = str(rewards[i].group(1))
 
-        if steps_objs is not None and steps_objs != []:
-            if len(steps_objs) != len(steps):
-                print_saver.print_and_store(
-                    f"Steps and step_objs length mismatch. Adjusting steps. {len(steps_objs)} vs {len(steps)}"
-                )
-                if len(steps_objs) > len(steps):
-                    print_saver.print_and_store(
-                        "Stepsobj larger than steps. Adjusting steps."
+        print_saver.print_and_store(f"Rewards: {rewards}")
+        for iii in range(len(rewards)):
+            print_saver.print_and_store(f"Step {iii + 1} reward: {rewards[iii]}")
+        reflections = [
+            reflection for reflection in reflections if reflection.strip() != ""
+        ]
+        if reflections_objs is not None and reflections_objs != []:
+            reflections_objs = [
+                r for r in reflections_objs if r.content.strip() != "" and r.content
+            ]
+            for sobj in steps_objs:
+                if isinstance(sobj.reflection, Reflection):
+                    reflections_objs.append(sobj.reflection)
+            reflections_objs.sort(key=lambda r: r.step_number)
+        else:
+            reflections_objs = [
+                sobj.reflection
+                for sobj in steps_objs
+                if isinstance(sobj.reflection, Reflection)
+            ]
+            reflections_objs.sort(key=lambda r: r.step_number)
+
+        counts = [c.strip() for c in counts if c.isnumeric()]
+
+        if (
+            current_step_number is not None
+            and current_step_number != 0
+            and (len(steps) == 1 or len(steps_objs) == 1)
+            and not (len(steps) == 1 and len(steps_objs) == 1)
+        ):
+            # This means that we are parsing a single step and the current_step_number is not 0, which means that the current step is not the first step. Simply return the interaction object fully populated with the current step and reflection, etc.
+            if len(steps) == 1:
+                if steps_objs is not None and steps_objs != []:
+                    steps_objs[0].remaining_budget = (
+                        current_remaining_budget
+                        if current_remaining_budget != 0
+                        else self.config.initial_budget - current_step_number + 1
                     )
-                    # print_saver.print_and_store (steps_objs) entries that are not in steps
-                    missing_steps = {}
-                    for step in steps_objs:
-                        if step.description.strip() not in [s.strip() for s in steps]:
-                            print_saver.print_and_store(
-                                f"Missing step: {step.description.strip()}"
-                            )
-                            missing_steps.update(
-                                {step.description.strip(): step.step_number}
-                            )
-
-                    # Ensure lists are same length before processing
-                    assert len(reflections) + 1 == len(
-                        steps_objs
-                    ), f"Reflections mismatch: {len(reflections)} reflections, {len(steps_objs)}steps, steps: {steps_objs}"
-                    assert len(rewards) + 1 == len(
-                        steps_objs
-                    ), f"Rewards mismatch {len(rewards)} rewards, {len(steps_objs)}steps, steps: {steps_objs}"
-
-                    for step in steps_objs:
-                        if step.description.strip() in missing_steps.keys():
-                            step_num = missing_steps[step.description.strip()]
-
-                            # Validate step number is sequential
-                            if step_num > 1 and not any(
-                                s.step_number == step_num - 1 for s in steps_objs
-                            ):
-                                raise ValueError(
-                                    f"Non-sequential step number found: {step_num}"
-                                )
-
-                            # Insert step and its attributes
-                            steps.insert(step_num, step.description.strip())
-                            counts.insert(step_num, step.step_number)
-
-                            if step_num < len(reflections):
-                                if hasattr(step, "reflection"):
-                                    reflections.insert(step_num, step.reflection)
-                                else:
-                                    raise ValueError(
-                                        f"Missing reflection for past step {step_num}"
-                                    )
-                            # If it's the current new step, reflections will remain one shorter
-                            # since reflection gets added by judge_step() later
-                            elif step_num == len(reflections):
-                                _reflection = self.judge_step(step, task)
-                                reflections.append(_reflection)
-
-                            else:
-                                raise ValueError(
-                                    f"Reflection list gap detected at step {step_num}"
-                                )
-
-                            if hasattr(step, "reward"):
-                                # Handle final reward for last step
-                                if len(rewards) != len(steps_objs):
-                                    rewards.insert(step_num - 1, step.reward)
-                                else:
-                                    rewards[step_num] = step.reward
-
-                    # Verify each step has required attributes
-                    for i in range(len(steps)):
-
-                        if (i < len(reflections) and reflections[i] is None) or (
-                            i < len(rewards) and rewards[i] is None
-                        ):
-                            raise ValueError(
-                                f"Missing reflection or reward for step {i}"
-                            )
-                elif len(steps_objs) < len(steps):
-                    print_saver.print_and_store(
-                        "Stepsobj smaller than steps. Adjusting steps."
+                    steps_objs[0].step_number = current_step_number
+                    steps_objs[0].reflection = (
+                        reflections_objs[0]
+                        if reflections_objs
+                        else self.judge_step(steps_objs[0], task)
                     )
-                    # print_saver.print_and_store (steps) entries that are not in steps_objs
-                    missing_steps = {}
-                    for step in steps:
-                        if step.strip() not in [
-                            s.description.strip() for s in steps_objs
-                        ]:
-                            print_saver.print_and_store(f"Missing step: {step.strip()}")
-                            missing_steps.update({step.strip(): steps.index(step)})
-
-                    # Ensure lists are same length before processing
-                    assert len(reflections) - 1 == len(
-                        steps
-                    ), f"Reflections mismatch: {len(reflections)} reflections, {len(steps)}steps, steps: {steps}"
-                    assert len(rewards) - 1 == len(
-                        steps
-                    ), f"Rewards mismatch {len(rewards)} rewards, {len(steps)}steps, steps: {steps}"
-
-                    for step in steps:
-                        if step.strip() in missing_steps.keys():
-                            step_num = missing_steps[step.strip()]
-
-                            # Validate step number is sequential
-                            if step_num > 0 and not any(
-                                s.step_number == step_num - 1 for s in steps_objs
-                            ):
-                                raise ValueError(
-                                    f"Non-sequential step number found: {step_num}"
-                                )
-
-                            # Insert step and its attributes
-                            steps_objs.append(
-                                Step(
-                                    description=step.strip(),
-                                    remaining_budget=int(counts[step_num - 1]),
-                                    step_number=int(step_num),
-                                    reflection=reflections[step_num - 1],
-                                )
-                            )
-
-                            if hasattr(step, "reward"):
-                                steps_objs[-1].reflection.reward = float(
-                                    rewards[step_num - 1]
-                                )
-
-                    # Verify each step has required attributes
-                    for i in range(len(steps)):
-                        if (i < len(reflections) and reflections[i] is None) or (
-                            i < len(rewards) and rewards[i] is None
-                        ):
-                            raise ValueError(
-                                f"Missing reflection or reward for step {i}"
-                            )
-
-            elif len(steps_objs) == len(steps):
-                # if steps are not the same ones, then we combine them
-
-                for i in range(len(steps)):
-                    add_to_step_objs = False
-                    count = None
-                    try:
-                        if i < len(steps):
-                            counts_match = re.findall(
-                                rf"<step>{re.escape(steps[i])}</step>.*?<count>(\d+)</count>",
-                                response,
-                                re.DOTALL,
-                            )
-
-                            if counts_match:
-                                count = int(counts_match[0])
-                            else:
-                                count = counts[i]
-
-                        else:
-                            try:
-                                count = int(counts[i])
-                            except Exception as e:
-                                print_saver.print_and_store(f"Error: {e}")
-                                counts_match = re.findall(
-                                    rf"<count>(\d+)</count>.*?<step>{re.escape(steps[i])}</step>",
-                                    response,
-                                    re.DOTALL,
-                                )
-
-                                if counts_match:
-                                    count = int(counts_match[0]) + 1
-                                else:
-                                    count = first_count - i
-                        if count is None:
-                            raise ValueError(f"No count found for step: {steps[i]}")
-                    except Exception as e:
-                        print_saver.print_and_store(f"Error: {e}")
-                        count = counts[i]
-                    if steps_objs[i].description != steps[i].strip() and steps[
-                        i
-                    ].strip() not in [s.description for s in steps_objs]:
-                        print_saver.print_and_store(
-                            f"Step content mismatch between step_objs and steps. Adjusting. {steps_objs[i].description.strip()} vs {steps[i].strip()} in step {i+1} (aks {int(first_count) - (int(first_count) - (i + 1))}) with count {count}. First count: {first_count}"
-                        )
-                        # Validate step number is sequential, excluding the first step
-                        if steps_objs[i].step_number > 1 and not any(
-                            s.step_number == steps_objs[i].step_number - 1
-                            for s in steps_objs
-                        ):
-                            raise ValueError(
-                                f"Non-sequential step number found: {steps_objs[i].step_number}"
-                            )
-                        if (
+                    steps_objs[0].reflection.step_number = current_step_number
+                    interaction.steps = steps_objs
+                    interaction.reflections = reflections_objs
+                    return interaction
+                else:
+                    steps_objs = [
+                        Step(
+                            steps[0],
+                            current_step_number,
                             (
-                                steps_objs[i].step_number
-                                != int(first_count) - (int(first_count) - (i + 1))
-                            )
-                            and (steps_objs[i].step_number != i + 1)
-                            and (
-                                int(first_count) - (int(first_count) - (i + 1)) == i + 1
-                            )
-                        ):
-                            # Insert step and its attributes
-                            print_saver.print_and_store(
-                                f"Inserting step {i+1} with count {count}, expected step numbers agree"
-                            )
-                            steps_objs.insert(
-                                i,
-                                Step(
-                                    description=steps[i].strip(),
-                                    remaining_budget=int(count),
-                                    step_number=i + 1,
-                                    reflection=reflections[i],
-                                ),
-                            )
-                        elif (
-                            steps_objs[i].step_number
-                            != int(first_count) - (int(first_count) - (i + 1))
-                        ) and (steps_objs[i].step_number == i + 1):
-                            # Insert step and its attributes
-                            print_saver.print_and_store(
-                                f"Inserting step {int(first_count) - (int(first_count) - (i + 1))} with count {count}, expected step numbers disagree"
-                            )
-                            steps_objs.insert(
-                                int(first_count) - (int(first_count) - (i)),
-                                Step(
-                                    description=steps[i].strip(),
-                                    remaining_budget=int(count),
-                                    step_number=int(first_count)
-                                    - (int(first_count) - (i + 1)),
-                                    reflection=reflections[i],
-                                ),
-                            )
-                        elif (
-                            steps_objs[i].step_number
-                            == int(first_count) - (int(first_count) - (i + 1))
-                            and steps_objs[i].step_number != i + 1
-                        ):
-                            # Insert step and its attributes
-                            print_saver.print_and_store(
-                                f"Inserting step {i+1} with count {count}, do step numbers agree? {steps_objs[i].step_number} vs {int(first_count) - (int(first_count) - (i + 1))}"
-                            )
-                            steps_objs.insert(
-                                i,
-                                Step(
-                                    description=steps[i].strip(),
-                                    remaining_budget=int(count),
-                                    step_number=i + 1,
-                                    reflection=reflections[i],
-                                ),
-                            )
-                        elif (
-                            steps_objs[i].step_number
-                            != int(first_count) - (int(first_count) - (i + 1))
-                            and steps_objs[i].step_number != i + 1
-                        ):
-                            # Insert step and its attributes
-                            print_saver.print_and_store(
-                                f"Inserting step {i+1} with count {count}, step numbers disagree"
-                            )
-                            steps_objs.insert(
-                                i,
-                                Step(
-                                    description=steps[i].strip(),
-                                    remaining_budget=int(count),
-                                    step_number=i + 1,
-                                    reflection=reflections[i],
-                                ),
-                            )
-                        elif (
-                            steps_objs[i].step_number
-                            == int(first_count) - (int(first_count) - (i + 1))
-                            and steps_objs[i].step_number == i + 1
-                        ):
-                            # Insert step and its attributes
-                            print_saver.print_and_store(
-                                f"Step index {i+1} already exists, updating step placement"
-                            )
-                            # Check for inconsistencies in step numbers by comparing the expected step number with the actual step number as well as by comparing the content of the steps
-                            # Update the existing steps list based on the inconsistencies found
-                            if (
-                                cosine_similarity_custom(
-                                    get_embedding(existing_step.description.strip()),
-                                    get_embedding(steps[i].strip()),
-                                )
-                                >= 0.9
-                            ):
-                                print_saver.print_and_store(
-                                    f"Step number and content similarity match. No action needed. {existing_step.step_number} vs {expected_step_number}"
-                                )
-                            else:
-
-                                inconsistent_steps = []
-                                for existing_step in steps_objs:
-                                    if existing_step.step_number == i + 1:
-                                        # Compare step content similarity
-                                        content_similarity = cosine_similarity_custom(
-                                            get_embedding(
-                                                existing_step.description.strip()
-                                            ),
-                                            get_embedding(steps[i].strip()),
-                                        )
-
-                                        # Check if step numbers align with expected sequence
-                                        expected_step_number = int(first_count) - (
-                                            int(first_count) - (count)
-                                        )
-                                        sequence_match = (
-                                            existing_step.step_number
-                                            == expected_step_number
-                                        )
-
-                                        if content_similarity < 0.9 and sequence_match:
-                                            inconsistent_steps.append(
-                                                {
-                                                    "existing_step": existing_step,
-                                                    "new_step_content": steps[
-                                                        i
-                                                    ].strip(),
-                                                    "expected_step_number": expected_step_number,
-                                                }
-                                            )
-                                        elif (
-                                            content_similarity >= 0.9
-                                            and not sequence_match
-                                        ):
-                                            print_saver.print_and_store(
-                                                f"Step number mismatch (content similarity >= 0.9). Adjusting step number. {existing_step.step_number} vs {expected_step_number}"
-                                            )
-                                            existing_step.step_number = (
-                                                expected_step_number
-                                            )
-                                            inconsistent_steps.append(
-                                                {
-                                                    "existing_step": existing_step,
-                                                    "new_step_content": steps[
-                                                        i
-                                                    ].strip(),
-                                                    "expected_step_number": expected_step_number,
-                                                }
-                                            )
-
-                                        elif (
-                                            content_similarity >= 0.9 and sequence_match
-                                        ):
-                                            print_saver.print_and_store(
-                                                f"Step number and content similarity match. No action needed. {existing_step.step_number} vs {expected_step_number}"
-                                            )
-                                            break
-
-                                # Resolve inconsistencies by updating step numbers and content
-                                for inconsistency in inconsistent_steps:
-                                    existing_step = inconsistency["existing_step"]
-                                    new_content = inconsistency["new_step_content"]
-                                    expected_number = inconsistency[
-                                        "expected_step_number"
-                                    ]
-
-                                    # Update step number if it doesn't match the expected sequence
-                                    if existing_step.step_number != expected_number:
-                                        existing_step.step_number = expected_number
-
-                                    # Update content if similarity is low but step numbers align
-                                    if (
-                                        cosine_similarity_custom(
-                                            get_embedding(
-                                                existing_step.description.strip()
-                                            ),
-                                            get_embedding(new_content),
-                                        )
-                                        < 0.9
-                                    ):
-                                        existing_step.description = new_content
-
-                                steps_objs.insert(
-                                    i,
-                                    Step(
-                                        description=steps[i].strip(),
-                                        remaining_budget=int(count),
-                                        step_number=i + 1,
-                                        reflection=reflections[i],
-                                    ),
-                                )
-                        else:
-                            # We need to make sure the step_number is correct and doesn't already exist
-                            print_saver.print_and_store(
-                                f"Step number mismatch (final else). Adjusting step number. {steps_objs[i].step_number} vs {int(first_count) - (int(first_count) - (i + 1))}"
-                            )
-                            if steps_objs[i].step_number != int(first_count) - (
-                                int(first_count) - (i + 1)
-                            ):
-                                steps_string = [
-                                    f"{s.step_number}: {s.description}"
-                                    for s in steps_objs
-                                ].join("\n")
-                                sn = self.place_step(
-                                    messages=[
-                                        {
-                                            "role": "system",
-                                            "content": "You are an expert at determining the correct step number for each step by analyzing the order of the steps and the content of each step. You always ensure that the step numbers are sequential and accurate. You read the list of steps and the step to be inserted and determine the correct step number for the new step, responding only with an integer value representing the correct step number. All steps with numbers larger than the new step number will be assumed to come after the inserted step and will be renumbered accordingly.",
-                                        },
-                                        {
-                                            "role": "user",
-                                            "content": f"Please determinie the appropriate step number for the following step: {steps[i]} so that it correctly follows the previous step and is in the correct order, in context of the following list of steps: {steps_string}. Respond only with the correct step number as an integer.",
-                                        },
-                                    ]
-                                )
-                                steps_objs.insert(
-                                    sn - 1,
-                                    Step(
-                                        description=steps[i].strip(),
-                                        remaining_budget=int(count),
-                                        step_number=sn,
-                                        reflection=reflections[i],
-                                    ),
-                                )
-
-                        if hasattr(steps_objs[i], "reward"):
-                            steps_objs[i].reflection.reward = float(
-                                rewards[steps_objs[i].step_number - 1]
-                            )
-
-        def find_next_reflection(text, current_position):
-            step_tag = re.compile(r"<step>.*?</step>", re.DOTALL)
-            reflection_tag = re.compile(r"<reflection>(.*?)</reflection>", re.DOTALL)
-
-            # Search for step tags before the current position
-            if step_tag.search(text[current_position:]):
-                return -1  # Indicating another step tag found before reflections
-
-            # Find the next reflection tag after the current position
-            match = reflection_tag.search(text[current_position:])
-
-            if match:
-                return match.group(1).strip()  # Return the content between the tags
-
-            return -1  # Indicating no reflections tag found no reflections tag found
-
-        for i, (step_desc, this_count) in enumerate(zip(steps, counts)):
-            this_step = None
-            if isinstance(this_count, str) and this_count.strip().isnumeric():
-                this_count = int(this_count)
-            else:
-                # If the count is not numeric, find the next count tag and the previous count tag to infer this count
-                prev_count = None
-                next_count = None
-
-                if i > 0:
-                    if counts[i - 1].strip().isnumeric():
-                        prev_count = int(counts[i - 1])
-                    else:
-                        if i - 2 >= 0:
-                            prev_count = int(counts[i - 2]) + 1
-                        else:
-                            prev_count = int(first_count)
-                else:
-                    prev_count = int(first_count)
-                if i + 1 < len(counts):
-                    if counts[i + 1].strip().isnumeric():
-                        next_count = int(counts[i + 1])
-                    else:
-                        if i + 2 < len(counts):
-                            next_count = int(counts[i + 2]) - 1
-                        else:
-                            next_count = int(prev_count) + 2
-                else:
-                    next_count = int(prev_count) + 2
-                this_count = (
-                    prev_count + 1 if prev_count is not None else next_count - 1
-                )  # Infer the current count based on the previous and next counts
-
-            if not isinstance(step_desc, str):
-                step_desc = step_desc.group(1)
-            step_reflection = None
-            if len(reflections) == len(steps) or (
-                len(steps) - len(reflections) == 1 and i < len(reflections)
-            ):
-                step_reflection = reflections[i]
-            else:
-                step_reflection = find_next_reflection(
-                    response, response.find(steps[i]) + len(steps[i])
-                )
-            if step_reflection == -1:
-                # First, check if this step exists in steps_objs
-                if steps_objs and isinstance(step_desc, str):
-                    for step_obj in steps_objs:
-                        if isinstance(step_obj, Step):
-                            if (
-                                step_obj.step_number
-                                == int(first_count) - (int(first_count) - (i + 1))
-                                or step_obj.step_number == i
-                            ) and (
-                                (
-                                    step_obj.description.strip().lower()
-                                    in step_desc.strip().lower()
-                                    and abs(
-                                        len(step_obj.description.strip())
-                                        - len(step_desc.strip())
-                                    )
-                                    < 10
-                                )
-                                or cosine_similarity_custom(
-                                    get_embedding(step_obj.description.strip()),
-                                    get_embedding(step_desc.strip()),
-                                )
-                                > 0.9
-                            ):
-
-                                step_reflection = step_obj.reflection
-                                this_step = step_obj
-                                break
-                elif reflections_objs and isinstance(step_desc, str):
-                    for reflection_obj in reflections_objs:
-                        if isinstance(reflection_obj, Reflection):
-                            if (
-                                reflection_obj.step_number
-                                == int(first_count) - (int(first_count) - (i + 1))
-                                and not steps_objs
-                            ):
-                                step_reflection = reflection_obj
-                                break
-                            elif steps_objs:
-                                for step_obj in steps_objs:
-                                    if (
-                                        step_obj.step_number
-                                        == reflection_obj.step_number
-                                    ):
-                                        step_reflection = reflection_obj
-                                        this_step = step_obj
-                                        break
-                if this_step is None:
-                    this_step = Step(
-                        description=step_desc,
-                        remaining_budget=int(this_count),
-                        step_number=int(first_count) - (int(first_count) - (i + 1)),
-                        reflection=None,
-                    )
-                this_reward = 0.0
-                if i < len(rewards) and (
-                    len(rewards) == len(steps) or len(rewards) == len(steps) - 1
-                ):
-                    this_reward = float(
-                        rewards[int(first_count) - (int(first_count) - (i))]
-                    )
-
-                if step_reflection is None or step_reflection == -1:
-                    step_reflection = self.judge_step(this_step, task)
-                    if this_reward != 0.0:
-                        step_reflection.reward = this_reward
-                this_step.reflection = step_reflection
-                if this_step not in interaction.steps:
-                    interaction.steps.append(this_step)
-            else:
-                if isinstance(step_reflection, str):
-                    # Check for <reward> tag after reflection closing tag, but only if it's not the last reflection and only if it's not followed by another reflection or step tag
-                    # Extract the substring starting after step_reflection
-                    substring = response[
-                        response.find(step_reflection) + len(step_reflection) :
+                                current_remaining_budget
+                                if current_remaining_budget != 0
+                                else self.config.initial_budget
+                                - current_step_number
+                                + 1
+                            ),
+                            (
+                                reflections_objs[0]
+                                if reflections_objs
+                                else self.judge_step(steps[0], task)
+                            ),
+                            thoughts[0] if thoughts else None,
+                            plan_step_number,
+                        )
                     ]
+                    interaction.steps = steps_objs
+                    interaction.reflections = reflections_objs
+                    return interaction
 
-                    # Search for <reward> tag ensuring it's not followed by <reflection> or <step> tags
-                    step_reward = re.search(
-                        r"</reflection>\s*.*?<reward>(0\.\d+?|1\.0)<\/reward>",
-                        substring,
-                        re.DOTALL,
+        # Combine existing and new reflections, avoiding duplicates
+        existing_contents = {r.content.strip() for r in reflections_objs}
+        new_reflections = [
+            Reflection(
+                content=r,
+                step_number=(
+                    first_count - int(counts[ii]) + 1
+                    if ii < len(counts)
+                    else (
+                        reflections_objs[-1].step_number + 1 if reflections_objs else 1
                     )
-                    step_rew_float = float(step_reward.group(1)) if step_reward else 0.0
+                ),
+                reward=(
+                    float(rewards[ii])
+                    if ii < len(rewards)
+                    else self.judge_step(
+                        Step(
+                            steps[ii],
+                            (
+                                first_count - int(counts[ii]) + 1
+                                if ii < len(counts)
+                                else ii + 1
+                            ),
+                            initial_budget - (ii + 1),
+                        ),
+                        task,
+                    ).reward
+                ),
+            )
+            for ii, r in enumerate(reflections)
+            if r not in existing_contents
+        ]
+        for refobj in reflections_objs:
+            if (
+                refobj not in new_reflections
+                and refobj.content not in existing_contents
+            ):
+                if refobj.step_number is None:
+                    refobj.step_number = (
+                        first_count - int(counts[reflections_objs.index(refobj)]) + 1
+                        if reflections_objs.index(refobj) < len(counts)
+                        else (
+                            reflections_objs[-1].step_number + 1
+                            if reflections_objs
+                            else 1
+                        )
+                    )
+                elif refobj.step_number in [
+                    r.step_number for r in new_reflections + reflections
+                ]:
+                    for r in new_reflections + reflections:
+                        if r.step_number == refobj.step_number:
+                            r.step_number += 1
+                new_reflections.append(refobj)
+        all_reflections = reflections_objs + new_reflections
+        # Assign sequential step numbers
+        all_reflections.sort(key=lambda r: r.step_number)
+        for idx, reflection in enumerate(all_reflections, start=1):
+            reflection.step_number = idx
+        final_reflections = all_reflections
 
+        reflections = final_reflections
+
+        # check if both steps_objs and steps are empty
+        if steps_objs is None and steps is None:
+            # Check if the other parameters are empty
+            if reflections is None and rewards is None and counts is None:
+                return interaction
+            else:
+                # Check the <thinking> tags for more information
+                if re.search(r"<thinking>", response):
+                    print_saver.print_and_store(
+                        "No steps found in response. Checking for <thinking> tags."
+                    )
+                    thoughts = re.findall(
+                        r"<thinking>(.*?)<(?:/thinking|step|reflection|count|reward)>",
+                        response,
+                        re.DOTALL | re.IGNORECASE,
+                    )
+                    for thought in thoughts:
+                        print_saver.print_and_store(f"Thought: {thought}")
+                    return interaction
+                else:
+                    print_saver.print_and_store(
+                        "No steps found in response. No <thinking> tags found."
+                    )
+                    return interaction
+        else:
+            # If any steps are empty but are present in steps_objs, use the descriptions from steps_objs. If any are empty but are in the right place and accompanied by a count, thinking, reflection, or reward tag, they will be filled in later.
+            # Initialize first_count if not already set
+            def calculate_expected_counts(first_count, index):
+                """Calculate expected counts up to the given index."""
+                if index == 0:
+                    return [first_count]
+                return list(range(first_count, first_count - (index + 1), -1))
+
+            def validate_counts(expected, actual):
+                """Validate if actual counts match expected counts."""
+                return actual == expected
+
+            def replace_empty_step(steps, steps_objs, index):
+                """Replace an empty step with the description from steps_objs."""
+                steps[index] = steps_objs[index].description
+                print_saver.print_and_store(
+                    f"Replaced empty step at index {index} with: '{steps_objs[index].description}'."
+                )
+
+            # Initialize first_count if not already set
+            if (
+                first_count is None
+                or first_count == 0
+                or not isinstance(first_count, int)
+            ):
+                if counts:
                     try:
-                        final_reward = re.search(
-                            r"<final_reward>(0\.\d+|1\.0)<\/final_reward>",
-                            substring,
-                            re.DOTALL,
+                        first_count = int(counts[0].strip())
+                    except ValueError:
+                        print_saver.print_and_store(
+                            f"Invalid integer in counts at index 0. Setting first_count to initial_budget {initial_budget}."
                         )
+                        first_count = initial_budget
+                else:
+                    first_count = initial_budget
 
-                    except Exception as e:
-                        print_saver.print_and_store(f"Error: {e}")
-                        step_rew_float = 0.0
+            for i, step in enumerate(steps):
+                if step.strip() == "" and i < len(steps_objs):
+                    if i < len(counts) and counts[i].strip() != "":
+                        try:
+                            # Calculate expected counts correctly
+                            expected_counts = calculate_expected_counts(first_count, i)
 
-                    step_reflection_obj = Reflection(
-                        content=step_reflection.strip(),
-                        reward=step_rew_float,
-                        step_number=int(first_count) - (int(first_count) - (i + 1)),
-                    )
-                    if steps_objs and isinstance(step_desc, str):
-                        for step_obj in steps_objs:
-                            if (
-                                step_obj.step_number
-                                == int(first_count) - (int(first_count) - (i + 1))
-                                or step_obj.step_number == i
-                            ) and (
-                                (
-                                    step_obj.description.strip().lower()
-                                    in step_desc.strip().lower()
-                                    and abs(
-                                        len(step_obj.description.strip())
-                                        - len(step_desc.strip())
-                                    )
-                                    < 10
-                                )
-                                or cosine_similarity_custom(
-                                    get_embedding(step_obj.description.strip()),
-                                    get_embedding(step_desc.strip()),
-                                )
-                                > 0.9
-                            ):
+                            # Extract actual counts up to the current index
+                            actual_counts = [int(c.strip()) for c in counts[: i + 1]]
 
-                                step_obj.reflection = step_reflection_obj
-                                this_step = step_obj
-
-                                break
-
-                    if this_step is None or not isinstance(this_step, Step):
-                        this_step = Step(
-                            description=step_desc.strip(),
-                            remaining_budget=int(this_count),
-                            step_number=int(first_count) - (int(first_count) - (i + 1)),
-                            reflection=step_reflection_obj,
-                        )
-                    if this_step not in interaction.steps:
-                        interaction.steps.append(this_step)
-                elif isinstance(step_reflection, Reflection):
-                    if steps_objs and isinstance(step_desc, str):
-                        for step_obj in steps_objs:
-                            if (
-                                step_obj.step_number
-                                == int(first_count) - (int(first_count) - (i + 1))
-                                or step_obj.step_number == i
-                            ) and (
-                                (
-                                    step_obj.description.strip().lower()
-                                    in step_desc.strip().lower()
-                                    and abs(
-                                        len(step_obj.description.strip())
-                                        - len(step_desc.strip())
-                                    )
-                                    < 10
-                                )
-                                or cosine_similarity_custom(
-                                    get_embedding(step_obj.description.strip()),
-                                    get_embedding(step_desc.strip()),
-                                )
-                                > 0.9
-                            ):
-
-                                step_obj.reflection = step_reflection
-                                this_step = step_obj
-                                break
-                    if this_step is None:
-                        this_step = Step(
-                            description=step_desc.strip(),
-                            remaining_budget=int(this_count),
-                            step_number=int(first_count) - (int(first_count) - (i + 1)),
-                            reflection=step_reflection,
-                        )
-                    if step_reflection.reward == 0.0:
-                        this_reward = 0.0
-                        if i < len(rewards) and (
-                            len(rewards) == len(steps) or len(rewards) == len(steps) - 1
-                        ):
-                            this_reward = float(
-                                rewards[int(first_count) - (int(first_count) - (i))]
-                            )
-                        if this_reward != 0.0:
-                            step_reflection.reward = this_reward
-
-                    if this_step not in interaction.steps:
-                        interaction.steps.append(this_step)
-                elif reflections_objs and isinstance(step_desc, str):
-                    for reflection_obj in reflections_objs:
-                        if isinstance(reflection_obj, Reflection):
-                            if (
-                                reflection_obj.step_number
-                                == int(first_count) - (int(first_count) - (i + 1))
-                                and not steps_objs
-                            ):
-                                reflection_obj.content = step_reflection
-                                this_step = reflection_obj
-                                break
-                            elif steps_objs:
-                                for step_obj in steps_objs:
+                            # Verify counts consistency
+                            if validate_counts(expected_counts, actual_counts):
+                                replace_empty_step(steps, steps_objs, i)
+                            else:
+                                # Find out how the counts are inconsistent. For example, if only the count that would have been at the current index is missing, we can replace the empty step with the description from steps_objs. Likewise, if the counts are all over the place, we can't make any assumptions.
+                                if (
+                                    len(actual_counts) < len(expected_counts)
+                                    and len(expected_counts) - len(actual_counts) == 1
+                                ):
+                                    replace_empty_step(steps, steps_objs, i)
+                                elif (
+                                    len(actual_counts) < len(expected_counts)
+                                    and len(expected_counts) - len(actual_counts) > 1
+                                ):
+                                    # For this missing count, check 1. whether the count is duplicated, 2. whether the duplicated count is the same as the one that would be at the current index, and 3. whether the thinking or reflection tags that would have been associated with it are also duplicated. If all conditions are met, we can remove the extra count and the corresponding thinking or reflection tag. If the current count is accurate after the removal, we can replace the empty step with the description from steps_objs.
                                     if (
-                                        step_obj.step_number
-                                        == reflection_obj.step_number
+                                        counts.count(counts[i]) > 1
+                                        and counts[i] == expected_counts[i]
+                                        and (
+                                            reflections.count(reflections[i]) > 1
+                                            or rewards.count(rewards[i]) > 1
+                                        )
                                     ):
-                                        reflection_obj.content = step_reflection
-                                        this_step = reflection_obj
-                                        break
-                    if this_step is None:
-                        this_step = Reflection(
-                            content=step_reflection.strip(),
-                            reward=0.0,
-                            step_number=int(first_count) - (int(first_count) - (i + 1)),
+                                        counts.pop(i)
+                                        if reflections.count(reflections[i]) > 1:
+                                            reflections.pop(i)
+                                        if rewards.count(rewards[i]) > 1:
+                                            rewards.pop(i)
+                                        if validate_counts(
+                                            expected_counts, actual_counts
+                                        ):
+                                            replace_empty_step(steps, steps_objs, i)
+                                elif len(actual_counts) > len(expected_counts):
+                                    # Find the extra count by comparing the expected and actual counts as well as comparing the lengths of count and steps as well as thinking, reflection, and reward tags. Basically, if the counts are more than the steps, thinking, reflection, and reward tags, we can assume that the count is extra and can be removed. Likewise, if the duplicated count is the same as the one that would be at the current index AND either thinking or reflection tags are also duplicated, we can remove the extra count and the corresponding thinking or reflection tag. Either way, if the current count is accurate after the removal, we can replace the empty step with the description from steps_objs.
+                                    if (
+                                        len(actual_counts) > len(expected_counts)
+                                        and len(counts) > len(steps)
+                                        and len(counts) > len(reflections)
+                                        and len(counts) > len(rewards)
+                                    ):
+                                        if counts.count(counts[i]) > 1 and (
+                                            reflections.count(reflections[i]) > 1
+                                            or rewards.count(rewards[i]) > 1
+                                        ):
+                                            counts.pop(i)
+                                            if reflections.count(reflections[i]) > 1:
+                                                reflections.pop(i)
+                                            if rewards.count(rewards[i]) > 1:
+                                                rewards.pop(i)
+                                            if validate_counts(
+                                                expected_counts, actual_counts
+                                            ):
+                                                replace_empty_step(steps, steps_objs, i)
+                                        else:
+                                            print_saver.print_and_store(
+                                                f"Extra count found at index {i}. Unable to replace empty step."
+                                            )
+                                    elif (
+                                        len(actual_counts) > len(expected_counts)
+                                        and len(counts) == len(steps)
+                                        and len(counts) == len(reflections)
+                                        and len(counts) == len(rewards)
+                                    ):
+                                        # This condition being true means that the actual counts are more than the expected counts, but the counts, steps, reflections, and rewards are all the same length. This means that the count is extra and can be removed. If the duplicated count is the same as the one that would be at the current index AND either thinking or reflection tags are also duplicated, we can remove the extra count and the corresponding thinking or reflection tag. Either way, if the current count is accurate after the removal, we can replace the empty step with the description from steps_objs.
+                                        if counts.count(counts[i]) > 1 and (
+                                            reflections.count(reflections[i]) > 1
+                                            or rewards.count(rewards[i]) > 1
+                                        ):
+                                            counts.pop(i)
+                                            if reflections.count(reflections[i]) > 1:
+                                                reflections.pop(i)
+                                            if rewards.count(rewards[i]) > 1:
+                                                rewards.pop(i)
+                                            if validate_counts(
+                                                expected_counts, actual_counts
+                                            ):
+                                                replace_empty_step(steps, steps_objs, i)
+                                        elif (
+                                            counts.count(counts[i]) > 1
+                                            and counts[i] == expected_counts[i]
+                                        ):
+                                            counts.pop(i)
+                                            if reflections.count(reflections[i]) > 1:
+                                                reflections.pop(i)
+                                            if rewards.count(rewards[i]) > 1:
+                                                rewards.pop(i)
+                                            if validate_counts(
+                                                expected_counts, actual_counts
+                                            ):
+                                                replace_empty_step(steps, steps_objs, i)
+                                        else:
+                                            print_saver.print_and_store(
+                                                f"Extra count found at index {i}. Unable to replace empty step."
+                                            )
+                        except ValueError:
+                            print_saver.print_and_store(
+                                f"Non-integer value found in counts at index {i}. Unable to replace empty step."
+                            )
+                    else:
+                        print_saver.print_and_store(
+                            f"Missing or empty count for step at index {i}. Unable to replace empty step."
                         )
-                    this_reward = 0.0
-                    if i < len(rewards) and (
-                        len(rewards) == len(steps) or len(rewards) == len(steps) - 1
-                    ):
-                        this_reward = float(
-                            rewards[int(first_count) - (int(first_count) - (i))]
-                        )
-                    if this_reward != 0.0:
-                        this_step.reward = this_reward
 
-                    interaction.reflections.append(this_step)
-                    if step_desc and isinstance(step_desc, str):
-                        for step_obj in steps_objs:
-                            if (
-                                step_obj.step_number
-                                == int(first_count) - (int(first_count) - (i + 1))
-                                or step_obj.step_number == i
-                            ) and (
-                                (
-                                    step_obj.description.strip().lower()
-                                    in step_desc.strip().lower()
-                                    and abs(
-                                        len(step_obj.description.strip())
-                                        - len(step_desc.strip())
-                                    )
-                                    < 10
-                                )
-                                or cosine_similarity_custom(
-                                    get_embedding(step_obj.description.strip()),
-                                    get_embedding(step_desc.strip()),
-                                )
-                                > 0.9
-                            ):
-
-                                step_obj.reflection = this_step
-                                this_step = step_obj
-                                break
-                    if (
-                        this_step is None
-                        or isinstance(this_step, Reflection)
-                        or not isinstance(this_step, Step)
-                    ):
-                        this_step = Step(
-                            description=step_desc.strip(),
-                            remaining_budget=int(this_count),
-                            step_number=int(first_count) - (int(first_count) - (i + 1)),
-                            reflection=this_step,
-                        )
-                    if this_step is not None and this_step is not isinstance(
-                        this_step, Reflection
-                    ):
-                        if this_step not in interaction.steps:
-                            interaction.steps.append(this_step)
-        for step_obj in steps_objs:
-            if step_obj not in interaction.steps:
-                interaction.steps.append(step_obj)
-
-        for i, (reflection, reward) in enumerate(zip(reflections, rewards)):
-            # Check if the reflection is already in the interaction object
-            found = False
-            if isinstance(reflection, str):
-                for ref in interaction.reflections:
-                    if ref.content == reflection:
-                        found = True
-                        ref.reward = float(reward) if ref.reward == 0.0 else ref.reward
-                        break
-            elif isinstance(reflection, Reflection):
-                for ref in interaction.reflections:
-                    if ref.content == reflection.content:
-                        found = True
-                        ref.reward = float(reward) if ref.reward == 0.0 else ref.reward
-                        break
-            if not found:
-                if isinstance(reflection, str):
-                    interaction.reflections.append(
-                        Reflection(
-                            content=reflection,
-                            reward=float(reward),
-                            step_number=int(first_count) - (int(first_count) - (i + 1)),
-                        )
+            # Final validation
+            for i, step in enumerate(steps):
+                if step.strip() == "":
+                    print_saver.print_and_store(
+                        f"Warning: Step at index {i} remains empty after processing."
                     )
-                elif isinstance(reflection, Reflection):
-                    interaction.reflections.append(reflection)
 
-        # Extract answer
-        answer_match = re.search(
-            r"<answer>(.*?)(?:</answer>?|<final_reward>)", response, re.DOTALL
-        )
-        if answer_match:
-            interaction.answer = answer_match.group(1).strip()
+            # Additional validation for counts consistency
+            try:
+                if len(counts) >= len(steps):
+                    expected_final_counts = list(
+                        range(first_count, first_count - len(steps), -1)
+                    )
+                    actual_final_counts = [int(c.strip()) for c in counts[: len(steps)]]
+                    if actual_final_counts != expected_final_counts:
+                        print_saver.print_and_store(
+                            f"Final counts mismatch. Expected {expected_final_counts}, got {actual_final_counts}."
+                        )
+            except ValueError:
+                print_saver.print_and_store(
+                    "Non-integer value found in counts during final validation."
+                )
 
-        # Extract final reward
-        final_reward_match = re.search(
-            r"<final_reward>(0\.\d+?|1\.0)<\/final_reward>?", response, re.DOTALL
+        interaction = self.process_steps(
+            steps_objs=steps_objs,
+            steps=steps,
+            counts=counts,
+            reflections=reflections,
+            rewards=rewards,
+            response=response,
+            first_count=first_count,
+            print_saver=print_saver,
+            interaction=interaction,
+            task=task,
+            current_plan_step=plan_step_number,
+            repair_log=repair_log,
         )
-        if final_reward_match:
-            interaction.final_reward = float(final_reward_match.group(1))
-        assert isinstance(interaction, Interaction)
+
         return interaction
+
+    def choose_best_response(
+        self,
+        responses: List[str],
+        plan_step: PlanStep,
+        interaction: Interaction,
+        step_number: int,
+    ) -> str:
+        """
+        Calls the OpenAI API with multiple responses and selects the best response based on the task and the responses consistency with the previous step, the task, and the overall interaction.
+        """
+        if not responses:
+            return ""
+        # Initialize variables
+        best_response = ""
+        resp_str = ""
+        example_task = PlanStep(
+            step_number=2,
+            completed=False,
+            step_name="Feature Engineering",
+            step_description="Create new features",
+            step_explanation="Feature engineering is the process of creating new features from existing data to improve the performance of machine learning models. This step involves transforming the data to make it more suitable for the model and extracting useful information from the data. Feature engineering can include creating new features, combining existing features, and transforming features to make them more informative.",
+            step_output="New features created from the existing data",
+            step_full_text="Create new features from existing data to improve the performance of machine learning models. This step involves transforming the data to make it more suitable for the model and extracting useful information from the data. Feature engineering can include creating new features, combining existing features, and transforming features to make them more informative.",
+            subtasks=[],
+        )
+        previous_steps = [
+            stp
+            for stp in interaction.steps
+            if stp.plan_step_number == plan_step.step_number
+        ]
+        previous_steps = [
+            previous_step
+            for previous_step in previous_steps
+            if previous_step.step_number < step_number
+        ]
+
+        prev_step_strs = [
+            f"<thinking>{stp_.thoughts}</thinking>\n<step>{stp_.description}</step>\n<reflection>{stp_.reflection}</reflection>\n"
+            for stp_ in previous_steps
+        ]
+
+        token_cutoff = 4096
+        prev_step_str = "".join(prev_step_strs)
+        if len(prev_step_str) > token_cutoff:
+            # Find the next tag after the cutoff
+            match = re.search(
+                r"<[^>]+>", prev_step_str[token_cutoff:], re.DOTALL | re.IGNORECASE
+            )
+            if match:
+                next_tag_end = token_cutoff + match.end()
+                prev_step_str = prev_step_str[:next_tag_end]
+            else:
+                # Fall back to direct cutoff if no tag found
+                prev_step_str = prev_step_str[:token_cutoff]
+
+        planstep_string = f"{plan_step.step_name}: {plan_step.step_description}. {plan_step.step_explanation}. Expected output of step: {plan_step.step_output}. Full text of plan step: {plan_step.step_full_text}"
+        example_task_string = f"{example_task.step_name}: {example_task.step_description}. {example_task.step_explanation}. Expected output of step: {example_task.step_output}. Full text of example task: {example_task.step_full_text}"
+        for i, response in enumerate(responses):
+            resp_str += f"Response {i + 1}: {response}\n"
+        messages = [
+            {
+                "role": "system",
+                "content": "You are an expert in selecting the best response from a list of responses. You base your decision on the task, the consistency of the response with the previous step, and the overall interaction. Please select the best response from the list below:",
+            },
+            {
+                "role": "user",
+                "content": "Example Task: "
+                + f"{example_task_string}"
+                + "\n"
+                + "Example Steps: "
+                + "<step>#Input Data: Load the dataset into a pandas DataFrame \n import pandas as pd \n df = pd.read_csv('data.csv')</step> \n <step>#Process Data: Check for missing values \n missing_values = df.isnull().sum()</step> \n <step>#Feature Engineering: Create new features \n df['new_feature'] = df['feature1'] + df['feature2']</step> \n"
+                + "Please select the response from the list of responses below that best represents the next step: \n"
+                + "Responses: "
+                + "Response 1: '<step>#Perform Exploratory Data Analysis (EDA): Analyze the dataset to understand the data distribution and relationships between features \n import matplotlib.pyplot as plt \n plt.hist(df['feature1'])</step>' \n"
+                + "Response 2: '<step>#Visualize Data: Create a scatter plot to show the relationship between two features \n plt.scatter(df['feature1'], df['feature2'])</step>' \n"
+                + "Response 3: '<step>#Feature Selection: Select the most important features for the model \n from sklearn.feature_selection import SelectKBest \n selector = SelectKBest(k=10)</step>' \n"
+                + "\n"
+                + "Respond with the number of the best response from the list above only.",
+            },
+            {
+                "role": "assistant",
+                "content": "1",
+            },
+            {
+                "role": "system",
+                "content": "Task: "
+                + f"{planstep_string}"
+                + "\n"
+                + "Previous Steps: "
+                + f"{prev_step_str}"
+                + "\n"
+                + "Please select the response from the list of responses below that best represents the next step: \n"
+                + "Responses: "
+                + resp_str
+                + "\n"
+                + "Respond with the number of the best response from the list above only.",
+            },
+        ]
+        decision_response = None
+        decision = None
+        base_delay = 1
+        max_delay = 16
+        for attempt in range(self.config.max_retries):
+            try:
+                decision_response = openai.beta.chat.completions.parse(
+                    model=self.config.model,
+                    messages=messages,
+                    response_format=response_choices,
+                )
+                decision = decision_response.choices[
+                    0
+                ].message.parsed.number_of_selected_response
+                print_saver.print_and_store(
+                    f"Decision in choose_best_response: {decision}. Responses available: {responses}"
+                )
+                if decision:
+                    best_response = responses[int(decision) - 1]
+                return (
+                    best_response if best_response != "" else random.choice(responses)
+                )
+            except Exception as e:
+                if decision_response:
+                    print_saver.print_and_store(
+                        f"Error in choose_best_response: {e}. Using default decision.  Responses available: {responses}. \n Decision response: {decision_response}"
+                    )
+                else:
+                    print_saver.print_and_store(
+                        f"Error in choose_best_response: {e}. Using default decision.  Responses available: {responses}."
+                    )
+
+                wait = min(base_delay * (2**attempt), max_delay)
+                time.sleep(wait + random.uniform(0, 1))  # Adding jitter
+
+        if decision:
+            best_response = responses[int(decision) - 1]
+        else:
+            decision = responses.index(max(responses, key=len))
+            best_response = responses[decision] if decision >= 0 else ""
+        return best_response if best_response != "" else random.choice(responses)
 
     # -------------------------------
     # Self-Consistency
@@ -3516,6 +6766,14 @@ Task: {task}
         prompt: str,
         existing_interaction: Interaction,
         messages: List[dict],
+        output_type: str,
+        step_budget: int,
+        step_number: int,
+        plan_step_number: int,
+        restart_limit: int = 3,
+        backtrack_limit: int = 3,
+        consistency_multiplier: int = 3,
+        max_plan_steps: int = 0,
     ) -> Interaction:
         """
         Implements Self-Consistency by generating multiple reasoning paths and selecting the most consistent one.
@@ -3525,21 +6783,282 @@ Task: {task}
         reflections_objs = (
             existing_interaction.reflections if existing_interaction else None
         )
-
+        msgs = messages.copy()
         for _ in range(self.config.n if self.config.n > 4 else 5):
-            temperature = random.uniform(0.0, 0.5 + (min(0.1 * self.config.n, 1.2)))
-            response = self.call_openai(
-                messages=messages, temperature=temperature, stop_sequence=["</step>"]
+            temperature = max(
+                random.uniform(0.0, 0.5 + (min(0.1 * max(self.config.n, 5), 1.2))), 0.01
             )
-            if response:
-                interaction = self.parse_response(
-                    response,
-                    task,
-                    steps_objs,
-                    reflections_objs,
+            print_saver.print_and_store(f"Temperature: {temperature}")
+            new_steps = []
+            _thinking = []
+            step_completion = False
+            _reflections = []
+            step_num = step_number
+            restart_attempts = 0
+            answer_response = None
+            while len(new_steps) < step_budget and not step_completion:
+
+                step_responses = []
+                for _ in range(consistency_multiplier):
+                    step_response = self.call_openai(
+                        messages=msgs,
+                        temperature=max(
+                            random.uniform(
+                                max(
+                                    temperature
+                                    - (min(temperature * max(self.config.n, 5), 1.2)),
+                                    0.1,
+                                ),
+                                min(
+                                    2.0,
+                                    temperature
+                                    + (min(temperature * max(self.config.n, 5), 1.2)),
+                                ),
+                            ),
+                            0.01,
+                        ),
+                        stop_sequence=["</answer>"],
+                    )
+                    if step_response:
+                        step_responses.append(step_response)
+                plan_step_index = 0
+                for i, stp in enumerate(task.plan.steps):
+                    if stp.step_number == plan_step_number:
+                        plan_step_index = i
+                        break
+                if step_responses == []:
+                    print_saver.print_and_store(
+                        f"No responses generated for step {step_num}."
+                    )
+                    break
+                response = self.choose_best_response(
+                    responses=step_responses,
+                    plan_step=task.plan.steps[plan_step_index],
                     interaction=existing_interaction,
+                    step_number=step_num,
                 )
-                responses.append(interaction)
+
+                if response:
+                    msgs.append({"role": "system", "content": response})
+                    print_saver.print_and_store(
+                        f"Response in self-consistency: {response} for step {step_num}."
+                    )
+                    # Function to get the latest match using re.finditer
+
+                def get_latest(pattern, text):
+                    matches = re.finditer(pattern, text, re.DOTALL | re.IGNORECASE)
+                    latest = None
+                    for match in matches:
+                        latest = match.group(1)
+                    return latest
+
+                # Extract relevant tags from response with flexible stopping conditions
+                latest_step = get_latest(
+                    r"<step>(.*?)(?=<(?:\/?step|reflection|reward|thinking|count)>|$)",
+                    response,
+                )
+
+                if latest_step is None or latest_step.strip() == "":
+                    # look for answer tag instead
+                    latest_step = get_latest(
+                        r"<answer>(.*?)(?=<(?:\/?answer|reflection|reward|thinking|count)>|$)",
+                        response,
+                    )
+                latest_thinking = get_latest(
+                    r"<thinking>(.*?)(?=<(?:\/?thinking|step|reflection|reward|count)>|$)",
+                    response,
+                )
+                latest_count = get_latest(
+                    r"<count>(\d+)(?=<(?:\/?count|step|reflection|reward|thinking)>|$)",
+                    response,
+                )
+                latest_reflection = get_latest(
+                    r"<reflection>(.*?)(?=<(?:\/?reflection|step|thinking|reward|count)>|$)",
+                    response,
+                )
+                latest_reward = get_latest(
+                    r"<reward>(.*?)(?=<(?:\/?reward|step|reflection|thinking|count)>|$)",
+                    response,
+                )
+
+                # Create a response interaction using just the latest chunks
+                try:
+                    current_step = Step(
+                        description=latest_step,
+                        step_number=step_num,
+                        remaining_budget=(
+                            int(latest_count)
+                            if latest_count
+                            else (
+                                int(new_steps[-1].remaining_budget - 1)
+                                if new_steps
+                                else int(step_budget)
+                            )
+                        ),
+                        plan_step_number=plan_step_number,
+                    )
+                except ValidationError as e:
+                    print_saver.print_and_store(
+                        f"Validation error in self-consistency: {e}. Response: {response}"
+                    )
+                    print_saver.print_and_store(
+                        f"Messages were: \n"
+                        + "\n".join([f"{m['role']}: {m['content']}" for m in msgs])
+                    )
+                    raise e
+                # step_completion = self.judge_step_completion(
+
+                if latest_reflection and latest_reward:
+                    reflection = Reflection(
+                        content=latest_reflection,
+                        reward=float(latest_reward),
+                        step_number=current_step.step_number,
+                    )
+                    current_step.reflection = reflection
+                    _reflections.append(reflection)
+                else:
+                    reflection = self.judge_step(current_step, task)
+                    current_step.reflection = reflection
+                    _reflections.append(reflection)
+                backtracks = 0
+                while (
+                    (
+                        current_step.reflection.reward < 0.8
+                        and current_step.reflection.reward > 0.5
+                    )
+                    and backtracks < backtrack_limit
+                ) or (
+                    (
+                        current_step.reflection.reward < 0.5
+                        and backtracks < backtrack_limit
+                    )
+                    and restart_attempts < restart_limit
+                ):
+                    former_score = current_step.reflection.reward
+                    msgs_b = msgs.copy()
+                    msgs_b.append(
+                        {
+                            "role": "user",
+                            "content": f"You have been rated {current_step.reflection.reward} for your reasoning. The review is as follows: {current_step.reflection.content}. Please rewrite the last step based on the feedback.",
+                        }
+                    )
+                    revision = self.call_openai(
+                        messages=msgs_b,
+                        temperature=temperature + max(random.uniform(-0.1, 0.1), 0.01),
+                        stop_sequence=["</step>"],
+                    )
+                    if revision:
+                        msgs.remove(msgs[-1])
+                        msgs.append({"role": "system", "content": revision})
+                        print_saver.print_and_store(
+                            f"Revision in self-consistency: {revision} for step {step_num}."
+                        )
+
+                        # remove count from revision
+                        latest_count = get_latest(
+                            r"<count>(.*?)(?=<(?:\/?count|step|reflection|reward|thinking)>|$)",
+                            revision,
+                        )
+                        if latest_count:
+                            revision = revision.replace(
+                                f"<count>{latest_count}</count>", ""
+                            )
+                        revision += "</step>"
+                        latest_step = get_latest(
+                            r"<step>(.*?)(?=<(?:\/?step|reflection|reward|thinking|count)>|$)",
+                            response,
+                        )
+                        current_step.description = latest_step
+                        current_step.reflection = self.judge_step(current_step, task)
+                        if _reflections:
+                            _reflections[-1] = current_step.reflection
+                        backtracks += 1
+                if latest_thinking:
+                    _thinking.append(latest_thinking)
+                    current_step.thoughts = latest_thinking  # Add thoughts to the step
+                new_steps.append(current_step)
+                if (
+                    re.search(r"<answer>", response, re.DOTALL | re.IGNORECASE)
+                    is not None
+                ):
+                    response += "</answer>"
+                answer_response = get_latest(r"<answer>(.*?)</answer>", response)
+                if answer_response is not None or len(new_steps) >= step_budget:
+                    reason = (
+                        f"Got answer: {answer_response}."
+                        if answer_response
+                        else f"Length of steps ({len(new_steps)})reached the budget, {step_budget}."
+                    )
+                    print_saver.print_and_store(
+                        f"Steps {step_number} to {step_num} completed. Reasoning path: {new_steps}. Reason: {reason}"
+                    )
+                    plan_step_index = 0
+                    for i, stp in enumerate(task.plan.steps):
+                        if stp.step_number == plan_step_number:
+                            plan_step_index = i
+                            break
+                    if self.judge_step_completion(
+                        new_steps, task.plan.steps[plan_step_index], max_plan_steps
+                    )[0]:
+                        print_saver.print_and_store(f"Was judged as complete.")
+                        responses.append(
+                            Interaction(
+                                task=task,
+                                steps=new_steps,
+                                reflections=_reflections,
+                                answer=answer_response if answer_response else "",
+                            )
+                        )
+                        if answer_response is not None:
+                            responses[-1].answer = answer_response
+                            responses[-1].final_reward = (
+                                float(
+                                    get_latest(
+                                        r"<final_reward>(.*?)</final_reward>", response
+                                    )
+                                )
+                                if get_latest(
+                                    r"<final_reward>(.*?)</final_reward>", response
+                                )
+                                else self.judge_final_answer(
+                                    task, responses[-1]
+                                ).final_reward
+                            )
+                            print_saver.print_and_store(
+                                f"Final answer for reasoning path: {responses[-1].answer} with reward: {responses[-1].final_reward}."
+                            )
+                        step_completion = True
+                        break
+
+                    elif (
+                        restart_attempts < restart_limit
+                        and current_step.reflection.reward < 0.5
+                        and former_score < 0.5
+                    ):
+
+                        restart_attempts += 1
+                        msgs = messages.copy()
+                        new_steps = []
+                        _thinking = []
+                        _reflections = []
+                        step_num = step_number
+                        step_completion = False
+                        answer_response = None
+                        print_saver.print_and_store(
+                            f"Was judged as incomplete. Restarting reasoning path. Attempt {restart_attempts} of {restart_limit}."
+                        )
+                    else:
+                        responses.append(
+                            Interaction(
+                                task=task,
+                                steps=new_steps,
+                                reflections=_reflections,
+                                answer=answer_response if answer_response else "",
+                            )
+                        )
+                        break
+                step_num += 1
+
         # Aggregate responses (select the answer with the highest final reward)
         best_interaction: Interaction = max(
             responses, key=lambda x: x.final_reward if x.final_reward else 0.0
@@ -3672,7 +7191,7 @@ Task: {task}
         )
 
         # Extract the refined prompt from the response
-        pattern = re.compile(r"<prompt>(.*?)</prompt>", re.DOTALL)
+        pattern = re.compile(r"<prompt>(.*?)</prompt>", re.DOTALL | re.IGNORECASE)
         match = pattern.search(response.choices[0].message.content)
         refined_prompt = match.group(1) if match else ""
 
@@ -3795,9 +7314,9 @@ Task: {task}
         """
         # Step 1: Retrieve Information
         retrieved_info = self.retrieve_information(task)
-        print_saver.print_and_store("Retrieved Information:\n", retrieved_info)
+        print_saver.print_and_store("Retrieved Information:\n" + retrieved_info)
         refined_task = self.task_into_prompt(task)
-        print_saver.print_and_store("Refined Task:", refined_task)
+        print_saver.print_and_store("Refined Task:" + refined_task)
 
         _description = task
         _refined_description = refined_task
@@ -3808,17 +7327,17 @@ Task: {task}
         task_object = Task(
             task, refined_task, complexity, [], [], "", 0.0, plan, _output_type
         )
-        interaction = Interaction(
+        main_interaction = Interaction(
             task=task_object, steps=[], reflections=[], answer="", final_reward=0.0
         )
-        print_saver.print_and_store("Assessed Complexity:", complexity)
+        print_saver.print_and_store("Assessed Complexity:" + str(complexity))
         assert complexity > 0.0, "Complexity assessment failed."
         assert isinstance(plan, Plan), "Complexity plan generation failed."
-
+        task_object.project_name = self.name_project(task_object, plan)
         initial_step_budget = len(plan.steps)
         subtasks = []
-        for step in plan.steps:
-            subtasks.append(step.subtasks)
+        for pstep in plan.steps:
+            subtasks.append(pstep.subtasks)
 
         # flatten the subtasks into a single list
         subtasks = [item for sublist in subtasks for item in sublist]
@@ -3833,7 +7352,7 @@ Task: {task}
 
         # Step 3: Adjust Step Budget
         adjusted_budget = self.adjust_step_budget(refined_task, task_object.complexity)
-        print_saver.print_and_store("Adjusted Step Budget:", adjusted_budget)
+        print_saver.print_and_store("Adjusted Step Budget:" + str(adjusted_budget))
 
         # Step 4: Generate Initial Prompt
         initial_prompt, system_prompt = self.generate_initial_prompt(
@@ -3843,16 +7362,21 @@ Task: {task}
             complexity,
             task_object.output_type,
         )
-        print_saver.print_and_store("System Prompt:\n", system_prompt)
-        print_saver.print_and_store("Initial Prompt:\n", initial_prompt)
-        current_prompt = initial_prompt
+        print_saver.print_and_store("System Prompt:\n" + system_prompt)
+        print_saver.print_and_store("Initial Prompt:\n" + initial_prompt)
+        current_planstep_prompt = initial_prompt
 
         # Find the step that has step_number = 1
         current_plan_step = next((x for x in plan.steps if x.step_number == 1), None)
         current_plan_subtask = None
         if current_plan_step is not None and current_plan_step.subtasks:
             current_plan_subtask = next(
-                (x for x in current_plan_step.subtasks if x.subtask_number == 1), None
+                (
+                    x
+                    for x in current_plan_step.subtasks
+                    if isinstance(x, Subtask) and x.subtask_number == 1
+                ),
+                None,
             )
         for step in range(adjusted_budget):
 
@@ -3869,6 +7393,7 @@ Task: {task}
             curr_st_explanation = None
             curr_st_output = None
             curr_st_fulltext = None
+            max_step = None
             if current_plan_step and isinstance(current_plan_step, PlanStep):
                 curr_num = current_plan_step.step_number
                 curr_name = current_plan_step.step_name
@@ -3876,6 +7401,13 @@ Task: {task}
                 curr_explanation = current_plan_step.step_explanation
                 curr_output = current_plan_step.step_output
                 curr_fulltext = current_plan_step.step_full_text
+                max_step = len(plan.steps)
+                print_saver.print_and_store(
+                    f"Current Plan Step: {curr_num} - {curr_name}"
+                )
+                this_step_prompt = self.convert_planstep_to_prompt(
+                    current_plan_step, task_object
+                )
             else:
                 raise ValueError("Invalid type for current_plan_step")
             if current_plan_subtask and isinstance(current_plan_subtask, Subtask):
@@ -3885,68 +7417,161 @@ Task: {task}
                 curr_st_explanation = current_plan_subtask.subtask_explanation
                 curr_st_output = current_plan_subtask.subtask_output
                 curr_st_fulltext = current_plan_subtask.subtask_full_text
+                print_saver.print_and_store(
+                    f"Current Plan Sub-Task: {curr_st_num} - {curr_st_name}"
+                )
 
             condensed_plan = self.condense_plan(plan)
-            step_prompt = f"""Suggested Plan:
-{condensed_plan}
+            step_prompt = f"""\n\nPlease focus on the completing following:
+            - {curr_name}
+            - Description: {curr_desc}
+            - Basically, you need to: {curr_explanation}
+            - The expected output for this step is: {curr_output}
+            - Full Text: {curr_fulltext}
 
-For the current step, focus on the following plan step or plan sub-task:
-- Step Number: {curr_num}
-- Step Name: {curr_name}
-- Step Description: {curr_desc}
-- Step Explanation: {curr_explanation}
-- Step Expected Output: {curr_output}
-- Step Full Text: {curr_fulltext}
+            """
+            st_prompt = ""
+            if curr_st_num is not None and current_plan_subtask is not None:
+                st_prompt = f"""Specifically, for the current sub-task, focus on the following sub-task:
+            - Sub-Task Name: {curr_st_name}
+            - Sub-Task Description: {curr_st_desc}
+            - Sub-Task Explanation: {curr_st_explanation}
+            - Sub-Task Expected Output: {curr_st_output}
+            - Sub-Task Full Text: {curr_st_fulltext}
+            """
 
-"""
-        st_prompt = ""
-        if curr_st_num is not None and current_plan_subtask is not None:
-            st_prompt = f"""Specifically, for the current sub-task, focus on the following plan sub-task of step {curr_num}:
-- Sub-Task Number: {curr_st_num}
-- Sub-Task Name: {curr_st_name}
-- Sub-Task Description: {curr_st_desc}
-- Sub-Task Explanation: {curr_st_explanation}
-- Sub-Task Expected Output: {curr_st_output}
-- Sub-Task Full Text: {curr_st_fulltext}
-"""
-            custom_init_prompt = initial_prompt + f"\n{step_prompt}"
+            step_prompt = this_step_prompt if this_step_prompt else step_prompt
+
+            custom_init_prompt = initial_prompt + f"\n\n{step_prompt}"
             if st_prompt is not None and st_prompt != "":
                 custom_init_prompt += f"\n{st_prompt}"
-
-            current_prompt.replace(initial_prompt, custom_init_prompt)
-
             count = adjusted_budget - step
-            # Add a count tag to the prompt
-            current_prompt += f"\n<count>{count}</count>\n"
-            # add first thinking tag
-            current_prompt += f"\n<thinking>"
 
+            current_planstep_prompt.replace(initial_prompt, custom_init_prompt)
+            steps_this_planstep = [
+                stp
+                for stp in main_interaction.steps
+                if stp.plan_step_number == curr_num
+            ]
+            steps_this_planstep.sort(key=lambda x: x.step_number)
+            assistant_tags = ""
+            for stp in steps_this_planstep:
+                if stp.remaining_budget == count:
+                    assistant_tags += f"\n<count>{count}</count>\n"
+                    assistant_tags += f"\n<thinking>"
+                elif stp.remaining_budget < count:
+                    count_ = stp.remaining_budget + 1
+                    assistant_tags += f"<count>{count_}</count>"
+                    thought_ = (
+                        stp.thoughts.replace("<thinking>", "").replace(
+                            "</thinking>", ""
+                        )
+                        if stp.thoughts
+                        else ""
+                    )
+                    step = stp.description.replace("<step>", "").replace("</step>", "")
+                    reflection_ = (
+                        stp.reflection.content.replace("<reflection>", "").replace(
+                            "</reflection>", ""
+                        )
+                        if stp.reflection
+                        else ""
+                    )
+
+                    assistant_tags += f"<thinking>{thought_}</thinking>\n"
+                    assistant_tags += f"<step>{step}</step>\n"
+                    assistant_tags += f"<reflection>{reflection_}</reflection>\n"
+
+            # Add a count tag to the prompt
+
+            print_saver.print_and_store("Current Prompt:\n" + current_planstep_prompt)
             messages = [
                 {
                     "role": "system",
                     "content": system_prompt,
                 },
-                {"role": "user", "content": current_prompt, "name": "Human_User"},
+                {
+                    "role": "user",
+                    "content": current_planstep_prompt,
+                    "name": "Human_User",
+                },
+                {
+                    "role": "assistant",
+                    "content": assistant_tags,
+                },
             ]
             # Step 5: Collaborative Multi-Agent Reasoning
             # for collaborative_reasoning, input only the current prompt minus the initial prompt
-            agent_prompt = current_prompt.replace(initial_prompt, "")
+            agent_prompt = current_planstep_prompt.replace(initial_prompt, "")
             if self.config.agents > 0:
                 agent_interaction = self.collaborative_reasoning_main(
-                    task_object, agent_prompt, interaction, task_object.output_type
+                    Task(
+                        curr_desc,
+                        self.task_into_prompt(curr_desc),
+                        complexity,
+                        [],
+                        [],
+                        "",
+                        0.0,
+                        plan,
+                        _output_type,
+                    ),
+                    agent_prompt,
+                    main_interaction,
+                    task_object.output_type,
+                    max(count / len([p for p in plan.steps if not p.completed]), 1),
+                    step,
+                    curr_num,
+                    3,
+                    max_step,
                 )
             # Step 6: Self-Consistency Check
             self_consistent_interaction = self.self_consistency(
-                task_object, current_prompt, interaction, messages
+                Task(
+                    curr_desc,
+                    self.task_into_prompt(curr_desc),
+                    complexity,
+                    [],
+                    [],
+                    "",
+                    0.0,
+                    plan,
+                    _output_type,
+                ),
+                current_planstep_prompt,
+                main_interaction,
+                messages,
+                task_object.output_type,
+                max(count / len([p for p in plan.steps if not p.completed]), 1),
+                step,
+                curr_num,
+                3,
             )
+            assert isinstance(self_consistent_interaction, Interaction)
             print_saver.print_and_store(
-                "Self-Consistent Interaction:", self_consistent_interaction
+                "Self-Consistent Interaction:" + self_consistent_interaction.__str__()
             )
+
+            for stp in self_consistent_interaction.steps:
+                if stp.plan_step_number is None or stp.plan_step_number == 0:
+                    stp.plan_step_number = curr_num
+            for stp in agent_interaction.steps:
+                if stp.plan_step_number is None or stp.plan_step_number == 0:
+                    stp.plan_step_number = curr_num
 
             # Step 7: Aggregate and Select Best Interaction
             all_interactions = []
             all_interactions.append(agent_interaction)
             all_interactions.append(self_consistent_interaction)
+            if any(
+                [
+                    ict.answer is not None and ict.answer.strip() != ""
+                    for ict in all_interactions
+                ]
+            ):
+                all_interactions = [
+                    ict for ict in all_interactions if ict.answer is not None
+                ]
             best_interaction = max(
                 all_interactions,
                 key=lambda x: x.sum_rewards() if x.sum_rewards() else 0.0,
@@ -3955,12 +7580,12 @@ For the current step, focus on the following plan step or plan sub-task:
             assert (
                 best_interaction.sum_rewards() is not None
                 and best_interaction.sum_rewards() > 0.0
-            )
+            ), f"Invalid reward value: {best_interaction.sum_rewards()}"
 
             # Step 8: Dynamic Confidence Exploration
             if best_interaction.final_reward < self.config.confidence_thresholds[1]:
                 best_interaction = self.dynamic_confidence_exploration(
-                    best_interaction, task, current_prompt
+                    best_interaction, task_object, current_plan_step
                 )
 
             # Step 9: Prompt Refinement
@@ -3970,10 +7595,29 @@ For the current step, focus on the following plan step or plan sub-task:
 
             # Now, judge whether the latest plan step or sub-task was completed successfully
             assert isinstance(best_interaction, Interaction)
-            assert isinstance(interaction, Interaction)
-            interaction = self.merge_interactions(interaction, best_interaction)
-            assert isinstance(interaction, Interaction)
 
+            assert isinstance(main_interaction, Interaction)
+            planstep_index = 0
+            for i, stp in enumerate(plan.steps):
+                if stp.step_number == curr_num:
+                    planstep_index = i
+                    break
+            # if best_interaction.steps and curr_num in [
+            #     final_output.planstep.step_number
+            #     for final_output in main_interaction.planstep_outputs
+            # ]:
+            #     for step in best_interaction.steps:
+            #         if step not in main_interaction.steps:
+            #             main_interaction.steps.append(step)
+            #     for reflection in best_interaction.reflections:
+            #         if reflection not in main_interaction.reflections:
+            #             main_interaction.reflections.append(reflection)
+
+            steps_this_planstep = [
+                stp
+                for stp in main_interaction.steps
+                if stp.plan_step_number == curr_num
+            ]
             if current_plan_step and isinstance(current_plan_step, PlanStep):
                 if current_plan_subtask and isinstance(current_plan_subtask, Subtask):
                     complete, next_st = self.judge_subtask_completion(
@@ -3997,20 +7641,72 @@ For the current step, focus on the following plan step or plan sub-task:
 
                     else:
                         current_plan_subtask.completed = False
-                else:
-                    complete, next_step_num = self.judge_step_completion(
-                        best_interaction.steps[-1], current_plan_step
+                complete, next_step_num = self.judge_step_completion(
+                    steps_this_planstep, current_plan_step, max_step
+                )
+                if complete:
+                    current_plan_step.completed = True
+                    if (
+                        best_interaction.steps
+                        and task_object.plan.steps[planstep_index].completed
+                    ):
+                        for step in best_interaction.steps:
+                            if step not in main_interaction.steps:
+                                main_interaction.steps.append(step)
+                        for reflection in best_interaction.reflections:
+                            if reflection not in main_interaction.reflections:
+                                main_interaction.reflections.append(reflection)
+
+                    steps_this_planstep = [
+                        stp
+                        for stp in main_interaction.steps
+                        if stp.plan_step_number == curr_num
+                    ]
+                    for stp in steps_this_planstep:
+                        # get same step in main_interaction
+                        for stp_ in main_interaction.steps:
+                            previous_steps = [
+                                previous_step
+                                for previous_step in main_interaction.steps
+                                if previous_step.plan_step_number
+                                == stp.plan_step_number
+                            ]
+                            previous_steps = [
+                                previous_step
+                                for previous_step in previous_steps
+                                if previous_step.step_number < stp.step_number
+                            ]
+                            if (
+                                stp_.step_number == stp.step_number
+                                and stp_.plan_step_number == stp.plan_step_number
+                            ):
+                                stp_.completed = True
+                                step_index = main_interaction.steps.index(stp_)
+                                final_step_output = self.finalize_step_output(
+                                    stp_, task_object, current_plan_step, previous_steps
+                                )
+                                main_interaction.steps[step_index].final_step_output = (
+                                    final_step_output
+                                )
+                                main_interaction.step_outputs.append(final_step_output)
+                    final_planstep_output = self.finalize_planstep_output(
+                        steps_this_planstep, task_object, current_plan_step
                     )
-                    if complete:
-                        current_plan_step.completed = True
-                    else:
-                        current_plan_step.completed = False
+                    main_interaction.existing_files.append(
+                        final_planstep_output.file_name
+                    )
+                    main_interaction.planstep_outputs.append(final_planstep_output)
+
+                else:
+                    current_plan_step.completed = False
                 if (
                     current_plan_step.completed
                     and current_plan_step.step_number < len(plan.steps)
                     and current_plan_step.step_number
                     < max(plan.steps, key=lambda x: x.step_number).step_number
                 ):
+
+                    assert isinstance(main_interaction, Interaction)
                     plan.steps[current_plan_step.step_number].completed = True
                     next_step = None
                     for st in plan.steps:
@@ -4023,20 +7719,21 @@ For the current step, focus on the following plan step or plan sub-task:
                             (
                                 x
                                 for x in current_plan_step.subtasks
-                                if x.subtask_number == 1
+                                if isinstance(x, Subtask) and x.subtask_number == 1
                             ),
                             None,
                         )
                     else:
                         current_plan_subtask = None
-            if interaction.answer and interaction.answer != "":
+            if main_interaction.answer and main_interaction.answer.strip() != "":
                 print_saver.print_and_store(
-                    f"\n\nFinal Answer: {interaction.answer}\n\n"
+                    f"\n\nFinal Answer: {main_interaction.answer}\n\n"
                 )
-                interaction = self.judge_final_answer(task, interaction)
-                return interaction
+                interaction = self.judge_final_answer(task, main_interaction)
+                main_interaction.final_reward = interaction.final_reward
+                return main_interaction
         else:
-            return interaction
+            return main_interaction
 
     def adaptive_complexity_handling(
         self, task: str, interaction: Interaction
@@ -4070,7 +7767,7 @@ if __name__ == "__main__":
     config = PromptEngineeringConfig()
     engineer = AdvancedPromptEngineer(config)
     task_description = """
-Objective: Develop and implement a Python script for a custom strategy board game called "Resource Wars." The script must accomplish the following tasks:
+Objective: Develop and implement a Python script for a custom strategy tile-based video game called "Resource Wars." The script must accomplish the following tasks:
 
 Game Requirements:
 
@@ -4116,13 +7813,20 @@ Test Success Criteria:
 - Advanced AI demonstrates dynamic adaptation and strategic planning.
 - All winning conditions and game rules are enforced correctly.
 """
-
+    task_description = "Write a Python script to calculate the factorial of a given number using recursion."
     # TODO: Replace the task_description with steps from the plans generated by complexity_measures.py
     result = engineer.main(task_description)
     assert isinstance(
         result, Interaction
     ), f"Invalid result type: {type(result)} Results: {result}"
+    result.save_final_outputs_to_logs()
+    result.save_final_file()
+    print_saver.print_and_store("\nFinal Interaction:")
+    print_saver.print_and_store(result.__str__())
+
     print_saver.print_and_store("\nFinal Answer:")
     print_saver.print_and_store(result.answer)
     print_saver.print_and_store("\nFinal Reflection:")
+    print_saver.print_and_store(result.reflections[-1].content)
     print_saver.print_and_store(f"Reward Score: {result.final_reward}")
+    print_saver.save_prints()

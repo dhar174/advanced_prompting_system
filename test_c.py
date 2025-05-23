@@ -1,13 +1,6 @@
-from calendar import c
-from math import e
-import random
 import re
-from turtle import st
 from typing import List, Optional
-from weakref import ref
 import numpy as np
-from regex import E, R
-from zmq import has
 from advanced_prompting import Task, print_saver, Interaction, Step, Reflection
 
 # ===========================
@@ -35,7 +28,7 @@ def judge_step(step: Step, task: str) -> Reflection:
     return Reflection(
         content=f"Reflection for {step.description}",
         step_number=step.step_number,
-        reward=random.uniform(0.0, 1.0),
+        reward=0.7,
     )
 
 
@@ -140,9 +133,18 @@ def handle_length_mismatch(
         }
         for description, idx in missing_steps.items():
             print_saver.print_and_store(f"Missing step: {description}")
+            counts = remove_nonnumeric_counts(counts, first_count)
+            this_step_num = None
+            if len(counts) == len(steps):
+                # Get count for the missing step
+                counts_int = [int(c) for c in counts if str(c).isdigit()]
+                if counts_int:
+                    step_count = counts_int[idx]
+                    this_step_num = first_count - step_count + 1
+
             # Insert missing steps
             steps, counts, reflections, rewards, steps_objs = insert_missing_step(
-                idx + 1,
+                this_step_num if this_step_num else idx + 1,
                 description,
                 counts,
                 reflections,
@@ -185,26 +187,75 @@ def insert_missing_step(
     # Validate step number is sequential
     if step_num > 1 and not any(s.step_number == step_num - 1 for s in steps_objs):
         raise ValueError(f"Non-sequential step number found: {step_num}")
+    reflection = None
+    # determine if description is in steps_objs or steps already and if so, insert it into the other list at the correct index
+    if description not in [s.description for s in steps_objs]:
 
-    # Insert step into steps and counts
-    steps.insert(step_num - 1, description)
+        # Check to make sure the step number is not already in steps_objs
+        if step_num in [s.step_number for s in steps_objs]:
+            raise ValueError(f"Step number {step_num} already exists in steps_objs")
+        # Insert step into steps and counts
+        steps.insert(step_num - 1, description)
+        print_saver.print_and_store(
+            f"Inserted step: {description}. Steps length: {len(steps)} for step number {step_num} and step_objs length {len(steps_objs)}"
+        )
+
     if step_num - 2 >= 0 and (step_num - 1) < len(counts):
         counts.insert(step_num - 1, int(counts[step_num - 2]) - 1)
     else:
         counts.append(int(counts[-1]) - 1 if counts else 0)
-    print_saver.print_and_store(f"Inserted step: {description}")
+
     # Handle reflections
     if step_num <= len(reflections):
-        reflection = reflections[step_num - 1]
+        reflection = None
+        for ref in reflections:
+            if ref.step_number == step_num:
+                reflection = ref
+                break
         if reflection is None:
+            reflection = (
+                reflections[step_num - 1]
+                if step_num - 1 < len(reflections)
+                and isinstance(reflections[step_num - 1], Reflection)
+                and reflections[step_num - 1].content.strip() != ""
+                else None
+            )
+        if reflection is None:
+            print_saver.print_and_store(
+                f"Reflection missing for step {step_num}. Generating reflection."
+            )
             reflection = judge_step(
                 Step(description, step_num, counts[max((step_num - 1), 0)]), task
             )
             reflections.insert(step_num - 1, reflection)
-    elif step_num - 1 == len(reflections):
+            # If the corresponding reward already exists, only update it if the length of rewards is equal to the length of reflections now that we have added a reflection and only if the counts up to the current step number start at their highest value and decrease by 1 each step before the current step number.
+            if (
+                step_num - 1 < len(rewards)
+                and len(counts) == len(steps)
+                and counts[0] == max(counts)
+                and all(counts[i] == counts[i - 1] - 1 for i in range(1, step_num))
+            ):
+                if (
+                    len(counts) == len(steps)
+                    and counts[0] == max(counts)
+                    and all(counts[i] == counts[i - 1] - 1 for i in range(1, step_num))
+                ):
+                    print_saver.print_and_store(
+                        f"Using reward for step {step_num} instead of {reflection.reward} because there was an existing reward."
+                    )
+            else:
+                rewards.insert(step_num - 1, reflection.reward)
+    elif step_num - 1 == len(reflections) and len(reflections) < len(steps):
+        print_saver.print_and_store(
+            f"Reflection missing for current step {step_num}. Generating reflection."
+        )
         reflection = judge_step(Step(description, step_num, counts[step_num - 1]), task)
+        print_saver.print_and_store(f"Generated reflection: {reflection.content}")
         reflections.append(reflection)
     elif step_num - 1 > len(reflections):
+        print_saver.print_and_store(
+            f"Reflection missing for step {step_num}. Generating reflection."
+        )
         reflection = judge_step(Step(description, step_num, counts[step_num - 1]), task)
         reflections.insert(step_num - 1, reflection)
 
@@ -213,18 +264,60 @@ def insert_missing_step(
         rewards.insert(step_num - 1, 0.0)  # Placeholder, will be updated later
     else:
         rewards.append(0.0)
-    if not isinstance(reflections[step_num - 1], Reflection):
-        reflections[step_num - 1] = Reflection(
+    if step_num - 1 < len(reflections) and not isinstance(
+        reflections[step_num - 1], Reflection
+    ):
+        reflection = reflections[step_num - 1] = Reflection(
             content=str(reflections[step_num - 1]),
             reward=rewards[step_num - 1],
             step_number=step_num,
         )
         reflections[step_num - 1] = reflection
+    elif step_num - 1 < len(reflections) and isinstance(
+        reflections[step_num - 1], Reflection
+    ):
+        reflections[step_num - 1].reward = reflections[step_num - 1].reward
+    elif step_num - 1 < len(reflections):
+        reflections[step_num - 1].reward = rewards[step_num - 1]
+
     # Create and append the new Step object
     new_step = Step(description, step_num, counts[step_num - 1], reflection)
-    steps_objs.insert(step_num - 1, new_step)
-    interaction.steps.append(new_step)
-    interaction.reflections.append(reflections[step_num - 1])
+    if new_step.description not in [s.description for s in steps_objs]:
+        steps_objs.insert(step_num - 1, new_step)
+        interaction.steps.append(new_step)
+        interaction.reflections.append(reflections[step_num - 1])
+    elif (
+        new_step.description in [s.description for s in steps_objs]
+        and new_step not in steps_objs
+    ):
+        # Find out what is different about the new_step and the existing step in steps_objs
+        existing_step = [
+            s for s in steps_objs if s.description == new_step.description
+        ][0]
+        if existing_step.step_number != new_step.step_number:
+            print_saver.print_and_store(
+                f"Step number mismatch. Updating step number for {new_step.description}."
+            )
+            existing_step.step_number = new_step.step_number
+
+            existing_index = steps_objs.index(existing_step)
+            desired_index = new_step.step_number - 1
+
+            # Compare the target index for the new_step's step_number to the existing_index
+            if desired_index < existing_index:
+                # The new step should come before the existing step
+                steps_objs.remove(existing_step)
+                steps_objs.insert(desired_index, existing_step)
+            else:
+                # The new step should come after or at the same position
+                steps_objs.remove(existing_step)
+                steps_objs.insert(desired_index, existing_step)
+
+            # Finally, ensure the step_numbers remain sequential
+            steps_objs.sort(key=lambda s: s.step_number)
+            for i, obj in enumerate(steps_objs, start=1):
+                obj.step_number = i
+
     return (steps, counts, reflections, rewards, steps_objs)
 
 
@@ -375,7 +468,8 @@ def consolidate_steps(
     counts: List[str | int],
     reflections: List[Reflection],
     first_count: int,
-) -> List[Step]:
+    response: str,
+) -> tuple[List[Step], List[str | int], List[Reflection]]:
     """
     Consolidate the steps from steps_objs, steps, counts, and reflections into a single ordered list of Step objects.
 
@@ -411,14 +505,106 @@ def consolidate_steps(
     existing_map = {obj.step_number: obj for obj in steps_objs}
 
     # Step 2: Determine total_steps
-    total_steps = max(len(steps), len(steps_objs))
+
+    unique_step_descriptions = set(s.strip() for s in steps if s.strip())
+    unique_obj_descriptions = set(
+        obj.description.strip() for obj in steps_objs if obj.description.strip()
+    )
+    duplicates = None
+    if len(unique_step_descriptions) != len(steps):
+        print_saver.print_and_store(
+            "Duplicate step descriptions found in the steps list."
+        )
+        # find the duplicates
+        duplicates = {
+            s: (
+                steps.count(s),
+                [index for index, value in enumerate(steps) if value == s],
+            )
+            for s in set(steps)
+            if steps.count(s) > 1
+        }
+        # check if the len of steps is equal to the len of counts, if so, check if duplicates are found at the same index in both lists
+        if len(steps) == len(counts):
+            duplicates_counts = {
+                s: (
+                    counts.count(s),
+                    [index for index, value in enumerate(counts) if value == s],
+                )
+                for s in set(counts)
+                if counts.count(s) > 1
+            }
+            if duplicates.values() == duplicates_counts.values():
+                print_saver.print_and_store(
+                    f"Duplicate step descriptions found at the same indexes in both steps and counts: {duplicates} and \n {duplicates_counts}"
+                )
+
+    total_steps = len(unique_step_descriptions.union(unique_obj_descriptions))
+    print_saver.print_and_store(f"counts: {counts}")
+    counts_ints = [int(c) for c in counts if str(c).isdigit()]
+    for s in steps_objs:
+        if s.remaining_budget is not None:
+            counts_ints.append(s.remaining_budget + 1)
+    if counts_ints:
+        print_saver.print_and_store(f"Counts ints: {counts_ints}, counts: {counts}")
+
+        max_count = max(counts_ints)
+        min_count = min(counts_ints)
+        counts_total = max_count - min_count + 1
+        if not counts_total == len(counts_ints):
+            print_saver.print_and_store(
+                f"Counts total: {counts_total}. Counts ints: {counts_ints}. Min count: {min_count}. Max count: {max_count}. Counts: {counts}. Total steps: {total_steps}."
+            )
+        # check if total_steps is or isnt equal to the range of counts between the max and min counts
+        if total_steps != counts_total:
+            # Raise an error, adjust total_steps, or log a warning
+            print_saver.print_and_store(
+                f"Total steps {total_steps} is {'less' if total_steps < counts_total else 'greater'} than the total from counts ({counts_total}) by {abs(total_steps - counts_total)}. Min count: {min_count}. Max count: {max_count} with a range of {counts_total}."
+            )
+            total_steps = counts_total if duplicates is not None else total_steps
+        print_saver.print_and_store(
+            f"Total steps: {total_steps}. Min count: {min_count}. Max count: {max_count}."
+        )
 
     # Step 3: Iterate through each step_number from 1 to total_steps
     steps_temp = steps.copy()
     steps_objs_temp = steps_objs.copy()
+    counts = remove_nonnumeric_counts(counts, first_count)
     for i in range(total_steps):
         step_number = i + 1
-        reflection = reflections[i] if i < len(reflections) else None
+        reflection = None
+        count_of_i = None
+        calc_step_number = None
+        for so in steps_objs:
+            if so.remaining_budget > 0 and (
+                first_count - (so.remaining_budget + 1) == i + 1
+                or so.step_number == i + 1
+            ):
+                count_of_i = so.remaining_budget + 1
+                calc_step_number = i + 1
+                reflection = so.reflection if so.reflection else None
+                print_saver.print_and_store(
+                    f"In first attempt to get count_of_i: Step number {step_number}. Count of i: {count_of_i}. Calc step number: {calc_step_number}."
+                )
+                break
+        if count_of_i is None:
+            count_of_i = (
+                int(counts[i])
+                if i < len(counts) and int(counts[i]) > i - 1
+                else first_count - i
+            )
+            calc_step_number = first_count - count_of_i + 1
+            reflection = reflections[i] if i < len(reflections) else None
+            print_saver.print_and_store(
+                f"In second attempt to get count_of_i: Count of i: {count_of_i}. Step number: {step_number}. Calc step number: {calc_step_number}. First count: {first_count}. Steps: {steps}. Steps objs: {steps_objs}. Counts: {counts}."
+            )
+
+        # if reflection is None:
+        #     reflection = judge_step(Step(steps[i], step_number, count_of_i), task)
+        #     print_saver.print_and_store(
+        #         f"Reflection missing for step {step_number}. Generating reflection."
+        #     )
+
         if i == 0:
             # Store original sequence
             original_steps = [(obj.step_number, obj.description) for obj in steps_objs]
@@ -546,7 +732,7 @@ def consolidate_steps(
                             )
         if len(steps) < total_steps and total_steps == len(steps_objs):
             print_saver.print_and_store(
-                f"Steps length mismatch (less in steps than in steps_objs, and len of steps_objs is equal to total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                f"Index {i}: Steps length mismatch (less in steps than in steps_objs, and len of steps_objs is equal to total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
             )
             missing_objs = [obj for obj in steps_objs if obj.description not in steps]
             for idx, obj in enumerate(missing_objs):
@@ -565,7 +751,7 @@ def consolidate_steps(
                 steps_temp.insert(insert_idx, obj.description)
         elif len(steps) > total_steps and total_steps == len(steps_objs):
             print_saver.print_and_store(
-                f"Steps length mismatch (more in steps than in steps_objs, and len of steps_objs is equal to total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                f"Index {i}: Steps length mismatch (more in steps than in steps_objs, and len of steps_objs is equal to total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
             )
             missing_steps = [
                 step
@@ -576,6 +762,8 @@ def consolidate_steps(
                 # Find the next step that appears in both lists
                 next_match = None
                 step_index = steps.index(step)
+                count = int(counts[step_index]) if step_index < len(counts) else 0
+                # calc_step_number = first_count - count + 1
                 for following in steps[step_index + 1 :]:
                     if following in [obj.description for obj in steps_objs]:
                         next_match = following
@@ -585,19 +773,37 @@ def consolidate_steps(
                     insert_idx = [obj.description for obj in steps_objs].index(
                         next_match
                     )
+                    # if insert_idx < calc_step_number - 1:
+                    #     insert_idx = calc_step_number - 1
                 else:
-                    insert_idx = len(steps_objs)
-                steps_objs_temp.insert(
-                    insert_idx,
-                    Step(
-                        step,
-                        insert_idx + 1,
-                        counts[insert_idx] if insert_idx < len(counts) else 0,
-                    ),
-                )
+                    insert_idx = calc_step_number
+                # if (
+                #     steps_objs[insert_idx].step_number == calc_step_number
+                #     and steps_objs[insert_idx].step_number == 1
+                # ):
+                #     insert_idx += 1
+                if insert_idx < len(counts):
+                    steps_objs_temp.insert(
+                        insert_idx,
+                        Step(
+                            step,
+                            insert_idx + 1,
+                            int(counts[insert_idx]) - 1,
+                            reflection,
+                        ),
+                    )
+                else:
+                    steps_objs_temp.append(
+                        Step(
+                            step,
+                            insert_idx + 1,
+                            first_count - insert_idx - 1,
+                            reflection,
+                        )
+                    )
         elif len(steps) < total_steps and total_steps < len(steps_objs):
             print_saver.print_and_store(
-                f"Steps length mismatch (less in steps than in steps_objs, and len of steps_objs is greater than total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                f"Index {i}: Steps length mismatch (less in steps than in steps_objs, and len of steps_objs is greater than total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
             )
             missing_objs = [obj for obj in steps_objs if obj.description not in steps]
             for idx, obj in enumerate(missing_objs):
@@ -616,7 +822,7 @@ def consolidate_steps(
                 steps_temp.insert(insert_idx, obj.description)
         elif len(steps) > total_steps and total_steps < len(steps_objs):
             print_saver.print_and_store(
-                f"Steps length mismatch (more in steps than in steps_objs, and len of steps_objs is greater than total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                f"Index {i}: Steps length mismatch (more in steps than in steps_objs, and len of steps_objs is greater than total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
             )
             missing_steps = [
                 step
@@ -637,18 +843,33 @@ def consolidate_steps(
                         next_match
                     )
                 else:
-                    insert_idx = len(steps_objs)
-                steps_objs_temp.insert(
-                    insert_idx,
-                    Step(
-                        step,
-                        insert_idx + 1,
-                        counts[insert_idx] if insert_idx < len(counts) else 0,
-                    ),
-                )
+                    insert_idx = (
+                        calc_step_number
+                        if calc_step_number <= len(steps_objs)
+                        else len(steps_objs)
+                    )
+                if insert_idx < len(counts):
+                    steps_objs_temp.insert(
+                        insert_idx,
+                        Step(
+                            step,
+                            insert_idx + 1,
+                            int(counts[insert_idx]) - 1,
+                            reflection,
+                        ),
+                    )
+                else:
+                    steps_objs_temp.append(
+                        Step(
+                            step,
+                            insert_idx + 1,
+                            first_count - insert_idx - 1,
+                            reflection,
+                        ),
+                    )
         elif len(steps) == total_steps and total_steps < len(steps_objs):
             print_saver.print_and_store(
-                f"Steps length mismatch (equal in steps and steps_objs, and len of steps_objs is greater than total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                f"Index {i}: Steps length mismatch (equal in steps and steps_objs, and len of steps_objs is greater than total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
             )
             missing_objs = [obj for obj in steps_objs if obj.description not in steps]
             for idx, obj in enumerate(missing_objs):
@@ -667,7 +888,7 @@ def consolidate_steps(
                 steps_temp.insert(insert_idx, obj.description)
         elif len(steps) == total_steps and total_steps > len(steps_objs):
             print_saver.print_and_store(
-                f"Steps length mismatch (equal in steps and steps_objs, and len of steps_objs is less than total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                f"Index {i}: Steps length mismatch (equal in steps and steps_objs, and len of steps_objs is less than total_steps). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
             )
             missing_steps = [
                 step
@@ -688,15 +909,36 @@ def consolidate_steps(
                         next_match
                     )
                 else:
-                    insert_idx = len(steps_objs)
-                steps_objs_temp.insert(
-                    insert_idx,
-                    Step(
-                        step,
-                        insert_idx + 1,
-                        counts[insert_idx] if insert_idx < len(counts) else 0,
-                    ),
-                )
+                    insert_idx = (
+                        calc_step_number
+                        if calc_step_number <= len(steps_objs)
+                        else len(steps_objs)
+                    )
+                if insert_idx < len(counts) and len(steps_objs) != 0:
+                    print_saver.print_and_store(
+                        f"Inserting step '{step}' at index {insert_idx} of counts: {counts} of length {len(counts)}."
+                    )
+                    print_saver.print_and_store(
+                        f"counts[insert_idx]: {counts[insert_idx]}."
+                    )
+                    steps_objs_temp.insert(
+                        insert_idx,
+                        Step(
+                            step,
+                            insert_idx + 1,
+                            int(counts[insert_idx]) - 1,
+                            reflection,
+                        ),
+                    )
+                else:
+                    steps_objs_temp.append(
+                        Step(
+                            step,
+                            insert_idx + 1,
+                            first_count - insert_idx - 1,
+                            reflection,
+                        ),
+                    )
         elif len(steps) < total_steps and total_steps > len(steps_objs):
             # This result indicates that the steps list is shorter than the total steps and the steps_objs list is shorter than the total steps. So we should check if the steps list is shorter than the steps_objs list or vice versa as the total steps is greater than both. Even if they are of the same length, we need to check if either has steps not in the other, as each could have unique steps, and adding them together might result in both lists equaling the total steps, if we're lucky.
             # This result indicates that the steps list is shorter than the total steps and the steps_objs list is also shorter than the total steps.
@@ -704,7 +946,7 @@ def consolidate_steps(
 
             if len(steps) < len(steps_objs):
                 print_saver.print_and_store(
-                    f"Steps length mismatch (less in steps than in steps_objs, total_steps is higher). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                    f"Index {i}: Steps length mismatch (less in steps than in steps_objs, total_steps is higher). Adjusting steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
                 )
                 missing_objs = [
                     obj for obj in steps_objs if obj.description not in steps
@@ -724,7 +966,7 @@ def consolidate_steps(
 
             elif len(steps) > len(steps_objs):
                 print_saver.print_and_store(
-                    f"Steps length mismatch (more in steps than in steps_objs, total_steps is higher). Adjusting steps_objs. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                    f"Index {i}: Steps length mismatch (more in steps than in steps_objs, total_steps is higher). Adjusting steps_objs. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
                 )
                 missing_steps = [
                     step
@@ -743,13 +985,22 @@ def consolidate_steps(
                             next_match
                         )
                     else:
-                        insert_idx = len(steps_objs)
+                        insert_idx = (
+                            calc_step_number
+                            if calc_step_number <= len(steps_objs)
+                            else len(steps_objs)
+                        )
                     steps_objs_temp.insert(
                         insert_idx,
                         Step(
                             step_value,
                             insert_idx + 1,
-                            counts[insert_idx] if insert_idx < len(counts) else 0,
+                            (
+                                int(counts[insert_idx]) - 1
+                                if insert_idx < len(counts)
+                                else 0
+                            ),
+                            reflection,
                         ),
                     )
 
@@ -757,11 +1008,19 @@ def consolidate_steps(
                 # len(steps) == len(steps_objs), but both are still less than total_steps.
                 # We try reconciling any missing content in each list to move toward total_steps.
                 print_saver.print_and_store(
-                    f"Steps length mismatch (equal in steps and steps_objs, but both less than total_steps). Adjusting. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                    f"Index {i}: Steps length mismatch (equal in steps and steps_objs, but both less than total_steps). Adjusting. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
                 )
+
                 missing_objs = [
                     obj for obj in steps_objs if obj.description not in steps
                 ]
+
+                if calc_step_number is None:  # This should never happen
+                    print_saver.print_and_store(
+                        f"Index {i}: Error calculating step number for {i}."
+                    )
+                    continue
+
                 for obj in missing_objs:
                     obj_index = steps_objs.index(obj)
                     next_match = None
@@ -772,7 +1031,7 @@ def consolidate_steps(
                     if next_match:
                         insert_idx = steps.index(next_match)
                     else:
-                        insert_idx = len(steps)
+                        insert_idx = calc_step_number
                     steps_temp.insert(insert_idx, obj.description)
 
                 missing_steps = [
@@ -792,13 +1051,21 @@ def consolidate_steps(
                             next_match
                         )
                     else:
-                        insert_idx = len(steps_objs)
+                        print_saver.print_and_store(
+                            f"Index {i}: Error calculating step number for '{step_value}' so using calc_step_number {calc_step_number}."
+                        )
+                        insert_idx = calc_step_number
                     steps_objs_temp.insert(
                         insert_idx,
                         Step(
                             step_value,
                             insert_idx + 1,
-                            counts[insert_idx] if insert_idx < len(counts) else 0,
+                            (
+                                int(counts[insert_idx]) - 1
+                                if insert_idx < len(counts)
+                                else 0
+                            ),
+                            reflection,
                         ),
                     )
 
@@ -806,7 +1073,7 @@ def consolidate_steps(
             # This condition means that the steps list is longer than the total steps and the steps_objs list is also shorter than the total steps, meaning that the steps list is longer than the steps_objs list, but somehow the total steps is greater than both. #
             # This is a tricky situation, but we can handle it by adding the missing steps from the steps list to the steps_objs list.
             print_saver.print_and_store(
-                f"Steps length mismatch (more in steps than in steps_objs, and total_steps is in between). Adjusting steps_objs. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                f"Index {i}: Steps length mismatch (more in steps than in steps_objs, and total_steps is in between). Adjusting steps_objs. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
             )
             missing_steps = [
                 step
@@ -825,20 +1092,46 @@ def consolidate_steps(
                         next_match
                     )
                 else:
-                    insert_idx = len(steps_objs)
-                steps_objs_temp.insert(
-                    insert_idx,
-                    Step(
-                        step,
-                        insert_idx + 1,
-                        counts[insert_idx] if insert_idx < len(counts) else 0,
-                    ),
+                    insert_idx = (
+                        calc_step_number
+                        if calc_step_number <= len(steps_objs)
+                        else len(steps_objs)
+                    )
+                if insert_idx < len(counts):
+                    steps_objs_temp.insert(
+                        insert_idx,
+                        Step(
+                            step,
+                            insert_idx + 1,
+                            int(counts[insert_idx]) - 1,
+                            reflection,
+                        ),
+                    )
+                else:
+                    steps_objs_temp.append(
+                        Step(
+                            step,
+                            insert_idx + 1,
+                            first_count - insert_idx - 1,
+                            reflection,
+                        ),
+                    )
+                print_saver.print_and_store(
+                    f"Inserted missing step '{step}' at index {insert_idx}."
                 )
+            unique_step_descriptions = set(s.strip() for s in steps if s.strip())
+            unique_obj_descriptions = set(
+                obj.description.strip() for obj in steps_objs if obj.description.strip()
+            )
+            total_steps = len(unique_step_descriptions.union(unique_obj_descriptions))
+            print_saver.print_and_store(
+                f"Final total steps after adjustment: {total_steps}"
+            )
         elif len(steps) == len(steps_objs) and total_steps < max(
             len(steps), len(steps_objs)
         ):
             print_saver.print_and_store(
-                f"Steps length mismatch (equal in steps and steps_objs, but both greater than total_steps). Adjusting. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                f"Index {i}: Steps length mismatch (equal in steps and steps_objs, but both greater than total_steps). Adjusting. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
             )
             missing_objs = [obj for obj in steps_objs if obj.description not in steps]
             for obj in missing_objs:
@@ -869,20 +1162,25 @@ def consolidate_steps(
                 if next_match:
                     insert_idx = [o.description for o in steps_objs].index(next_match)
                 else:
-                    insert_idx = len(steps_objs)
+                    insert_idx = (
+                        calc_step_number
+                        if calc_step_number <= len(steps_objs)
+                        else len(steps_objs)
+                    )
                 steps_objs_temp.insert(
                     insert_idx,
                     Step(
                         step_value,
                         insert_idx + 1,
-                        counts[insert_idx] if insert_idx < len(counts) else 0,
+                        int(counts[insert_idx]) - 1 if insert_idx < len(counts) else 0,
+                        reflection,
                     ),
                 )
         elif len(steps) == len(steps_objs) and total_steps > max(
             len(steps), len(steps_objs)
         ):
             print_saver.print_and_store(
-                f"Steps length mismatch (equal in steps and steps_objs, but both less than total_steps). Adjusting. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                f"Index {i}: Steps length mismatch (equal in steps and steps_objs, but both less than total_steps). Adjusting. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
             )
             missing_objs = [obj for obj in steps_objs if obj.description not in steps]
             for obj in missing_objs:
@@ -913,30 +1211,81 @@ def consolidate_steps(
                 if next_match:
                     insert_idx = [o.description for o in steps_objs].index(next_match)
                 else:
-                    insert_idx = len(steps_objs)
+                    insert_idx = (
+                        calc_step_number
+                        if calc_step_number <= len(steps_objs)
+                        else len(steps_objs)
+                    )
                 steps_objs_temp.insert(
                     insert_idx,
                     Step(
                         step_value,
                         insert_idx + 1,
-                        counts[insert_idx] if insert_idx < len(counts) else 0,
+                        int(counts[insert_idx]) - 1 if insert_idx < len(counts) else 0,
+                        reflection,
                     ),
                 )
+        elif len(steps) == total_steps and total_steps == len(steps_objs):
+            # This condition means that the steps list is equal to the total steps and the steps_objs list is also equal to the total steps, meaning that the steps list is equal to the steps_objs list, and both are equal to the total steps.
+            # This is the ideal situation, and we don't need to do anything.
+            print_saver.print_and_store(
+                f"Index {i}: Steps length match (equal in steps and steps_objs, and equal to total_steps). No adjustment needed. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+            )
+
         else:
             raise ValueError(
-                f"Unhandled case. Please check the length of steps, steps_objs, and total_steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
+                f"Index {i}: Unhandled case. Please check the length of steps, steps_objs, and total_steps. steps: {len(steps)} vs steps_objs: {len(steps_objs)} and total_steps: {total_steps}"
             )
         steps = steps_temp
         steps_objs = steps_objs_temp
 
-        description = steps[i] if i < len(steps) else f"Step {step_number}"
-        counts = remove_nonnumeric_counts(counts, first_count)
-        pre_count = (
-            counts[i] if i < len(counts) else (int(counts[-1]) - 1 if counts else 0)
+        # counts = remove_nonnumeric_counts(counts, first_count)
+        # pre_count = (
+        #     counts[i] if i < len(counts) else (int(counts[-1]) - 1 if counts else 0)
+        # )
+        # pre_count = int(pre_count)
+        remaining_budget = count_of_i - 1 if count_of_i is not (None or 0) else 0
+        description = None
+        for j in range(len(steps_objs)):
+            if (
+                steps_objs[j].step_number == step_number
+                and steps_objs[j].remaining_budget == remaining_budget
+            ) or (
+                steps_objs[j].step_number == calc_step_number
+                and steps_objs[j].remaining_budget == remaining_budget
+            ):
+                description = steps_objs[j].description
+                break
+        if description is None:
+            try:
+                count_index = int(counts_ints.index(count_of_i))
+                description = (
+                    steps[count_index] if count_index < len(steps) else "ERROR"
+                )
+            except Exception as e:
+                description = "ERROR " + str(e)
+                print_saver.print_and_store(
+                    f"Index {i}: Error finding description for step {step_number}: error {e}"
+                )
+            if "ERROR" in description:
+                try:
+                    description = steps[i]
+                except Exception as e:
+                    description = "ERROR " + str(e)
+                    print_saver.print_and_store(
+                        f"Index {i}: Error finding description for step {step_number}: error {e}"
+                    )
+        assert description is not None, f"Description is None for index {i}."
+        ee = description.replace("ERROR", "") if "ERROR" in description else ""
+        assert (
+            "ERROR" not in description
+        ), f"Description is 'ERROR' for index {i}. Error:{ee} Steps: {steps}. Counts: {counts_ints}. Counts type: {type(counts_ints[0])} Steps_objs: {steps_objs} and remaining_budget: {remaining_budget} and count_of_i: {count_of_i} and calc_step_number: {calc_step_number}"
+        print_saver.print_and_store(
+            f"Index {i}: Step {step_number} description: {description}, remaining_budget: {remaining_budget}"
         )
-        pre_count = int(pre_count)
-        remaining_budget = pre_count if pre_count is not (None or 0) else 0
-
+        # assert (
+        #     step_number == calc_step_number
+        # ), f"Step number mismatch: {step_number} vs {calc_step_number} for index {i} step {description}. Steps: {steps}. Counts: {counts}. Steps_objs: {steps_objs}."
         if step_number in existing_map.keys():
             obj = existing_map[step_number]
             # Update description if necessary
@@ -949,6 +1298,7 @@ def consolidate_steps(
                         f"Remaining budget mismatch for step {step_number} (shorter than expected). Adjusting remaining budget. {remaining_budget} vs {obj.remaining_budget}"
                     )
                     remaining_budget = obj.remaining_budget
+                    # obj.remaining_budget = remaining_budget
                 elif remaining_budget > obj.remaining_budget:
                     print_saver.print_and_store(
                         f"Remaining budget mismatch for step {step_number} (longer than expected). Adjusting remaining budget. {remaining_budget} vs {obj.remaining_budget}"
@@ -956,12 +1306,16 @@ def consolidate_steps(
                     obj.remaining_budget = remaining_budget
         else:
             # Create a new Step object
+            print_saver.print_and_store(
+                f"Creating new Step object for step {step_number}: {description}"
+            )
             new_obj = Step(description, step_number, remaining_budget, reflection)
             existing_map[step_number] = new_obj
 
     # Step 4: Sort the steps by step_number
     step_objs_final = [existing_map[sn] for sn in sorted(existing_map.keys())]
-    return step_objs_final
+
+    return step_objs_final, steps, reflections
 
 
 # ===========================
@@ -1007,7 +1361,11 @@ def process_steps(
     # ===========================
 
     # Call the consolidate_steps function to align steps_objs with steps and counts
-    steps_objs = consolidate_steps(steps_objs, steps, counts, reflections, first_count)
+    steps_objs, steps, reflections = consolidate_steps(
+        steps_objs, steps, counts, reflections, first_count, response
+    )
+
+    assert 0 not in [obj.step_number for obj in steps_objs], "Step numbers must be > 0."
 
     # ===========================
     # Step 2: Validate and Adjust Steps
@@ -1045,65 +1403,96 @@ def process_steps(
     # Step 5: Process Reflections and Rewards
     # ===========================
 
-    for i, step_obj in enumerate(steps_objs):
+    for i, step_obj in [(obj.step_number, obj) for obj in steps_objs]:
         # Handle reflections
-        reflection = reflections[i] if i < len(reflections) else None
         if i == 0 and step_obj.step_number == 0:
             step_obj.step_number = 1
             # Now check steps after the first one to ensure they are sequential
             for j in range(1, len(steps_objs)):
                 if steps_objs[j].step_number != step_obj.step_number + 1:
                     steps_objs[j].step_number = step_obj.step_number + 1
-
-        if reflection is None:
-            # If reflection is missing, generate it
-            reflection = judge_step(step_obj, task)
-            if reflection is not None:
+        if (
+            step_obj.reflection is None
+            or not isinstance(step_obj.reflection, Reflection)
+            or step_obj.reflection.content.strip() == ""
+        ) and step_obj.step_number in [r.step_number for r in reflections]:
+            reflection = (
+                reflections[
+                    reflections.index(
+                        [
+                            r
+                            for r in reflections
+                            if r.step_number == step_obj.step_number
+                        ][0]
+                    )
+                ]
+                if step_obj.step_number in [r.step_number for r in reflections]
+                else judge_step(step_obj, task)
+            )
+            if reflection is not None and isinstance(reflection, Reflection):
                 reflection.step_number = step_obj.step_number
                 step_obj.reflection = reflection
                 interaction.reflections.append(reflection)
-        else:
-            # Assign the reflection and reward to the step
-            step_obj.reflection = (
-                reflection
-                if isinstance(reflection, Reflection)
-                else Reflection(
-                    content=str(reflection),
-                    reward=0.0,
-                    step_number=step_obj.step_number,
+            elif isinstance(reflection, str):
+                step_obj.reflection = (
+                    reflection
+                    if isinstance(reflection, Reflection)
+                    else Reflection(
+                        content=str(reflection),
+                        reward=(
+                            float(rewards[i])
+                            if i < len(rewards)
+                            else judge_step(step_obj, task)
+                        ),
+                        step_number=step_obj.step_number,
+                    )
                 )
+        if step_obj.reflection is None or not isinstance(
+            step_obj.reflection, Reflection
+        ):
+            # If reflection is missing, generate it
+
+            reflection = reflection = (
+                reflections[i]
+                if i < len(reflections)
+                and reflections[i].step_number == step_obj.step_number
+                else judge_step(step_obj, task)
             )
-            step_obj.reflection.reward = float(rewards[i]) if i < len(rewards) else 0.0
+            if reflection is not None and isinstance(reflection, Reflection):
+                reflection.step_number = step_obj.step_number
+                step_obj.reflection = reflection
+                interaction.reflections.append(reflection)
+            else:
+                # Assign the reflection and reward to the step
+                step_obj.reflection = judge_step(step_obj, task)
+        assert isinstance(
+            step_obj.reflection, Reflection
+        ), "Reflection object is not properly instantiated."
+        assert hasattr(
+            step_obj.reflection, "content"
+        ), "Reflection object does not have a content attribute."
+        print_saver.print_and_store(
+            f"Reflection for step {step_obj.step_number}: {step_obj.reflection}"
+        )
+        print_saver.print_and_store(f"Type of reflection: {type(step_obj.reflection)}")
+        if (
+            interaction.reflections
+            and len(interaction.reflections) > 0
+            and interaction.reflections != []
+        ):
+            print_saver.print_and_store(
+                f"Type of reflection in interaction: {type(interaction.reflections)} and type of first item: {type(interaction.reflections[0])}"
+            )
+        else:
+            print_saver.print_and_store(
+                f"Type of reflection in interaction: {type(interaction.reflections)} and type of reflection in step: {type(step_obj.reflection)}"
+            )
             assert isinstance(
                 step_obj.reflection, Reflection
             ), "Reflection object is not properly instantiated."
-            assert hasattr(
-                step_obj.reflection, "content"
-            ), "Reflection object does not have a content attribute."
-            print_saver.print_and_store(
-                f"Reflection for step {step_obj.step_number}: {step_obj.reflection}"
-            )
-            print_saver.print_and_store(
-                f"Type of reflection: {type(step_obj.reflection)}"
-            )
-            if (
-                interaction.reflections
-                and len(interaction.reflections) > 0
-                and interaction.reflections != []
-            ):
-                print_saver.print_and_store(
-                    f"Type of reflection in interaction: {type(interaction.reflections)} and type of first item: {type(interaction.reflections[0])}"
-                )
-            else:
-                print_saver.print_and_store(
-                    f"Type of reflection in interaction: {type(interaction.reflections)} and type of reflection in step: {type(step_obj.reflection)}"
-                )
-                assert isinstance(
-                    step_obj.reflection, Reflection
-                ), "Reflection object is not properly instantiated."
 
-            if step_obj.reflection not in interaction.reflections:
-                interaction.reflections.append(step_obj.reflection)
+        if step_obj.reflection not in interaction.reflections:
+            interaction.reflections.append(step_obj.reflection)
 
         # Handle rewards if not already set
         if (
@@ -1111,7 +1500,7 @@ def process_steps(
             and step_obj.reflection.reward == 0.0
             and i < len(rewards)
         ):
-            step_obj.reflection.reward = float(rewards[i])
+            step_obj.reflection.reward = judge_step(step_obj, task)
 
     # ===========================
     # Step 6: Extract Answer from Response
@@ -1161,12 +1550,21 @@ def parse_response(
     Parses the OpenAI API response to extract steps, reflections, answers, and rewards.
     """
     # TODO: Implement a more robust response parsing mechanism, like using structured output from the model
+
     if interaction is None:
         interaction = Interaction(
             task=task, steps=[], reflections=[], answer="", final_reward=0.0
         )
 
     if response is None or not isinstance(response, str):
+        return interaction
+
+    # Check for any missing tags
+    if not re.search(r"<step>", response):
+        print_saver.print_and_store("No steps found in response.")
+        return interaction
+    if not re.search(r"<thinking>", response):
+        print_saver.print_and_store("No <thinking> tags found in response.")
         return interaction
 
     # Extract steps
@@ -1179,8 +1577,44 @@ def parse_response(
     steps = re.findall(
         r"<step>(.*?)<(?:\/step|reflection|reward|step)>", response, re.DOTALL
     )
-    # remove empty steps
+
     print_saver.print_and_store(f"Steps: {steps}")
+    if not re.search(r"<count>", response):
+        print_saver.print_and_store("No <count> tags found in response.")
+        # Instead, we can use the current_remaining_budget, current_step_number, initial_budget, and steps_objs to infer the count values
+        # Use current_remaining_budget, current_step_number, initial_budget, and steps_objs to infer the count values
+        counts = []
+        if steps_objs and len(steps_objs) > 0:
+            # Get max remaining budget from steps_objs
+            max_budget = max([s.remaining_budget for s in steps_objs]) + 1
+            first_count = max(
+                max_budget, initial_budget if initial_budget > 0 else max_budget
+            )
+
+            # Generate counts backwards from first_count
+            for i in range(len(steps)):
+                if i < len(steps_objs) and steps_objs[i].remaining_budget is not None:
+                    counts.append(steps_objs[i].remaining_budget + 1)
+                else:
+                    prev_count = int(counts[-1]) if counts else first_count
+                    counts.append(prev_count - 1)
+        else:
+            # If no steps_objs, generate counts based on initial_budget or current values
+            first_count = (
+                initial_budget
+                if initial_budget > 0
+                else (current_remaining_budget + current_step_number)
+            )
+            counts = [str(first_count - i) for i in range(len(steps))]
+            # Instead of <count> tags, infer counts based on existing parameters
+
+        print_saver.print_and_store(f"Inferred counts: {counts}")
+    else:
+        counts = re.findall(
+            r"<count>(.*?)<(?:\/count|thinking|step|reflection|reward|count)>",
+            response,
+            re.DOTALL,
+        )
     first_count = re.search(
         r"<count>(.*?)<(?:\/count|thinking|step|reflection|reward|count)>",
         response,
@@ -1189,37 +1623,41 @@ def parse_response(
     if first_count and first_count.group(1).strip().isnumeric():
         first_count = int(first_count.group(1))
     elif steps_objs is not None and steps_objs != []:
-        first_count = max([s.remaining_budget for s in steps_objs])
-    elif task.plan:
-        first_count = len(task.plan.steps) + len(
-            [sub_task for step in task.plan.steps for sub_task in step.subtasks]
-        )
+        first_count = max([s.remaining_budget for s in steps_objs]) + 1
+    elif initial_budget > len(steps) or initial_budget > len(steps_objs):
+        first_count = initial_budget
     if initial_budget != 0 and first_count != 0:
         if first_count != initial_budget:
             print_saver.print_and_store(
                 f"Initial budget mismatch. Adjusting initial budget. {first_count} vs initial: {initial_budget}"
             )
-            first_count = initial_budget
+            initial_budget = first_count
 
-    elif initial_budget != 0 and first_count == 0:
+    elif initial_budget != 0 and isinstance(first_count, int) and first_count == 0:
         first_count = initial_budget
         print_saver.print_and_store(
             f"Initial budget mismatch. Adjusting initial budget. {first_count}"
         )
-    elif initial_budget == 0 and first_count == 0:
+    elif initial_budget == 0 and isinstance(first_count, int) and first_count == 0:
         initial_budget = 12
         first_count = initial_budget
-    elif initial_budget == 0 and first_count != 0 and first_count is not None:
+    elif (
+        initial_budget == 0
+        and isinstance(first_count, int)
+        and first_count != 0
+        and first_count is not None
+    ):
         initial_budget = first_count
     else:
         initial_budget = 12
         first_count = initial_budget
 
-    counts = re.findall(
-        r"<count>(.*?)<(?:\/count|thinking|step|reflection|reward|count)>",
-        response,
-        re.DOTALL,
-    )
+    if steps_objs and max([s.remaining_budget for s in steps_objs]) + 1 > first_count:
+        first_count = max([s.remaining_budget for s in steps_objs]) + 1
+        print_saver.print_and_store(
+            f"first_count adjusted to {first_count} based on steps_objs."
+        )
+
     # Extract reflections
     # Revert reflections to the original pattern
     reflections = re.findall(
@@ -1227,28 +1665,286 @@ def parse_response(
         response,
         re.DOTALL,
     )
-    reflections = [reflection for reflection in reflections if reflection.strip() != ""]
-    # Convert reflections to Reflection objects
-    for i, reflection in enumerate(reflections):
-        if reflections_objs is not None and i < len(reflections_objs):
-            reflections[i] = reflections_objs[i]
-        else:
-            reflections[i] = Reflection(
-                content=reflection,
-                step_number=i + 1,
-                reward=0.0,
-            )
-
     # Use the modified pattern for rewards
     rewards = re.findall(
         r"</reflection>\s*.*?<reward>(0\.\d+?|1\.0)<(?:/reward|thinking|step|reflection|count|reward?)>",
         response,
         re.DOTALL,
     )
-    print_saver.print_and_store(f"Rewards: {rewards}")
+    # ensure each entry in rewards is a string before processing
     for i in range(len(rewards)):
-        print_saver.print_and_store(f"Step {i + 1} reward: {rewards[i]}")
-    i = 0
+        if isinstance(rewards[i], re.Match):
+            rewards[i] = str(rewards[i].group(1))
+
+    print_saver.print_and_store(f"Rewards: {rewards}")
+    for iii in range(len(rewards)):
+        print_saver.print_and_store(f"Step {iii + 1} reward: {rewards[iii]}")
+    reflections = [reflection for reflection in reflections if reflection.strip() != ""]
+    if reflections_objs is not None and reflections_objs != []:
+        reflections_objs = [
+            r for r in reflections_objs if r.content.strip() != "" and r.content
+        ]
+        for sobj in steps_objs:
+            if isinstance(sobj.reflection, Reflection):
+                reflections_objs.append(sobj.reflection)
+        reflections_objs.sort(key=lambda r: r.step_number)
+    else:
+        reflections_objs = [
+            sobj.reflection
+            for sobj in steps_objs
+            if isinstance(sobj.reflection, Reflection)
+        ]
+        reflections_objs.sort(key=lambda r: r.step_number)
+
+    counts = [c.strip() for c in counts if c.isnumeric()]
+
+    # Combine existing and new reflections, avoiding duplicates
+    existing_contents = {r.content.strip() for r in reflections_objs}
+    new_reflections = [
+        Reflection(
+            content=r,
+            step_number=(
+                first_count - int(counts[ii]) + 1
+                if ii < len(counts)
+                else (reflections_objs[-1].step_number + 1 if reflections_objs else 1)
+            ),
+            reward=(
+                float(rewards[ii])
+                if ii < len(rewards)
+                else judge_step(
+                    Step(
+                        steps[ii],
+                        (
+                            first_count - int(counts[ii]) + 1
+                            if ii < len(counts)
+                            else ii + 1
+                        ),
+                        initial_budget - (ii + 1),
+                    ),
+                    task,
+                ).reward
+            ),
+        )
+        for ii, r in enumerate(reflections)
+        if r not in existing_contents
+    ]
+    for refobj in reflections_objs:
+        if refobj not in new_reflections and refobj.content not in existing_contents:
+            if refobj.step_number is None:
+                refobj.step_number = (
+                    first_count - int(counts[reflections_objs.index(refobj)]) + 1
+                    if reflections_objs.index(refobj) < len(counts)
+                    else (
+                        reflections_objs[-1].step_number + 1 if reflections_objs else 1
+                    )
+                )
+            elif refobj.step_number in [
+                r.step_number for r in new_reflections + reflections
+            ]:
+                for r in new_reflections + reflections:
+                    if r.step_number == refobj.step_number:
+                        r.step_number += 1
+            new_reflections.append(refobj)
+    all_reflections = reflections_objs + new_reflections
+    # Assign sequential step numbers
+    all_reflections.sort(key=lambda r: r.step_number)
+    for idx, reflection in enumerate(all_reflections, start=1):
+        reflection.step_number = idx
+    final_reflections = all_reflections
+
+    reflections = final_reflections
+
+    # check if both steps_objs and steps are empty
+    if steps_objs is None and steps is None:
+        # Check if the other parameters are empty
+        if reflections is None and rewards is None and counts is None:
+            return interaction
+        else:
+            # Check the <thinking> tags for more information
+            if re.search(r"<thinking>", response):
+                print_saver.print_and_store(
+                    "No steps found in response. Checking for <thinking> tags."
+                )
+                thoughts = re.findall(
+                    r"<thinking>(.*?)<(?:/thinking|step|reflection|count|reward)>",
+                    response,
+                    re.DOTALL,
+                )
+                for thought in thoughts:
+                    print_saver.print_and_store(f"Thought: {thought}")
+                return interaction
+            else:
+                print_saver.print_and_store(
+                    "No steps found in response. No <thinking> tags found."
+                )
+                return interaction
+    else:
+        # If any steps are empty but are present in steps_objs, use the descriptions from steps_objs. If any are empty but are in the right place and accompanied by a count, thinking, reflection, or reward tag, they will be filled in later.
+        # Initialize first_count if not already set
+        def calculate_expected_counts(first_count, index):
+            """Calculate expected counts up to the given index."""
+            if index == 0:
+                return [first_count]
+            return list(range(first_count, first_count - (index + 1), -1))
+
+        def validate_counts(expected, actual):
+            """Validate if actual counts match expected counts."""
+            return actual == expected
+
+        def replace_empty_step(steps, steps_objs, index):
+            """Replace an empty step with the description from steps_objs."""
+            steps[index] = steps_objs[index].description
+            print_saver.print_and_store(
+                f"Replaced empty step at index {index} with: '{steps_objs[index].description}'."
+            )
+
+        # Initialize first_count if not already set
+        if first_count is None or first_count == 0 or not isinstance(first_count, int):
+            if counts:
+                try:
+                    first_count = int(counts[0].strip())
+                except ValueError:
+                    print_saver.print_and_store(
+                        f"Invalid integer in counts at index 0. Setting first_count to initial_budget {initial_budget}."
+                    )
+                    first_count = initial_budget
+            else:
+                first_count = initial_budget
+
+        for i, step in enumerate(steps):
+            if step.strip() == "" and i < len(steps_objs):
+                if i < len(counts) and counts[i].strip() != "":
+                    try:
+                        # Calculate expected counts correctly
+                        expected_counts = calculate_expected_counts(first_count, i)
+
+                        # Extract actual counts up to the current index
+                        actual_counts = [int(c.strip()) for c in counts[: i + 1]]
+
+                        # Verify counts consistency
+                        if validate_counts(expected_counts, actual_counts):
+                            replace_empty_step(steps, steps_objs, i)
+                        else:
+                            # Find out how the counts are inconsistent. For example, if only the count that would have been at the current index is missing, we can replace the empty step with the description from steps_objs. Likewise, if the counts are all over the place, we can't make any assumptions.
+                            if (
+                                len(actual_counts) < len(expected_counts)
+                                and len(expected_counts) - len(actual_counts) == 1
+                            ):
+                                replace_empty_step(steps, steps_objs, i)
+                            elif (
+                                len(actual_counts) < len(expected_counts)
+                                and len(expected_counts) - len(actual_counts) > 1
+                            ):
+                                # For this missing count, check 1. whether the count is duplicated, 2. whether the duplicated count is the same as the one that would be at the current index, and 3. whether the thinking or reflection tags that would have been associated with it are also duplicated. If all conditions are met, we can remove the extra count and the corresponding thinking or reflection tag. If the current count is accurate after the removal, we can replace the empty step with the description from steps_objs.
+                                if (
+                                    counts.count(counts[i]) > 1
+                                    and counts[i] == expected_counts[i]
+                                    and (
+                                        reflections.count(reflections[i]) > 1
+                                        or rewards.count(rewards[i]) > 1
+                                    )
+                                ):
+                                    counts.pop(i)
+                                    if reflections.count(reflections[i]) > 1:
+                                        reflections.pop(i)
+                                    if rewards.count(rewards[i]) > 1:
+                                        rewards.pop(i)
+                                    if validate_counts(expected_counts, actual_counts):
+                                        replace_empty_step(steps, steps_objs, i)
+                            elif len(actual_counts) > len(expected_counts):
+                                # Find the extra count by comparing the expected and actual counts as well as comparing the lengths of count and steps as well as thinking, reflection, and reward tags. Basically, if the counts are more than the steps, thinking, reflection, and reward tags, we can assume that the count is extra and can be removed. Likewise, if the duplicated count is the same as the one that would be at the current index AND either thinking or reflection tags are also duplicated, we can remove the extra count and the corresponding thinking or reflection tag. Either way, if the current count is accurate after the removal, we can replace the empty step with the description from steps_objs.
+                                if (
+                                    len(actual_counts) > len(expected_counts)
+                                    and len(counts) > len(steps)
+                                    and len(counts) > len(reflections)
+                                    and len(counts) > len(rewards)
+                                ):
+                                    if counts.count(counts[i]) > 1 and (
+                                        reflections.count(reflections[i]) > 1
+                                        or rewards.count(rewards[i]) > 1
+                                    ):
+                                        counts.pop(i)
+                                        if reflections.count(reflections[i]) > 1:
+                                            reflections.pop(i)
+                                        if rewards.count(rewards[i]) > 1:
+                                            rewards.pop(i)
+                                        if validate_counts(
+                                            expected_counts, actual_counts
+                                        ):
+                                            replace_empty_step(steps, steps_objs, i)
+                                    else:
+                                        print_saver.print_and_store(
+                                            f"Extra count found at index {i}. Unable to replace empty step."
+                                        )
+                                elif (
+                                    len(actual_counts) > len(expected_counts)
+                                    and len(counts) == len(steps)
+                                    and len(counts) == len(reflections)
+                                    and len(counts) == len(rewards)
+                                ):
+                                    # This condition being true means that the actual counts are more than the expected counts, but the counts, steps, reflections, and rewards are all the same length. This means that the count is extra and can be removed. If the duplicated count is the same as the one that would be at the current index AND either thinking or reflection tags are also duplicated, we can remove the extra count and the corresponding thinking or reflection tag. Either way, if the current count is accurate after the removal, we can replace the empty step with the description from steps_objs.
+                                    if counts.count(counts[i]) > 1 and (
+                                        reflections.count(reflections[i]) > 1
+                                        or rewards.count(rewards[i]) > 1
+                                    ):
+                                        counts.pop(i)
+                                        if reflections.count(reflections[i]) > 1:
+                                            reflections.pop(i)
+                                        if rewards.count(rewards[i]) > 1:
+                                            rewards.pop(i)
+                                        if validate_counts(
+                                            expected_counts, actual_counts
+                                        ):
+                                            replace_empty_step(steps, steps_objs, i)
+                                    elif (
+                                        counts.count(counts[i]) > 1
+                                        and counts[i] == expected_counts[i]
+                                    ):
+                                        counts.pop(i)
+                                        if reflections.count(reflections[i]) > 1:
+                                            reflections.pop(i)
+                                        if rewards.count(rewards[i]) > 1:
+                                            rewards.pop(i)
+                                        if validate_counts(
+                                            expected_counts, actual_counts
+                                        ):
+                                            replace_empty_step(steps, steps_objs, i)
+                                    else:
+                                        print_saver.print_and_store(
+                                            f"Extra count found at index {i}. Unable to replace empty step."
+                                        )
+                    except ValueError:
+                        print_saver.print_and_store(
+                            f"Non-integer value found in counts at index {i}. Unable to replace empty step."
+                        )
+                else:
+                    print_saver.print_and_store(
+                        f"Missing or empty count for step at index {i}. Unable to replace empty step."
+                    )
+
+        # Final validation
+        for i, step in enumerate(steps):
+            if step.strip() == "":
+                print_saver.print_and_store(
+                    f"Warning: Step at index {i} remains empty after processing."
+                )
+
+        # Additional validation for counts consistency
+        try:
+            if len(counts) >= len(steps):
+                expected_final_counts = list(
+                    range(first_count, first_count - len(steps), -1)
+                )
+                actual_final_counts = [int(c.strip()) for c in counts[: len(steps)]]
+                if actual_final_counts != expected_final_counts:
+                    print_saver.print_and_store(
+                        f"Final counts mismatch. Expected {expected_final_counts}, got {actual_final_counts}."
+                    )
+        except ValueError:
+            print_saver.print_and_store(
+                "Non-integer value found in counts during final validation."
+            )
+
     interaction = process_steps(
         steps_objs=steps_objs,
         steps=steps,
