@@ -109,7 +109,7 @@ graph TD
 ```mermaid
 sequenceDiagram
     participant User
-    participant API as app.py (GraphQL API)
+    participant API as app.py GraphQL API
     participant Engine as advanced_prompting.py
     participant Complexity as complexity_measures.py
     participant ConvManager as conversation_manager.py
@@ -119,59 +119,63 @@ sequenceDiagram
     API->>Engine: Raw Task
     Engine->>Complexity: Raw Task for assessment
     Complexity-->>Engine: Structured Plan
-    Engine->>Engine: Start Step-by-Step Execution (based on Structured Plan)
+    Engine->>Engine: Start Step-by-Step Execution based on Structured Plan
 
     loop For each step in Plan
         alt Step is complex
-            Engine->>ConvManager: Task for deliberation (step details)
-            ConvManager->>OpenAI: Prompts (for multi-agent debate)
+            Engine->>ConvManager: Task for deliberation step details
+            ConvManager->>OpenAI: Prompts for multi-agent debate
             OpenAI-->>ConvManager: LLM Responses
             ConvManager-->>Engine: Refined Step Output / Insight
         else Step is simple
-            Engine->>OpenAI: Prompts (for direct execution)
+            Engine->>OpenAI: Prompts for direct execution
             OpenAI-->>Engine: LLM Responses
         end
     end
 
     Engine->>Engine: Consolidate step results
-    Engine->>API: Final Output (data, logs, files)
-    API-->>User: Final Output (API response)
+    Engine->>API: Final Output data logs files
+    API-->>User: Final Output API response
 ```
 
 ## 5. Control Flow Diagram for `AdvancedPromptEngineer.main`
 
 ```mermaid
 graph TD
-    A[Start main method] --> B[Receive Task Input];
-    B --> C[Refine Task Input];
-    C --> D[Call assess_complexity];
-    D --> E[Call adjust_step_budget];
-    E --> F[Retrieve Plan object];
+    A["Start main method"] --> B["Receive Task Input"]
+    B --> C["Refine Task Input"]
+    C --> D["Call assess_complexity"]
+    D --> E["Call adjust_step_budget"]
+    E --> F["Retrieve Plan object"]
 
-    F --> G{Loop through PlanSteps};
-    G -- Next PlanStep --> H[Convert PlanStep to Prompt];
-    H --> I[Invoke Collaborative Reasoning (e.g., self_consistency / collaborative_reasoning_main)];
-    I --> J[Parse Responses, Reflections, Rewards];
-    J --> K[Call judge_step_completion];
-    K --> L{Is Step Completed with High Confidence?};
-    L -- Yes --> M[Call finalize_step_output];
-    M --> N[Call finalize_planstep_output];
-    N --> G;
-    L -- No --> O[Handle Backtracking / Prompt Refinement];
-    O --> H; 
+    F --> G{"Loop through PlanSteps"}
+    G --"Next PlanStep"--> H["Convert PlanStep to Prompt"]
+    H --> I["Invoke Collaborative Reasoning e.g. self_consistency collaborative_reasoning_main"]
+    I --> J["Parse Responses Reflections Rewards"]
+    J --> K["Call judge_step_completion"]
+    K --> L{"Is Step Completed with High Confidence?"}
+    L --"Yes"--> M["Call finalize_step_output"]
+    M --> N["Call finalize_planstep_output"]
+    N --> G
+    L --"No"--> O["Handle Backtracking / Prompt Refinement"]
+    O --> H
 
-    G -- All PlanSteps Processed --> P[Aggregate Final Answer];
-    P --> Q[Call judge_final_answer];
-    Q --> R{Is Final Answer Quality Sufficient?};
-    R -- Yes --> S[Save Outputs (Logs, Files)];
-    S --> T[End main method];
-    R -- No --> C;  // Or potentially to a more targeted refinement step
+    G --"All PlanSteps Processed"--> P["Aggregate Final Answer"]
+    P --> Q["Call judge_final_answer"]
+    Q --> R{"Is Final Answer Quality Sufficient?"}
+    R --"Yes"--> S["Save Outputs Logs Files"]
+    S --> T["End main method"]
+    R --"No"--> C
 
     subgraph "PlanStep Execution Loop"
         direction LR
-        H --> I --> J --> K --> L
-        L -- Yes --> M --> N
-        L -- No --> O
+        H --> I
+        I --> J
+        J --> K
+        K --> L
+        L --"Yes"--> M
+        M --> N
+        L --"No"--> O
         O --> H
     end
 ```
@@ -180,39 +184,45 @@ graph TD
 
 ```mermaid
 graph TD
-    A[Start run_conversation] --> B[Initial Problem Statement Input];
-    B --> C[Consensus on Problem Definition (define_problem)];
-    C --> D[Output Type Determination (output_type_determination)];
+    A["Start run_conversation"] --> B["Initial Problem Statement Input"]
+    B --> C["Consensus on Problem Definition define_problem"]
+    C --> D["Output Type Determination output_type_determination"]
 
-    D --> E{Main Conversation Loop (Rounds)};
-    E -- Next Round --> F[Summarize Previous Round (if applicable)];
-    F --> G[Calculate Assistant Priorities];
-    G --> H[Mediator Guides Discussion for Current Round];
+    D --> E{"Main Conversation Loop Rounds"}
+    E --"Next Round"--> F["Summarize Previous Round if applicable"]
+    F --> G["Calculate Assistant Priorities"]
+    G --> H["Mediator Guides Discussion for Current Round"]
 
-    H --> I{Loop Through Prioritized Assistants};
-    I -- Next Assistant --> J[Get Assistant Response (get_assistant_response)];
-    J --> K[Extract Information into ConversationMemory (extract_information)];
-    K --> L[Handle Socratic Questions / Direct Replies];
-    L --> I; 
+    H --> I{"Loop Through Prioritized Assistants"}
+    I --"Next Assistant"--> J["Get Assistant Response get_assistant_response"]
+    J --> K["Extract Information into ConversationMemory extract_information"]
+    K --> L["Handle Socratic Questions / Direct Replies"]
+    L --> I
 
-    I -- All Assistants Processed for Round --> M[Analyze to_do_list Completion (analyze_to_do_list)];
-    M --> N[Mediator Summarizes Round];
-    N --> O{Voting: Continue or End Conversation?};
-    O -- Continue --> E; 
+    I --"All Assistants Processed for Round"--> M["Analyze to_do_list Completion analyze_to_do_list"]
+    M --> N["Mediator Summarizes Round"]
+    N --> O{"Voting: Continue or End Conversation?"}
+    O --"Continue"--> E
 
-    O -- End Conversation --> P[Final Decision/Solution Generation by Designated Assistant];
-    P --> Q[Final Output Generation using Function Calling (finalize_output)];
-    Q --> R[Iterative Refinement of Final Output (analyze_final_output)];
-    R --> S{Is Output Sufficient?};
-    S -- Yes --> T[End run_conversation];
-    S -- No --> Q;
+    O --"End Conversation"--> P["Final Decision/Solution Generation by Designated Assistant"]
+    P --> Q["Final Output Generation using Function Calling finalize_output"]
+    Q --> R["Iterative Refinement of Final Output analyze_final_output"]
+    R --> S{"Is Output Sufficient?"}
+    S --"Yes"--> T["End run_conversation"]
+    S --"No"--> Q
 
     subgraph "Conversation Round"
         direction LR
-        F --> G --> H --> I
-        I -- Next Assistant --> J --> K --> L
+        F --> G
+        G --> H
+        H --> I
+        I --"Next Assistant"--> J
+        J --> K
+        K --> L
         L --> I
-        I -- All Assistants Processed --> M --> N --> O
+        I --"All Assistants Processed"--> M
+        M --> N
+        N --> O
     end
 ```
 
@@ -264,7 +274,7 @@ erDiagram
     Step ||--o{ Reflection : "can have one"
     Step ||--o{ FinalStepOutput : "can have one"
     Step {
-        string step_id_interaction  // Renamed to avoid conflict with PlanStep's step_id
+        string step_id_interaction
         string interaction_id
         string prompt
         string response
@@ -302,14 +312,12 @@ erDiagram
     OutputType {
         string type_name
         string description
-        string schema  // e.g., JSON schema
+        string schema
     }
 
     Interaction ||--o{ ConversationMemory : "can use"
     PlanStep ||--o{ OutputType : "defines target"
-
 ```
-
 ## 8. Conclusion
 
 This report has detailed the architecture, workflows, and data structures of the Advanced Prompting Engine. The deconstructive analysis and accompanying diagrams illustrate a robust system designed for complex task processing through automated planning, iterative refinement, and collaborative reasoning with LLMs. The modular design allows for sophisticated interactions between components, aiming to deliver high-quality, structured outputs.
