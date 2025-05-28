@@ -23,7 +23,7 @@ graph TD
     Q --> R{Is Final Answer Quality Sufficient?};
     R -- Yes --> S[Save Outputs (Logs, Files)];
     S --> T[End main method];
-    R -- No --> C;  // Or potentially to a more targeted refinement step
+    R -- No --> C;
 
     subgraph "PlanStep Execution Loop"
         direction LR
