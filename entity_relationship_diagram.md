@@ -1,5 +1,4 @@
 ```mermaid
-```mermaid
 erDiagram
     Task ||--o{ Interaction : "has many"
     Task ||--|| Plan : "has one"
