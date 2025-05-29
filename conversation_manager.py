@@ -11,9 +11,9 @@ from jarowinkler import jarowinkler_similarity
 import openai
 import os
 import re
+import json
 
 from assistant_personalities import assistant_personalities, assistant_instructions
-import json
 from schema import ConversationInput
 from pydantic import BaseModel, Field, ValidationError
 from function_definitions import (
@@ -37,6 +37,54 @@ from output_generator import (
     generate_csv_output,
 )
 
+
+# Custom Exception Classes for Type-Safe Error Handling
+class ConversationManagerError(Exception):
+    """Base exception for conversation manager errors."""
+    pass
+
+class OutputTypeError(ConversationManagerError):
+    """Exception raised when output type determination fails."""
+    pass
+
+class LLMCallError(ConversationManagerError):
+    """Exception raised when LLM API calls fail."""
+    pass
+
+class ValidationError(ConversationManagerError):
+    """Exception raised when data validation fails."""
+    pass
+
+# Error Result Classes for Type-Safe Error Handling
+class ErrorResult(BaseModel):
+    """Structured error result to replace error strings."""
+    error_type: str = Field(..., description="Type of error that occurred")
+    error_message: str = Field(..., description="Human-readable error message")
+    error_details: Optional[str] = Field(None, description="Additional error details")
+    timestamp: datetime = Field(default_factory=datetime.now, description="When the error occurred")
+
+# Default fallback values for type safety
+DEFAULT_OUTPUT_TYPE = OutputType(output_type="simple_text", file_extension="txt")
+
+# Safe dictionary access helpers
+def safe_get_message_field(msg: Dict[str, Any], field: str, default: str = "") -> str:
+    """Safely get a field from a message dictionary."""
+    if not isinstance(msg, dict):
+        return default
+    return msg.get(field, default)
+
+def safe_get_feedback_field(feedback: Dict[str, Any], field: str, default: str = "") -> str:
+    """Safely get a field from a feedback dictionary."""
+    if not isinstance(feedback, dict):
+        return default
+    return feedback.get(field, default)
+
+def validate_message_structure(msg: Dict[str, Any]) -> bool:
+    """Validate that a message has the required structure."""
+    if not isinstance(msg, dict):
+        return False
+    required_fields = ['role', 'content']
+    return all(field in msg for field in required_fields)
 
 class OutputType(BaseModel):
     output_type: str = Field(..., description="The type of output to generate.")
@@ -272,10 +320,9 @@ class ConversationMemory:
             to_do_items = [
                 f"- {', '.join(map(str, item)).replace('[', '').replace(']', '')}"
                 for item in to_do_items
-            ]
-
-            # Add to summary
+            ]            # Add to summary
             summary += "To Do List:\n" + "\n".join(to_do_items) + "\n\n"
+        # TODO: Uncomment and implement completed tasks display when needed
         #     summary += "Completed Tasks:\n" + "\n".join(f"- {completion}" for completion in self.completed_tasks) + "\n\n"
         summary += f"Rounds Left in Conversation to Complete Solution to Problem Statement: {self.rounds_left}"
 
@@ -316,8 +363,9 @@ def is_question(response_content: str) -> bool:
 def summarize_conversation(conversation_history: List[Dict[str, str]]) -> str:
     # Concatenate all messages into one text block
     conversation_text = "\n".join(
-        f"{msg['name'] if 'name' in msg else msg['role']}: {msg['content']}"
+        f"{safe_get_message_field(msg, 'name') or safe_get_message_field(msg, 'role', 'Unknown')}: {safe_get_message_field(msg, 'content', 'No content')}"
         for msg in conversation_history
+        if validate_message_structure(msg)
     )
 
     # Use the OpenAI client to summarize the conversation
@@ -505,7 +553,8 @@ class ConfidenceVote(BaseModel):
     )
 
 
-def cast_binary_vote(assistant_name: str, messages: List[Dict[str, str]], vote_prompt: str) -> Union[BinaryVote, str]: # Can return BinaryVote or error string
+def cast_binary_vote(assistant_name: str, messages: List[Dict[str, str]], vote_prompt: str) -> Union[BinaryVote, ErrorResult]:
+    """Cast a binary vote with proper error handling."""
     # Ask the assistant to cast a vote based on the messages
     messages.append({"role": "system", "content": vote_prompt})
     try:
@@ -515,18 +564,22 @@ def cast_binary_vote(assistant_name: str, messages: List[Dict[str, str]], vote_p
             response_format=BinaryVote,
         )
         # Extract the vote from the response
-
         vote = response.choices[0].message.parsed
         return vote
     except Exception as e:
-        return f"Error: {str(e)}"
+        return ErrorResult(
+            error_type="LLMCallError",
+            error_message=f"Failed to cast binary vote for {assistant_name}",
+            error_details=str(e)
+        )
 
 
 def cast_confidence_vote(
     assistant_name: str,
     messages: List[Dict[str, str]],
     vote_prompt: str = "Please cast a confidence vote between 0 and 1.",
-) -> Union[ConfidenceVote, str]: # Can return ConfidenceVote or error string
+) -> Union[ConfidenceVote, ErrorResult]:
+    """Cast a confidence vote with proper error handling."""
     # Ask the assistant to cast a confidence vote based on the messages
     messages.append({"role": "system", "content": vote_prompt})
     try:
@@ -539,7 +592,11 @@ def cast_confidence_vote(
         confidence = response.choices[0].message.parsed
         return confidence
     except Exception as e:
-        return f"Error: {str(e)}"
+        return ErrorResult(
+            error_type="LLMCallError",
+            error_message=f"Failed to cast confidence vote for {assistant_name}",
+            error_details=str(e)
+        )
 
 
 def define_problem(problem_statement, selected_personalities, previous_def_rounds=0):
@@ -556,8 +613,7 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
                 "content": f"Please define the problem statement based on the following prompt:\n\n{problem_statement}",
             },
             {
-                "role": "system",
-                "content": "Please provide a problem statement that is specific, actionable, and relevant to the topic. Ensure that it is clear and concise to guide the discussion effectively. Include criteria for evaluating potential solutions as well as a description of the desired output. Keep it limited to a few sentences and avoid ambiguity. Do NOT write in the form of a question, only as an actionable statement.",
+                "role": "system",                "content": "Please provide a problem statement that is specific, actionable, and relevant to the topic. Ensure that it is clear and concise to guide the discussion effectively. Include criteria for evaluating potential solutions as well as a description of the desired output. Keep it limited to a few sentences and avoid ambiguity. Do NOT write in the form of a question, only as an actionable statement.",
             },
         ]
         try:
@@ -578,7 +634,16 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
             )
             print(f"\nDefinition from {assistant_name}: {assistant_reply}\n")
         except Exception as e:
-            assistant_reply = f"Error: {str(e)}"
+            # TODO: Handle LLM call failures more gracefully
+            error_msg = f"Failed to get definition from {assistant_name}: {str(e)}"
+            print(f"\nError: {error_msg}\n")
+            definitions.append(
+                {
+                    "assistant": assistant_name,
+                    "definition": f"Error in definition generation: {str(e)}",
+                    "confidence": 0,
+                }
+            )
     for definition in definitions:
         for assistant_name, assistant_prompt in selected_personalities.items():
             # Ask each assistant to vote on the problem statement
@@ -595,12 +660,17 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
                     "role": "system",
                     "content": f"Problem Statement: {definition['definition']}",
                 },
-            ]
-            confidence = cast_confidence_vote(assistant_name, messages)
+            ]            confidence = cast_confidence_vote(assistant_name, messages)
             print(
                 f"\nConfidence Vote from {assistant_name} on {definition['assistant']}'s definition: {confidence}\n"
             )
-            definition["confidence"] = confidence.confidence
+            # Handle both successful votes and errors
+            if isinstance(confidence, ConfidenceVote):
+                definition["confidence"] += confidence.confidence
+            else:
+                # TODO: Better error handling for failed confidence votes
+                print(f"Warning: Failed to get confidence vote from {assistant_name}: {confidence}")
+                # Don't add to confidence score if vote failed
     # Select the problem statement with the highest confidence vote
     best_definition = max(definitions, key=lambda x: x["confidence"])
     # Get consensus on the problem statement
@@ -627,18 +697,26 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
                 "role": "system",
                 "content": f"Problem Statement: {best_definition['definition']}",
             },
-        ]
-        binary_vote = cast_binary_vote(
+        ]        binary_vote = cast_binary_vote(
             assistant_name, consensus_messages, bin_vote_prompt
         )
-        if binary_vote:
-            yes_votes += 1
-            yes_voters.append(assistant_name)
+        # Handle both successful votes and errors
+        if isinstance(binary_vote, BinaryVote):
+            if binary_vote.vote:
+                yes_votes += 1
+                yes_voters.append(assistant_name)
+                print(f"\nYes Vote from {assistant_name} on the consensus problem statement.\n")
+            else:
+                no_votes += 1
+                no_voters.append(assistant_name)
+                print(f"\nNo Vote from {assistant_name} on the consensus problem statement.\n")
         else:
-            print(
-                f"\nNo Vote from {assistant_name} on the consensus problem statement.\n"
-            )
-            # Ask the assistant to provide feedback on the problem statement
+            # TODO: Handle binary vote errors more gracefully
+            print(f"\nError getting vote from {assistant_name}: {binary_vote}\n")
+            no_votes += 1  # Count errors as no votes for safety            no_voters.append(assistant_name)
+        
+        # For no votes, ask the assistant to provide feedback on the problem statement  
+        if isinstance(binary_vote, BinaryVote) and not binary_vote.vote:
             feedback_messages = [
                 {
                     "role": "system",
@@ -662,12 +740,12 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
             revision_messages = [
                 {
                     "role": "system",
-                    "content": f"Problem Statement Feedback: {feedback['content']}",
+                    "content": f"Problem Statement Feedback: {safe_get_feedback_field(feedback, 'content', 'No feedback content')}",
                 },
                 {"role": "user", "content": f"{revision_prompt}"},
                 {
                     "role": "system",
-                    "content": f"Feedback from {assistant_name}: {feedback['content']}",
+                    "content": f"Feedback from {assistant_name}: {safe_get_feedback_field(feedback, 'content', 'No feedback content')}",
                 },
             ]
             revision_response = get_assistant_response(
@@ -692,11 +770,10 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
                     },
                     {
                         "role": "user",
-                        "content": f"Please cast your vote to confirm the consensus problem statement based on the justification provided by {best_definition['assistant']}:\n\n{revision_response['content']}",
-                    },
-                    {
+                        "content": f"Please cast your vote to confirm the consensus problem statement based on the justification provided by {best_definition['assistant']}:\n\n{safe_get_message_field(revision_response, 'content', 'No revision content')}",
+                    },                    {
                         "role": "system",
-                        "content": f"Defined Problem Statement: {best_definition['definition']}, Justification: {revision_response['content']}",
+                        "content": f"Defined Problem Statement: {best_definition['definition']}, Justification: {safe_get_message_field(revision_response, 'content', 'No justification content')}",
                     },
                 ]
                 binary_vote = cast_binary_vote(
@@ -760,12 +837,11 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
                 "role": "system",
                 "content": f"{selected_personalities[best_definition['assistant']]} {revision_prompt}",
             }
-        ]
-        for feedback in feedbacks:
+        ]        for feedback in feedbacks:
             revision_messages.append(
                 {
                     "role": "user",
-                    "content": f"Feedback from {feedback['name']}: {feedback['content']}",
+                    "content": f"Feedback from {safe_get_feedback_field(feedback, 'name', 'Unknown')}: {safe_get_feedback_field(feedback, 'content', 'No feedback content')}",
                 }
             )
 
@@ -776,13 +852,12 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
         )
         print(
             f"\nRevision Response from {best_definition['assistant']}: {revision_response}\n"
-        )
-        # Update the problem statement based on the revision or, if justified, allow the Mediator to rewrite the problem statement based on the feedback and the justification
-        if revision_response["content"].startswith("Revision:"):
+        )        # Update the problem statement based on the revision or, if justified, allow the Mediator to rewrite the problem statement based on the feedback and the justification
+        if safe_get_message_field(revision_response, 'content', '').startswith("Revision:"):
             best_definition["definition"] = (
-                revision_response["content"].replace("Revision:", "").strip()
+                safe_get_message_field(revision_response, 'content', '').replace("Revision:", "").strip()
             )
-        elif revision_response["content"].startswith("Justification:"):
+        elif safe_get_message_field(revision_response, 'content', '').startswith("Justification:"):
             # Ask the Mediator to rewrite the problem statement based on the feedback and the justification
             mediator_prompt = selected_personalities["Mediator"]
             mediator_messages = [
@@ -793,17 +868,15 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
                 {
                     "role": "user",
                     "content": f"Please rewrite the problem statement based on the feedback provided by the assistants and the justification. The original prompt was:\n\n{problem_statement} and the revised problem statement was:\n\n{best_definition['definition']}",
-                },
-                {
+                },                {
                     "role": "user",
-                    "content": f"Feedback from {best_definition['assistant']}: {revision_response['content']}\n\nFeedback from other assistants: {', '.join(feedback['content'] for feedback in feedbacks)}",
+                    "content": f"Feedback from {best_definition['assistant']}: {safe_get_message_field(revision_response, 'content', 'No revision content')}\n\nFeedback from other assistants: {', '.join(safe_get_feedback_field(feedback, 'content', 'No feedback content') for feedback in feedbacks)}",
                 },
             ]
             mediator_response = get_assistant_response(
-                "Mediator", mediator_prompt, mediator_messages
-            )
-            print(f"\nMediator Rewrite Response: {mediator_response}\n")
-            best_definition["definition"] = mediator_response["content"]
+                "Mediator", mediator_prompt, mediator_messages            )
+            print(f"\nMediator Rewrite Response: {safe_get_message_field(mediator_response, 'content', 'No mediator response')}\n")
+            best_definition["definition"] = safe_get_message_field(mediator_response, 'content', 'Default problem definition')
 
         # Ask the assistants to vote again on the revised problem statement
         for assistant_name, assistant_prompt in selected_personalities.items():
@@ -853,7 +926,8 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
                 )
 
 
-def output_type_determination(response):
+def output_type_determination(response) -> Union[OutputType, ErrorResult]:
+    """Determine output type with proper error handling."""
     determination_prompt = "Based on the defined problem statement, please suggest an output format that would best suit this solution. Options include simple concise text answer, a detailed report in text or PDF format, a code snippet or script file, structured data in JSON or CSV format, a website or app prototype, or a detailed technical document. Please provide your recommendation in the provided format, generating both the specific output type (such as 'Manuscript', 'Website Prototype', 'Categorical Data', Python Script', etc.) and the file extension (such as 'txt', 'pdf', 'html', 'json', 'py', etc.)."
     messages = [
         {"role": "system", "content": determination_prompt},
@@ -873,7 +947,11 @@ def output_type_determination(response):
         output_type = response.choices[0].message.parsed
         return output_type
     except Exception as e:
-        return f"Error: {str(e)}"
+        return ErrorResult(
+            error_type="OutputTypeError",
+            error_message="Failed to determine output type",
+            error_details=str(e)
+        )
 
 
 def test_finalize_output(final_decision: str, output_type: str):
@@ -956,7 +1034,7 @@ def finalize_output(final_decision: str, output_type: OutputType):
 
     Args:
         final_decision (str): The final decision or solution text.
-        output_type (str): The desired output format.
+        output_type (OutputType): The desired output format object.
 
     Returns:
         Any: The path to the generated file or the output in the specified format.
@@ -1015,21 +1093,31 @@ def finalize_output(final_decision: str, output_type: OutputType):
             }
             print(f"tool_function_name: {tool_function_name}")
             print(f"tool_query_string: {tool_query_string}")
-            print(f"filename: {filename}")
-
-            if tool_function_name in function_mapping:
+            print(f"filename: {filename}")            if tool_function_name in function_mapping:
                 # Call the appropriate function with arguments
                 filepath = function_mapping[tool_function_name](
                     final_decision=tool_query_string, filename=filename
                 )
                 return filepath
             else:
-                return f"Error: Function '{tool_function_name}' not found."
+                error_result = ErrorResult(
+                    success=False,
+                    error_type="ValidationError",
+                    message=f"Function '{tool_function_name}' not found.",
+                    context={"tool_function_name": tool_function_name}
+                )
+                return str(error_result)
         else:
             return message
     except Exception as e:
         print(f"Error in finalize_output: {str(e)} on line {e.__traceback__.tb_lineno}")
-        return f"Error in finalize_output: {str(e)} on line {e.__traceback__.tb_lineno}"
+        error_result = ErrorResult(
+            success=False,
+            error_type="LLMCallError",
+            message=f"Error in finalize_output: {str(e)} on line {e.__traceback__.tb_lineno}",
+            context={"exception": str(e), "line": e.__traceback__.tb_lineno}
+        )
+        return str(error_result)
 
 
 sample_conversation_history = """User: Hey, have we figured out the root cause of that recurring issue in the system yet?
@@ -1852,7 +1940,7 @@ def analyze_to_do_list(conversation_memory, conversation_history):
         {"role": "assistant", "content": f"{output_analysis}"},
         {
             "role": "user",
-            "content": f"Great work, thanks! Now for the real one: To-Do List:\n{', '.join(to_do_list)}, and the conversation history: {', '.join([msg['name']+': '+ msg['content'] for msg in conversation_history])}",
+            "content": f"Great work, thanks! Now for the real one: To-Do List:\n{', '.join(to_do_list)}, and the conversation history: {', '.join([safe_get_message_field(msg, 'name', 'Unknown')+': '+ safe_get_message_field(msg, 'content', 'No content') for msg in conversation_history if validate_message_structure(msg)])}",
         },
     ]
     # Make the API call to analyze the to-do list using structured outputs with beta.chat.completions.parse
@@ -1904,37 +1992,41 @@ def get_assistant_response(
     # Prepare the messages for the assistant
     messages = [
         {"role": "system", "content": assistant_prompt},
-    ]
-
-    # Include only the last N messages to manage token usage
+    ]    # Include only the last N messages to manage token usage
     recent_history = conversation_history[-MAX_CONTEXT_MESSAGES:]
     for msg in recent_history:
-        if msg["role"] == "assistant" and msg["name"] != assistant_name:
+        if not validate_message_structure(msg):
+            continue  # Skip malformed messages
+            
+        msg_role = safe_get_message_field(msg, 'role')
+        msg_name = safe_get_message_field(msg, 'name')
+        msg_content = safe_get_message_field(msg, 'content')
+        
+        if msg_role == "assistant" and msg_name != assistant_name:
             # Make other assistants' messages appear as user messages to the assistant
             messages.append(
-                {"role": "user", "content": f"{msg['name']}: {msg['content']}"}
+                {"role": "user", "content": f"{msg_name}: {msg_content}"}
             )
-        elif msg["name"] == "Primary User":
+        elif msg_name == "Primary User":
             messages.append(
-                {"role": "user", "content": "Primary User: " + msg["content"]}
-            )
-        elif msg["role"] == "assistant" and msg["name"] == assistant_name:
-            messages.append({"role": "assistant", "content": msg["content"]})
+                {"role": "user", "content": "Primary User: " + msg_content}
+            )        elif msg_role == "assistant" and msg_name == assistant_name:
+            messages.append({"role": "assistant", "content": msg_content})
         elif (
-            msg["role"] == "user"
-            and msg["name"] != assistant_name
-            and msg["name"] != "Primary User"
-            and msg["name"] != "Mediator"
+            msg_role == "user"
+            and msg_name != assistant_name
+            and msg_name != "Primary User"
+            and msg_name != "Mediator"
         ):
             messages.append(
-                {"role": "user", "content": msg["name"] + ": " + msg["content"]}
+                {"role": "user", "content": msg_name + ": " + msg_content}
             )
-        elif msg["role"] == "system":
-            messages.append({"role": "system", "content": msg["content"]})
-        elif assistant_name in msg["name"]:
-            messages.append({"role": "assistant", "content": msg["content"]})
+        elif msg_role == "system":
+            messages.append({"role": "system", "content": msg_content})
+        elif assistant_name in msg_name:
+            messages.append({"role": "assistant", "content": msg_content})
         else:
-            messages.append({"role": "user", "content": msg["content"]})
+            messages.append({"role": "user", "content": msg_content})
 
     if memory_summary != "":
         messages.append(
@@ -1998,15 +2090,18 @@ def run_conversation(
         "The Primary User has provided the following prompt, from which the problem statement will be defined: "
         + original_prompt
     )
-    print("problem statement", original_prompt, "\n")
-    # primary_user = problem_statement[0]['name']
+    print("problem statement", original_prompt, "\n")    # primary_user = problem_statement[0]['name']
+    # TODO: FIXME - Commented-out code for conversation history and final content generation
+    # The following code was commented out and needs review for potential restoration or removal
     # Have the Mediator finalize the output based on the final decision, creating the final output content that fulfills the problem statement and the user's needs that will be saved to the final file
     # conversation_history = [{"role": "user","round":0, "content": original_prompt}]
 
-    # final_content_prompt = "Based on the final decision or solution provided by the assistant who called for the final vote, please generate the final output content that fulfills the problem statement and the user's needs. This means creating the final output content based on the decision or solution provided, ensuring it aligns with the problem statement and the conversation so far and meets the user's requirements and expectations. For instance, if the final decision is a text answer, generate the text answer. If it's a code snippet, generate the code snippet. If it's a report, generate the report content. If it's a prototype, generate the prototype content. If it's structured data, generate the structured data content. If it's a technical document, generate the technical document content. Please provide the final output content that fulfills the problem statement and the user's needs based on the final decision or solution provided."
+    # TODO: Review and potentially restore final content prompt logic
+    # final_content_prompt = "Based on the final decision or solution provided by the assistant who called for the final vote, please generate the final output content that fulfills the problem statement and the user's needs. This prompt should be clear, actionable, and concise, providing the finalized details needed to generate the final output content. It should be in the form of an implementation plan, a request, or a directive that guides the generation of the final output. Ensure that the prompt will result in the direct creation of the final output content that fulfills the problem statement and the user's needs and will not require further discussion or clarification. Please provide the final prompt based on the information available."
     # final_content_messages = [
     #     {"role": "system", "content": final_content_prompt + f" The output type for the final decision is: {output_type.output_type} with file extension: {output_type.file_extension} and should solve the problem statement: {problem_definition} by following the final decision or solution provided by {final_vote_caller}."},
-    #     {"role": "user", "content": f"Please generate the final output content based on the final decision or solution provided by someone:\n\n{original_prompt}"},
+    #     {"role": "user", "content": f"Please generate the final output content based on the final decision or solution provided by {final_vote_caller}:\n\n{safe_get_message_field(final_decision_response, 'content', 'No decision content')}. The problem statement it must completely solve is: {problem_definition}. The output you generate should be the final completion of the problem statement and the user's needs, and should not include any further steps or discussions but will represent the final output content that fulfills the problem statement and the user's needs ONLY.",
+    #     },
     # ]
     # for role, content in final_content_messages:
     #     conversation_history.append({"role": role, "name": "Mediator", "round": 0, "content": content})
@@ -2119,15 +2214,17 @@ def run_conversation(
                 )
                 # Extract the output type from the response
                 output_type = response.choices[0].message.parsed
-                print(f"\nMediator Output Type Decision: {output_type}\n")
-            except Exception as e:
-                output_type = f"Error: {str(e)}"
-                print(f"\nError in Mediator Output Type Decision: {output_type}\n")
+                print(f"\nMediator Output Type Decision: {output_type}\n")            except Exception as e:
+                # TODO: Implement better fallback strategy for output type determination
+                print(f"\nError in Mediator Output Type Decision: {str(e)}\n")
+                output_type = DEFAULT_OUTPUT_TYPE  # Use safe fallback instead of error string
+                print(f"\nFalling back to default output type: {output_type}\n")
 
-        # Calculate priorities
-        assert (
-            output_type is not None
-        ), "Output type must be determined before proceeding with the conversation."
+        # Calculate priorities - ensure output_type is always a valid OutputType object
+        if not isinstance(output_type, OutputType):
+            # FIXME: This should never happen with proper error handling above
+            print(f"Warning: output_type is not OutputType object, using default: {type(output_type)}")
+            output_type = DEFAULT_OUTPUT_TYPE
         assistant_priorities = [
             (
                 assistant_name,
@@ -2184,7 +2281,7 @@ def run_conversation(
             )
 
             print(
-                f"\n \n Name: {mediator_name} \n Role: {mediator_response['role']} \n Response: {mediator_response['content']} \n"
+                f"\n \n Name: {mediator_name} \n Role: {safe_get_message_field(mediator_response, 'role', 'Unknown')} \n Response: {safe_get_message_field(mediator_response, 'content', 'No content')} \n"
             )
             conversation_history.append(
                 {
@@ -2210,7 +2307,7 @@ def run_conversation(
                 conversation_memory,
             )
             print(
-                f"\n \n Name: {assistant_name} \n Role: {assistant_response['role']} \n Response: {assistant_response['content']} \n"
+                f"\n \n Name: {assistant_name} \n Role: {safe_get_message_field(assistant_response, 'role', 'Unknown')} \n Response: {safe_get_message_field(assistant_response, 'content', 'No content')} \n"
             )
             # Convert `ConversationInput` to a dict if needed
             if isinstance(assistant_response["content"], ConversationInput):
@@ -2278,7 +2375,7 @@ def run_conversation(
             conversation_memory,
         )
         print(
-            f"\n Name: {mediator_name} \n Role: {mediator_response['role']} \n Response: {mediator_response['content']} \n"
+            f"\n Name: {mediator_name} \n Role: {safe_get_message_field(mediator_response, 'role', 'Unknown')} \n Response: {safe_get_message_field(mediator_response, 'content', 'No content')} \n"
         )
 
         # Convert mediator response if needed
@@ -2332,7 +2429,7 @@ def run_conversation(
                         }
                     )
                     print(
-                        f"\n Name: {q['asking_assistant']} is directing a question to {responder_name}. Question: {q['reply']} \n Role: {responder_response['role']} \n Response from {responder_name}: {responder_response['content']} \n \n"
+                        f"\n Name: {q['asking_assistant']} is directing a question to {responder_name}. Question: {q['reply']} \n Role: {safe_get_message_field(responder_response, 'role', 'Unknown')} \n Response from {responder_name}: {safe_get_message_field(responder_response, 'content', 'No content')} \n \n"
                     )
 
                     conversation_history.append(
@@ -2340,7 +2437,7 @@ def run_conversation(
                             "role": responder_response["role"],
                             "name": responder_response["name"],
                             "round": rnd,
-                            "content": f"In response to {q['asking_assistant']}: {responder_response['content']}",
+                            "content": f"In response to {q['asking_assistant']}: {safe_get_message_field(responder_response, 'content', 'No content')}",
                         }
                     )
                     conversation_memory = extract_information(
@@ -2401,7 +2498,7 @@ def run_conversation(
                 final_decision_messages = [
                     {
                         "role": "system",
-                        "content": f"{assistant_personalities[final_vote_caller]} The conversation has reached a point where a final decision or solution is needed. Please provide your final decision or solution based on the information available. It should be clear, actionable, and concise, providing the finalized details needed to generate the final output to solve the original problem statement and should NOT require further discussion, clarification, or planning.",
+                        "content": f"{assistant_personalities[final_vote_caller]} The conversation has reached a point where a final decision or solution is needed. Please provide your final decision or solution based on the information available. It should be clear, actionable, and concise, providing the finalized details needed to generate the final output content. Please do not include any further steps or discussions, only the final decision or solution.",
                     },
                     {
                         "role": "user",
@@ -2452,14 +2549,13 @@ def run_conversation(
                         {
                             "role": "user",
                             "content": f"Here is a summary of the conversation so far:\n\n{summary}",
-                        },
-                        {
+                        },                        {
                             "role": "user",
-                            "content": f"Please cast your vote to confirm the final decision or solution provided by {final_vote_caller}:\n\n{final_decision_response['content']}",
+                            "content": f"Please cast your vote to confirm the final decision or solution provided by {final_vote_caller}:\n\n{safe_get_message_field(final_decision_response, 'content', 'No decision content')}",
                         },
                         {
                             "role": "system",
-                            "content": f"Final Decision: {final_decision_response['content']}",
+                            "content": f"Final Decision: {safe_get_message_field(final_decision_response, 'content', 'No decision content')}",
                         },
                     ]
                     final_binary_vote = cast_binary_vote(
@@ -2472,16 +2568,15 @@ def run_conversation(
                         no_voters.append(assistant_name)
                 # Check if the final decision is confirmed
 
-                if yes_votes > no_votes and no_votes == 0:
-                    print(
-                        f"\nFinal Decision Confirmed with full consensus: {final_decision_response['content']}\n"
+                if yes_votes > no_votes and no_votes == 0:                    print(
+                        f"\nFinal Decision Confirmed with full consensus: {safe_get_message_field(final_decision_response, 'content', 'No decision content')}\n"
                     )
                     conversation_history.append(
                         {
                             "role": "system",
                             "name": mediator_name,
                             "round": rnd,
-                            "content": f"Final Decision: {final_decision_response['content']} (Confirmed)",
+                            "content": f"Final Decision: {safe_get_message_field(final_decision_response, 'content', 'No decision content')} (Confirmed)",
                         }
                     )
                     # Have the Mediator finalize the output based on the final decision, creating the final output content that fulfills the problem statement and the user's needs that will be saved to the final file
@@ -2495,14 +2590,14 @@ def run_conversation(
                         },
                         {
                             "role": "user",
-                            "content": f"Please generate the final output content based on the final decision or solution provided by {final_vote_caller}:\n\n{final_decision_response['content']}. The problem statement it must completely solve is: {problem_definition}. The output you generate should be the final completion of the problem statement and the user's needs, and should not include any further steps or discussions but will represent the final output content that fulfills the problem statement and the user's needs ONLY.",
+                            "content": f"Please generate the final output content based on the final decision or solution provided by {final_vote_caller}:\n\n{safe_get_message_field(final_decision_response, 'content', 'No decision content')}. The problem statement it must completely solve is: {problem_definition}. The output you generate should be the final completion of the problem statement and the user's needs, and should not include any further steps or discussions but will represent the final output content that fulfills the problem statement and the user's needs ONLY.",
                         },
                     ]
                     for role, content in final_content_messages:
                         conversation_history.append(
                             {
                                 "role": role,
-                                "name": mediator_name,
+                                "name": "Mediator",
                                 "round": rnd,
                                 "content": content,
                             }
@@ -2546,17 +2641,16 @@ def run_conversation(
                 elif (
                     yes_votes > no_votes
                     and no_votes > 0
-                    and no_votes <= (yes_votes / 2)
-                ):
+                    and no_votes <= (yes_votes / 2)                ):
                     print(
-                        f"\nFinal Decision Confirmed with majority vote, {yes_votes} to {no_votes}: {final_decision_response['content']}\n"
+                        f"\nFinal Decision Confirmed with majority vote, {yes_votes} to {no_votes}: {safe_get_message_field(final_decision_response, 'content', 'No decision content')}\n"
                     )
                     conversation_history.append(
                         {
                             "role": "system",
                             "name": mediator_name,
                             "round": rnd,
-                            "content": f"Final Decision: {final_decision_response['content']} (Confirmed with majority vote)",
+                            "content": f"Final Decision: {safe_get_message_field(final_decision_response, 'content', 'No decision content')} (Confirmed with majority vote)",
                         }
                     )
                     # Get feedback from the assistants who voted no and ask the Mediator to resolve the issue by revising the final decision or making a final call
@@ -2571,10 +2665,9 @@ def run_conversation(
                                 {
                                     "role": "user",
                                     "content": f"Please provide feedback on the final decision or solution provided by {final_vote_caller} and suggest improvements or changes to align it better with the problem statement and the conversation so far.",
-                                },
-                                {
+                                },                                {
                                     "role": "user",
-                                    "content": f"Final Decision: {final_decision_response['content']}",
+                                    "content": f"Final Decision: {safe_get_message_field(final_decision_response, 'content', 'No decision content')}",
                                 },
                             ]
                             feedback = get_assistant_response(
@@ -2584,16 +2677,15 @@ def run_conversation(
                     # Have the Mediator review the feedback and make a final decision
                     mediator_feedback = []
                     for feedback in feedbacks:
-                        mediator_feedback.append(feedback["content"])
+                        mediator_feedback.append(safe_get_feedback_field(feedback, 'content', 'No feedback content'))
                     mediator_prompt = (
                         assistant_personalities[mediator_name]
                         + "The final decision or solution provided by the assistant who called for the final vote was not confirmed by the majority of the assistants. Please review the feedback provided by the assistants who voted no and make a final decision or resolution based on the feedback and the context of the discussion. You may choose to revise the final decision or make a final call based on the information available by answering in the format provided, with a boolean value of True to make the call to keep the final decision or False to revise it. If False, provide a revised final decision or solution (as final_decision) based on the feedback and the context of the discussion, otherwise, confirm the final decision."
                     )
                     mediator_messages = [
-                        {"role": "system", "content": mediator_prompt},
-                        {
+                        {"role": "system", "content": mediator_prompt},                        {
                             "role": "user",
-                            "content": f"Feedback from assistants who voted no: {', '.join(feedback['content'] for feedback in feedbacks)}",
+                            "content": f"Feedback from assistants who voted no: {', '.join(safe_get_feedback_field(feedback, 'content', 'No feedback content') for feedback in feedbacks)}",
                         },
                     ]
                     mediator_decision = ""
@@ -2605,16 +2697,29 @@ def run_conversation(
                         )
                         # Extract the decision from the response
                         mediator_decision = response.choices[0].message.parsed
-                        print(f"\nMediator Decision: {mediator_decision}\n")
-                    except Exception as e:
-                        mediator_decision = f"Error: {str(e)}"
-                    if mediator_decision.keep_output:
-                        conversation_history.append(
+                        print(f"\nMediator Decision: {mediator_decision}\n")                    except Exception as e:
+                        # TODO: Implement better fallback strategy for mediator decisions
+                        print(f"\nError in Mediator Decision: {str(e)}\n")
+                        # Create a safe fallback MediatorReviseOrDecide object
+                        mediator_decision = MediatorReviseOrDecide(
+                            final_decision="Error in mediator decision process. Proceeding with current output.",
+                            keep_output=True  # Default to keeping output to avoid infinite loops
+                        )
+                    
+                    # Ensure mediator_decision is the correct type
+                    if not isinstance(mediator_decision, MediatorReviseOrDecide):
+                        # FIXME: This should never happen with proper error handling above
+                        print(f"Warning: mediator_decision is not MediatorReviseOrDecide object: {type(mediator_decision)}")
+                        mediator_decision = MediatorReviseOrDecide(
+                            final_decision="Fallback decision due to type error.",
+                            keep_output=True
+                        )
+                    if mediator_decision.keep_output:                        conversation_history.append(
                             {
                                 "role": "system",
                                 "name": mediator_name,
                                 "round": rnd,
-                                "content": f"Final Decision: {final_decision_response['content']} (Confirmed)",
+                                "content": f"Final Decision: {safe_get_message_field(final_decision_response, 'content', 'No decision content')} (Confirmed)",
                             }
                         )
                         # Have the Mediator finalize the output based on the final decision, creating the final output content that fulfills the problem statement and the user's needs that will be saved to the final file
@@ -2628,14 +2733,14 @@ def run_conversation(
                             },
                             {
                                 "role": "user",
-                                "content": f"Please generate the final output content based on the final decision or solution provided by {final_vote_caller}:\n\n{final_decision_response['content']}",
+                                "content": f"Please generate the final output content based on the final decision or solution provided by {final_vote_caller}:\n\n{safe_get_message_field(final_decision_response, 'content', 'No decision content')}. The problem statement it must completely solve is: {problem_definition}. The output you generate should be the final completion of the problem statement and the user's needs, and should not include any further steps or discussions but will represent the final output content that fulfills the problem statement and the user's needs ONLY.",
                             },
                         ]
                         for role, content in final_content_messages:
                             conversation_history.append(
                                 {
                                     "role": role,
-                                    "name": mediator_name,
+                                    "name": "Mediator",
                                     "round": rnd,
                                     "content": content,
                                 }
@@ -2675,8 +2780,7 @@ def run_conversation(
                             }
                         )
                         with open("conversation_history.json", "w") as f:
-                            json.dump(conversation_history, f, indent=4)
-                    elif not mediator_decision.keep_output:
+                            json.dump(conversation_history, f, indent=4)                    elif not mediator_decision.keep_output:
                         # Use mediator_decision.final_decision as the new final decision
                         final_decision_response["content"] = (
                             mediator_decision.final_decision
@@ -2686,7 +2790,7 @@ def run_conversation(
                                 "role": "system",
                                 "name": mediator_name,
                                 "round": rnd,
-                                "content": f"Final Decision: {final_decision_response['content']} (Revised)",
+                                "content": f"Final Decision: {safe_get_message_field(final_decision_response, 'content', 'No decision content')} (Revised)",
                             }
                         )
                         # Have the Mediator finalize the output based on the final decision, creating the final output content that fulfills the problem statement and the user's needs that will be saved to the final file
@@ -2700,7 +2804,7 @@ def run_conversation(
                             },
                             {
                                 "role": "user",
-                                "content": f"Please generate the final output content based on the final decision or solution provided by {final_vote_caller}:\n\n{final_decision_response['content']}",
+                                "content": f"Please generate the final output content based on the final decision or solution provided by {final_vote_caller}:\n\n{safe_get_message_field(final_decision_response, 'content', 'No decision content')}",
                             },
                         ]
                         for role, content in final_content_messages:
@@ -2747,11 +2851,9 @@ def run_conversation(
                                 "round": rnd,
                                 "content": f"Final Output: {final_output}",
                             }
-                        )
-
-                elif no_votes > 0 and no_votes > (yes_votes / 2):
+                        )                elif no_votes > 0 and no_votes > (yes_votes / 2):
                     print(
-                        f"\nFinal Decision Not Confirmed: {final_decision_response['content']}.\n"
+                        f"\nFinal Decision Not Confirmed: {safe_get_message_field(final_decision_response, 'content', 'No decision content')}.\n"
                     )
                     raise Exception(
                         "Consensus not reached on the final decision. Giving up."
