@@ -3,8 +3,7 @@
 import json
 import os
 import re
-
-# from fpdf import FPDF  # Commented out to avoid import error in testing
+from fpdf import FPDF
 from typing import Any, Dict
 
 # output_type_mapping = {
@@ -67,14 +66,14 @@ def generate_pdf_output(final_decision: str, filename: str = "final_output.pdf")
     Returns:
         str: The path to the generated PDF file.
     """
-    # Note: FPDF import commented out for testing
-    try:
-        with open(filename, "w") as f:
-            f.write(f"PDF Content: {final_decision}")
-        return os.path.abspath(filename)
-    except (IOError, OSError, PermissionError) as e:
-        print(f"❌ Error writing PDF file '{filename}': {e}")
-        raise
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+
+    pdf.cell(200, 10, txt=final_decision, ln=True, align="L")
+
+    pdf.output(filename)
+    return os.path.abspath(filename)
 
 
 def generate_text_file_output(
