@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple, Union # Added Optional, Tuple, Union
 from jarowinkler import jarowinkler_similarity
 
 
@@ -172,55 +172,55 @@ client = openai.OpenAI()
 
 
 class ConversationMemory:
-    def __init__(self, num_rounds=3):
-        self.facts = []
-        self.arguments = []  # [{"round": 1, "arguments": [argument1, argument2, ...]}]
-        self.decisions = []  # [{"round": 1, "decision": decision1}]
-        self.direct_replies = {}  # {"assistant_name": "reply"}
-        self.recommended_actions = []  # [action1, action2, ...]
-        self.to_do_list = []  # [item1, item2, ...]
-        self.completed_tasks = {}  # {"task": "completion"}
-        self.rounds_left = num_rounds
-        self.decided_output_type = None
+    def __init__(self, num_rounds: int = 3) -> None:
+        self.facts: List[str] = []
+        self.arguments: List[Dict[str, Any]] = []  # [{"round": 1, "arguments": [argument1, argument2, ...]}]
+        self.decisions: List[Dict[str, Any]] = []  # [{"round": 1, "decision": decision1}]
+        self.direct_replies: Dict[str, str] = {}  # {"assistant_name": "reply"}
+        self.recommended_actions: List[str] = []  # [action1, action2, ...]
+        self.to_do_list: List[Any] = []  # [item1, item2, ...] # FIXME: Define a more specific type for to_do_list items
+        self.completed_tasks: Dict[str, str] = {}  # {"task": "completion"}
+        self.rounds_left: int = num_rounds
+        self.decided_output_type: Optional[OutputType] = None # Changed to Optional[OutputType]
 
-    def add_fact(self, fact):
+    def add_fact(self, fact: str) -> None:
         if fact and fact not in self.facts:
             self.facts.append(fact)
 
-    def add_argument(self, argument, round_num):
+    def add_argument(self, argument: Any, round_num: int) -> None: # FIXME: Define a more specific type for argument
         if argument and argument not in self.arguments:
             self.arguments.append({"round": round_num, "arguments": argument})
 
-    def add_decision(self, decision, round_num):
+    def add_decision(self, decision: Any, round_num: int) -> None: # FIXME: Define a more specific type for decision
         if decision and decision not in self.decisions:
             self.decisions.append({"round": round_num, "decision": decision})
 
-    def add_direct_reply(self, assistant_name, reply):
+    def add_direct_reply(self, assistant_name: str, reply: str) -> None:
         if assistant_name and reply:
             self.direct_replies[assistant_name] = reply
 
-    def add_recommended_action(self, action):
+    def add_recommended_action(self, action: str) -> None:
         if action and action not in self.recommended_actions:
             self.recommended_actions.append(action)
 
-    def add_to_do_item(self, item):
+    def add_to_do_item(self, item: Any) -> None: # FIXME: Define a more specific type for item
         if item and item not in self.to_do_list:
             self.to_do_list.append(item)
 
-    def add_completed_task(self, task, completion):
+    def add_completed_task(self, task: str, completion: str) -> None:
         if task and completion:
             self.completed_tasks[task] = completion
             # remove task from to do list
             if task in self.to_do_list:
                 self.to_do_list.remove(task)
 
-    def decrement_rounds_left(self):
+    def decrement_rounds_left(self) -> None:
         self.rounds_left -= 1
 
-    def set_decided_output_type(self, output_type: OutputType):
+    def set_decided_output_type(self, output_type: OutputType) -> None:
         self.decided_output_type = output_type
 
-    def get_memory_summary(self):
+    def get_memory_summary(self) -> str:
         summary = ""
         if self.facts:
             summary += (
@@ -282,7 +282,7 @@ class ConversationMemory:
         return summary
 
 
-def is_question(response_content):
+def is_question(response_content: str) -> bool:
     # Simple heuristic: ends with a question mark or contains question words
     question_words = [
         "what",
@@ -313,7 +313,7 @@ def is_question(response_content):
     )
 
 
-def summarize_conversation(conversation_history):
+def summarize_conversation(conversation_history: List[Dict[str, str]]) -> str:
     # Concatenate all messages into one text block
     conversation_text = "\n".join(
         f"{msg['name'] if 'name' in msg else msg['role']}: {msg['content']}"
@@ -379,8 +379,11 @@ class ExtractFormat(BaseModel):
 
 
 def extract_information(
-    assistant_response, conversation_memory, assistants_list, round_num
-):
+    assistant_response: str, # Assuming assistant_response is a string
+    conversation_memory: ConversationMemory,
+    assistants_list: List[str],
+    round_num: int,
+) -> ConversationMemory:
     """
     Extracts facts, decisions, and user preferences from the assistant's response using OpenAI's language model.
     """
@@ -455,15 +458,15 @@ Please return the output as a JSON object with the following structure:
 
 
 def calculate_priority(
-    assistant_name,
-    conversation_history,
-    conversation_memory,
-    assistants_list,
-    round_num,
-    num_rounds,
-    lead_personality,
+    assistant_name: str,
+    conversation_history: List[Dict[str, Any]], # Assuming content can be Any for now
+    conversation_memory: ConversationMemory,
+    assistants_list: List[str],
+    round_num: int,
+    num_rounds: int,
+    lead_personality: str,
     output_type: OutputType,
-):
+) -> float:
     # Prioritize assistants who haven't spoken recently
     last_spoken = next(
         (
@@ -502,7 +505,7 @@ class ConfidenceVote(BaseModel):
     )
 
 
-def cast_binary_vote(assistant_name, messages, vote_prompt):
+def cast_binary_vote(assistant_name: str, messages: List[Dict[str, str]], vote_prompt: str) -> Union[BinaryVote, str]: # Can return BinaryVote or error string
     # Ask the assistant to cast a vote based on the messages
     messages.append({"role": "system", "content": vote_prompt})
     try:
@@ -520,10 +523,10 @@ def cast_binary_vote(assistant_name, messages, vote_prompt):
 
 
 def cast_confidence_vote(
-    assistant_name,
-    messages,
-    vote_prompt="Please cast a confidence vote between 0 and 1.",
-):
+    assistant_name: str,
+    messages: List[Dict[str, str]],
+    vote_prompt: str = "Please cast a confidence vote between 0 and 1.",
+) -> Union[ConfidenceVote, str]: # Can return ConfidenceVote or error string
     # Ask the assistant to cast a confidence vote based on the messages
     messages.append({"role": "system", "content": vote_prompt})
     try:
@@ -1935,9 +1938,6 @@ def get_assistant_response(
 
     if memory_summary != "":
         messages.append(
-            {"role": "system", "content": f"Conversation Memory:\n{memory_summary}"}
-        )
-
     if initial_prompt:
         messages.append({"role": "user", "content": initial_prompt})
 
@@ -2397,7 +2397,7 @@ def run_conversation(
             if call_for_final_vote:
                 print(f"\nFinal Vote. Round {rnd + 1}.\n")
                 # Have the assistant who called for the final vote provide a final decision or solution based on the information available
-                final_decision_prompt = "Please provide a final prompt based on the information available that will be used to generate the final output to solve the original problem statement. This prompt should be clear, actionable, and concise, providing the finalized details needed to generate the final output. It should be in the form of an implementation plan, a request, or a directive that guides the generation of the final output content. Ensure that the prompt will result in the direct creation of the final output content that fulfills the problem statement and the user's needs and will not require further discussion or clarification. Please provide the final prompt based on the information available."
+                final_decision_prompt = "Please provide a final prompt based on the information available that will be used to generate the final output to solve the original problem statement. This prompt should be clear, actionable, and concise, providing the finalized details needed to generate the final output content. It should be in the form of an implementation plan, a request, or a directive that guides the generation of the final output. Ensure that the prompt will result in the direct creation of the final output content that fulfills the problem statement and the user's needs and will not require further discussion or clarification. Please provide the final prompt based on the information available."
                 final_decision_messages = [
                     {
                         "role": "system",
@@ -2419,7 +2419,7 @@ def run_conversation(
                     conversation_history.append(
                         {
                             "role": role,
-                            "name": final_vote_caller,
+                            "name": "Mediator",
                             "round": rnd,
                             "content": content,
                         }
@@ -2486,16 +2486,16 @@ def run_conversation(
                     )
                     # Have the Mediator finalize the output based on the final decision, creating the final output content that fulfills the problem statement and the user's needs that will be saved to the final file
 
-                    final_content_prompt = "Based on the final decision or solution provided by the assistant who called for the final vote, please generate the final output content that fulfills the problem statement and the user's needs. This means creating the final output content based on the decision or solution provided, ensuring it aligns with the problem statement and the conversation so far and meets the user's requirements and expectations. For instance, if the final decision is a text answer, generate the text answer. If it's a code snippet, generate the code snippet. If it's a report, generate the report content. If it's a prototype, generate the prototype content. If it's structured data, generate the structured data content. If it's a technical document, generate the technical document content. Please provide the final output content that fulfills the problem statement and the user's needs based on the final decision or solution provided. Do NOT require further discussion, clarification, or planning, but provide the final output content directly."
+                    final_content_prompt = "Based on the final decision or solution provided by the assistant who called for the final vote, please generate the final output content that fulfills the problem statement and the user's needs. This means creating the final output content based on the decision or solution provided, ensuring it aligns with the problem statement and the conversation so far and meets the user's requirements and expectations. For instance, if the final decision is a text answer, generate the text answer. If it's a code snippet, generate the code snippet. If it's a report, generate the report content. If it's a prototype, generate the prototype content. If it's structured data, generate the structured data content. If it's a technical document, generate the technical document content. Please provide the final output content that fulfills the problem statement and the user's needs based on the final decision or solution provided."
                     final_content_messages = [
                         {
                             "role": "system",
                             "content": final_content_prompt
-                            + f" The output type for the final decision is: {output_type.output_type} with file extension: {output_type.file_extension} and should solve the problem statement: {problem_definition} by implementing the final solution provided by {final_vote_caller}.",
+                            + f" The output type for the final decision is: {output_type.output_type} with file extension: {output_type.file_extension} and should solve the problem statement: {problem_definition} by following the final decision or solution provided by {final_vote_caller}.",
                         },
                         {
                             "role": "user",
-                            "content": f"Please generate the final output content based on the final solution provided by {final_vote_caller}:\n\n{final_decision_response['content']}. The problem statement it must completely solve is: {problem_definition}. The output you generate should be the final completion of the problem statement and the user's needs, and should not include any further steps or discussions but will represent the final output content that fulfills the problem statement and the user's needs ONLY.",
+                            "content": f"Please generate the final output content based on the final decision or solution provided by {final_vote_caller}:\n\n{final_decision_response['content']}. The problem statement it must completely solve is: {problem_definition}. The output you generate should be the final completion of the problem statement and the user's needs, and should not include any further steps or discussions but will represent the final output content that fulfills the problem statement and the user's needs ONLY.",
                         },
                     ]
                     for role, content in final_content_messages:
@@ -2663,9 +2663,7 @@ def run_conversation(
                         )
                         print(f"\n\nFinal Checked Output: {final_checked_output}\n\n")
 
-                        final_output = finalize_output(
-                            final_checked_output, output_type
-                        )
+                        final_output = finalize_output(final_checked_output, output_type)
                         print(f"\n\nFinal Output filepath: {final_output}\n\n")
                         # Add the final output to the conversation history and then save the conversation history to a file
                         conversation_history.append(
