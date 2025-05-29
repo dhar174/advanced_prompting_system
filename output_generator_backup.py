@@ -22,7 +22,7 @@ from typing import Any, Dict
         return os.path.abspath(filename)
     except (IOError, OSError, PermissionError) as e:
         print(f"❌ Error writing code snippet file '{filename}': {e}")
-        raiseerate_text_answer",
+        raise e
     #     "detailed report": "generate_detailed_report",
     #     "code snippet": "generate_code_snippet",
     #     "script file": "generate_code_snippet",
