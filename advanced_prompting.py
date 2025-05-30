@@ -15,8 +15,9 @@ import random
 from tqdm import tqdm
 from conversation_manager import output_type_determination, OutputType
 from pydantic import BaseModel, Field, ValidationError, field_validator
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 import tiktoken
+import os
 
 import complexity_measures
 from complexity_measures import (
@@ -1895,6 +1896,104 @@ class AdvancedPromptEngineer:
         self.config = config
         self.knowledge_base = {}  # For Retrieval-Augmented Generation
         self.task_object = None
+
+    def determine_output_type_from_content(self, content: str, file_path: str, task: Task) -> OutputType:
+        """
+        Determines the output type of the content based on its structure or file extension.
+        A simple implementation might return task.output_type or a default OutputType.
+        """
+        # For now, returning task.output_type as a placeholder
+        # More sophisticated logic can be added here, e.g., analyzing content
+        # or using file_path extension.
+        return task.output_type
+
+    def invoke_collaborative_reasoning(self, task: Task, plan_step: PlanStep) -> FinalStepOutput:
+        """
+        Invokes collaborative reasoning for a given task and plan step.
+        This can involve multiple agents or personas working together.
+        """
+        from conversation_manager import run_conversation # Moved import here
+
+        # Placeholder for collaborative reasoning logic
+        # This might involve selecting personalities, running a conversation,
+        # and then converting the output.
+        # For now, returning a dummy FinalStepOutput
+        
+        # Example: Run a conversation with selected personalities
+        # personalities = self.select_personalities_for_planstep(plan_step, task)
+        # conversation_output_path = run_conversation(
+        #     task_description=task.description,
+        #     plan_step_description=plan_step.step_description,
+        #     personalities=personalities,
+        #     # ... other parameters for run_conversation
+        # )
+        # return self.convert_conversation_output_to_final_step_output(
+        #     conversation_output_path, plan_step, task
+        # )
+
+        # Dummy implementation
+        return FinalStepOutput(
+            final_output="Collaborative reasoning output placeholder",
+            output_type=task.output_type,
+            version=1,
+            component_type="response_to_prompt", # Example component type
+            associated_plan_step=plan_step,
+            step=Step(description="Collaborative reasoning step", step_number=1, remaining_budget=0) # Dummy step
+        )
+
+    def select_personalities_for_planstep(self, plan_step: PlanStep, task: Task) -> List[str]:
+        """
+        Selects suitable personalities/agents for a given plan step and task.
+        """
+        # Placeholder logic for selecting personalities
+        # This could be based on plan_step.step_name, task.complexity, etc.
+        # Example:
+        # if "coding" in plan_step.step_name.lower():
+        #     return ["expert_coder", "debugger_agent"]
+        # elif "writing" in plan_step.step_name.lower():
+        #     return ["creative_writer", "editor_agent"]
+        return ["general_problem_solver"] # Default personality
+
+    def should_use_multi_agent_reasoning(self, plan_step: PlanStep, task: Task) -> bool:
+        """
+        Determines if multi-agent reasoning should be used for a plan step.
+        """
+        # Placeholder logic
+        # Example: Use multi-agent for complex tasks or specific step types
+        # if task.complexity > 3 or "brainstorm" in plan_step.step_name.lower():
+        #     return True
+        return False # Default to single agent or other methods
+
+    def convert_conversation_output_to_final_step_output(
+        self, final_output_path: str, plan_step: PlanStep, task: Task
+    ) -> FinalStepOutput:
+        """
+        Converts the output from a conversation (e.g., a file path to the transcript)
+        into a FinalStepOutput object.
+        """
+        # Placeholder for converting conversation output
+        # This might involve reading the file at final_output_path,
+        # summarizing it, or extracting key information.
+        
+        # try:
+        #     with open(final_output_path, 'r') as f:
+        #         content = f.read()
+        # except FileNotFoundError:
+        #     content = "Conversation output file not found."
+        # except Exception as e:
+        #     content = f"Error reading conversation output: {e}"
+
+        # output_type = self.determine_output_type_from_content(content, final_output_path, task)
+        
+        # Dummy implementation
+        return FinalStepOutput(
+            final_output=f"Processed output from {final_output_path}",
+            output_type=task.output_type, # Or determined dynamically
+            version=1,
+            component_type="response_to_prompt", # Example
+            associated_plan_step=plan_step,
+            step=Step(description="Conversation conversion step", step_number=1, remaining_budget=0) # Dummy step
+        )
 
     def count_tokens(self, text: list[str]) -> int:
         """Count the number of tokens in the input text using the tiktoken library."""
@@ -4003,51 +4102,69 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
     def collaborative_reasoning_main(
         self,
         task: Task,
-        prompt: str,
+        plan_step: PlanStep,
         existing_interaction: Interaction,
-        output_type: OutputType,
+        output_type: OutputType, # Retained from original, used for self_consistency
         step_budget: int,
         step_number: int,
-        plan_step_num: int,
+        # prompt: str, # This was in the old signature, will be generated if needed
+        # plan_step_num: int, # Can be derived from plan_step
         restart_limit: int = 3,
         max_plan_steps: int = 0,
-    ) -> Interaction:
+        **kwargs # To capture other potential arguments for self_consistency
+    ) -> Interaction | FinalStepOutput: # Return type can be Interaction or FinalStepOutput
         """
-        Aggregates responses from multiple agents and selects the best one based on reward scores.
+        Decides whether to use multi-agent or single-agent (self-consistency) reasoning.
         """
-        # Collaborative Multi-Agent Reasoning
-        # TODO: Use conversation_manager.py for more advanced multi-agent interactions
-        # agent_responses = list[Interaction]
-        agent_responses = self.collaborative_reasoning(
-            task,
-            prompt,
-            existing_interaction,
-            output_type,
-            step_budget,
-            step_number,
-            plan_step_num,
-            restart_limit,
-        )
-        # Handle empty responses
-        if not agent_responses:
-            raise ValueError("No agent responses received")
-        # Select the interaction with the highest final_reward
-        best_interaction: Interaction = max(
-            agent_responses, key=lambda x: x.final_reward if x.final_reward else 0.0
-        )
-        assert isinstance(best_interaction, Interaction)
-        # Add the best interaction to the existing interaction
-        if existing_interaction:
-            existing_interaction.steps += best_interaction.steps
-            existing_interaction.reflections += best_interaction.reflections
-            existing_interaction.answer = best_interaction.answer
-            existing_interaction.final_reward = (
-                best_interaction.final_reward
-                if best_interaction.final_reward and best_interaction.final_reward > 0.0
-                else 0.0
+        plan_step_num = plan_step.step_number
+
+        if self.should_use_multi_agent_reasoning(plan_step, task):
+            print_saver.print_and_store(f"Using multi-agent reasoning for plan step: {plan_step.step_name} (ID: {plan_step_num})")
+            # Note: invoke_collaborative_reasoning returns FinalStepOutput,
+            # but this method is expected to return Interaction if it follows the self_consistency path.
+            # This might require further refactoring or adjustment of return types/logic upstream.
+            # For now, returning as is, but this is a potential type mismatch.
+            return self.invoke_collaborative_reasoning(task, plan_step)
+        else:
+            print_saver.print_and_store(f"Using single-agent reasoning (self-consistency) for plan step: {plan_step.step_name} (ID: {plan_step_num})")
+            
+            prompt_for_self_consistency = self.convert_planstep_to_prompt(plan_step, task)
+
+            # Prepare messages for self_consistency. This is a simplified construction.
+            # In the main workflow, messages are built more elaborately.
+            # TODO: Ensure system_prompt and initial_user_prompt are correctly sourced or constructed
+            # For now, using placeholders or simplified versions.
+            _system_prompt, initial_user_prompt = self.generate_initial_prompt(
+                task_description=task.refined_description, 
+                retrieved_info="", # Placeholder
+                step_budget=step_budget, 
+                complexity=task.complexity, 
+                output_type=output_type
             )
-            return existing_interaction
-        return best_interaction
+            
+            messages_for_self_consistency = [
+                {"role": "system", "content": _system_prompt},
+                {"role": "user", "content": initial_user_prompt + "\n" + prompt_for_self_consistency} # Combine initial prompt with specific plan step prompt
+            ]
+            
+            # Extract necessary kwargs for self_consistency or use defaults
+            backtrack_limit = kwargs.get('backtrack_limit', 3)
+            consistency_multiplier = kwargs.get('consistency_multiplier', 3)
+            
+            return self.self_consistency(
+                task=task,
+                prompt=prompt_for_self_consistency, # Or potentially the combined prompt used in messages
+                existing_interaction=existing_interaction,
+                messages=messages_for_self_consistency, # Pass constructed messages
+                output_type=output_type.output_type, # Pass string representation
+                step_budget=step_budget,
+                step_number=step_number,
+                plan_step_number=plan_step_num,
+                restart_limit=restart_limit,
+                backtrack_limit=backtrack_limit,
+                consistency_multiplier=consistency_multiplier,
+                max_plan_steps=max_plan_steps
+            )
 
     def refine_prompt_via_meta_prompt(
         self, performance_data: str
