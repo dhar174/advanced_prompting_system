@@ -24,17 +24,23 @@ vi.mock('react-hot-toast', () => ({
 const mockRunConversationFn = vi.fn();
 let mockLoading = false;
 let mockError: Error | null = null;
-let mockData: any = null; // Allow 'any' for easier mocking of complex data structures
+let mockData: any = null;
+
+// Define a mutable object for the hook's state
+let currentHookState: { loading: boolean; error: Error | null; data: any };
 
 describe('ConversationPage Integration Test', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockLoading = false;
-    mockError = null;
-    mockData = null;
-    (useRunConversation as vi.Mock).mockReturnValue([
-      mockRunConversationFn,
-      { loading: mockLoading, error: mockError, data: mockData },
+    // Reset the hook's state before each test
+    currentHookState = {
+      loading: false,
+      error: null,
+      data: null,
+    };
+    (useRunConversation as vi.Mock).mockImplementation(() => [
+      mockRunConversationFn, // The function to trigger the run
+      currentHookState,      // The reactive state of the hook
     ]);
   });
 
@@ -81,11 +87,24 @@ describe('ConversationPage Integration Test', () => {
 
     const textarea = screen.getByPlaceholderText('Type your message...') as HTMLTextAreaElement;
     await userEvent.type(textarea, 'User message');
-    // Use data-testid for the send button
     const sendButton = screen.getByTestId('send-message-button');
 
-    // Mock the hook to return data after the next call
-    mockData = {
+    // Simulate the action of sending a message
+    // mockRunConversationFn will be called by the component
+    await userEvent.click(sendButton);
+    expect(mockRunConversationFn).toHaveBeenCalledTimes(1);
+
+    // Simulate the hook updating to a loading state
+    act(() => {
+      currentHookState.loading = true;
+    });
+
+    // Check for loading indicator (optional, but good for completeness)
+    // Assuming 'Assistant is typing...' is your loading text
+    expect(screen.getByText('Assistant is typing...')).toBeInTheDocument();
+
+    // Simulate the hook receiving data and updating its state
+    const responseData = {
       runConversation: {
         conversation: [
           { role: 'system', name: 'System', content: 'Conversation started...' },
@@ -96,75 +115,169 @@ describe('ConversationPage Integration Test', () => {
         finalOutput: 'This is the final output.',
       },
     };
-    (useRunConversation as vi.Mock).mockReturnValue([
-      mockRunConversationFn.mockImplementation(async () => { /* Simulating promise resolution */ }),
-      { loading: false, error: null, data: mockData }, // Simulate data being available immediately for this test
-    ]);
 
-    // Re-render or trigger update if necessary for the hook mock to take effect.
-    // For this setup, the next interaction should use the new mock values.
-    // However, it's often better to set the mock *before* the action that triggers its use.
-    // Let's assume the mock is updated before the component re-renders due to state changes from send.
+    act(() => {
+      currentHookState.loading = false;
+      currentHookState.data = responseData;
+    });
 
-    await userEvent.click(sendButton); // This call will use the initial mock
-
-    // To simulate the data update, we need to re-render with the new mock state.
-    // This is a common challenge in testing hooks that update asynchronously.
-    // A more robust way is to have the mock function itself update the data/loading/error states.
-
-    // For this test, let's update the mock and re-render the component.
-    // This is not ideal but demonstrates the goal.
-    // A better approach would involve `act` and managing the hook's state from the mock itself.
-
-    // Simulate receiving data by re-rendering with the new mock state.
-    // This simulates the component re-rendering after the hook updates.
-    (useRunConversation as vi.Mock).mockReturnValue([
-        mockRunConversationFn, // The function itself
-        { loading: false, error: null, data: mockData } // The new state
-    ]);
-    // No explicit re-render call needed here if the hook's state change triggers it.
-    // The test needs to wait for the UI to update based on the new `mockData`.
-
-    // We need to wait for the UI to update based on the mocked data.
-    // Using findBy queries to wait for elements to appear.
+    // Assert that the UI updates with the new data
+    // findBy* queries are good for asynchronous updates as they wait for elements to appear.
     expect(await screen.findByText('Assistant response')).toBeInTheDocument();
     expect(await screen.findByText('Was this helpful?')).toBeInTheDocument();
     expect(await screen.findByText('This is the final output.')).toBeInTheDocument();
+    // Ensure loading indicator is gone
+    expect(screen.queryByText('Assistant is typing...')).not.toBeInTheDocument();
   });
 
-  it('shows loading indicator when runConversationLoading is true', () => {
-    (useRunConversation as vi.Mock).mockReturnValue([
-      mockRunConversationFn,
-      { loading: true, error: null, data: null },
-    ]);
+  it('shows loading indicator when runConversationLoading is true', async () => {
     renderConversationPage();
-    // Start conversation to enable chat input area fully
     const startButton = screen.getByRole('button', { name: /Start New Conversation/i });
-    // Need to use `act` for state updates that might happen during userEvent
+    await userEvent.click(startButton); // Start conversation
+
     act(() => {
-        userEvent.click(startButton);
+      currentHookState.loading = true;
     });
+
     expect(screen.getByText('Assistant is typing...')).toBeInTheDocument();
   });
 
   it('displays error message when runConversationError is present', async () => {
-    mockError = new Error('Network Error');
-    (useRunConversation as vi.Mock).mockReturnValue([
-      mockRunConversationFn,
-      { loading: false, error: mockError, data: null },
-    ]);
     renderConversationPage();
-     // Start conversation to enable chat input area fully
     const startButton = screen.getByRole('button', { name: /Start New Conversation/i });
-    await act(async () => {
-        await userEvent.click(startButton);
+    await userEvent.click(startButton); // Start conversation
+
+    const errorMessage = 'Network Error';
+    act(() => {
+      currentHookState.error = new Error(errorMessage);
     });
 
-    // Wait for the error message to appear (it might be displayed asynchronously)
-    // Using findByText to wait for the element. Check for the main message content.
-    expect(await screen.findByText((_content, element) => { // content is unused
-      const hasText = (node: Element | null): boolean => node?.textContent?.includes('Error: Network Error') || false;
-      return hasText(element) && (element?.classList.contains('text-red-700') || false); // ensure boolean
+    expect(await screen.findByText((content, element) => {
+      const hasText = (node: Element | null): boolean => node?.textContent?.includes(`Error: ${errorMessage}`) || false;
+      return hasText(element) && (element?.classList.contains('text-red-700') || false);
     })).toBeInTheDocument();
+  });
+
+  it('handles null data from useRunConversation gracefully', async () => {
+    renderConversationPage();
+    const startButton = screen.getByRole('button', { name: /Start New Conversation/i });
+    await userEvent.click(startButton);
+    const textarea = screen.getByPlaceholderText('Type your message...') as HTMLTextAreaElement;
+    await userEvent.type(textarea, 'Test message');
+    const sendButton = screen.getByTestId('send-message-button');
+    await userEvent.click(sendButton);
+
+    act(() => {
+      currentHookState.loading = true;
+    });
+    expect(screen.getByText('Assistant is typing...')).toBeInTheDocument();
+
+    act(() => {
+      currentHookState.loading = false;
+      currentHookState.data = null; // Simulate null data response
+    });
+
+    expect(screen.queryByText('Assistant is typing...')).not.toBeInTheDocument();
+    // Depending on implementation, either nothing is shown or a specific message.
+    // For now, let's assume no specific message for "null data" itself,
+    // and the component should not crash.
+    // We check that elements expected from a valid response are NOT present.
+    expect(screen.queryByText('Assistant response')).not.toBeInTheDocument();
+    expect(screen.queryByText('Was this helpful?')).not.toBeInTheDocument();
+    expect(screen.queryByText('This is the final output.')).not.toBeInTheDocument();
+  });
+
+  it('handles runConversation result as null gracefully', async () => {
+    renderConversationPage();
+    const startButton = screen.getByRole('button', { name: /Start New Conversation/i });
+    await userEvent.click(startButton);
+    const textarea = screen.getByPlaceholderText('Type your message...') as HTMLTextAreaElement;
+    await userEvent.type(textarea, 'Test message');
+    const sendButton = screen.getByTestId('send-message-button');
+    await userEvent.click(sendButton);
+
+    act(() => {
+      currentHookState.loading = false;
+      currentHookState.data = { runConversation: null }; // Simulate runConversation being null
+    });
+
+    expect(screen.queryByText('Assistant response')).not.toBeInTheDocument();
+    expect(screen.queryByText('Was this helpful?')).not.toBeInTheDocument();
+    expect(screen.queryByText('This is the final output.')).not.toBeInTheDocument();
+    // It's good practice to also check that no error message is displayed accidentally
+    expect(screen.queryByText(/Error:/i)).not.toBeInTheDocument();
+  });
+
+  it('handles missing fields in runConversation response gracefully', async () => {
+    renderConversationPage();
+    const startButton = screen.getByRole('button', { name: /Start New Conversation/i });
+    await userEvent.click(startButton);
+    const textarea = screen.getByPlaceholderText('Type your message...') as HTMLTextAreaElement;
+    await userEvent.type(textarea, 'Test message for partial data');
+    const sendButton = screen.getByTestId('send-message-button');
+    await userEvent.click(sendButton);
+
+    act(() => {
+      currentHookState.loading = true;
+    });
+     expect(screen.getByText('Assistant is typing...')).toBeInTheDocument();
+
+
+    // Test case 1: Only conversation is present
+    act(() => {
+      currentHookState.loading = false;
+      currentHookState.data = {
+        runConversation: {
+          conversation: [{ role: 'assistant', name: 'Assistant', content: 'Only conversation here' }],
+          // questions and finalOutput are missing
+        },
+      };
+    });
+
+    expect(await screen.findByText('Only conversation here')).toBeInTheDocument();
+    expect(screen.queryByText('Was this helpful?')).not.toBeInTheDocument(); // Example question text
+    expect(screen.queryByText('This is the final output.')).not.toBeInTheDocument(); // Example final output text
+    expect(screen.queryByText('Assistant is typing...')).not.toBeInTheDocument();
+
+    // Test case 2: Only questions are present
+    act(() => {
+      currentHookState.loading = true; // Reset to loading before new data
+    });
+    expect(screen.getByText('Assistant is typing...')).toBeInTheDocument();
+
+    act(() => {
+      currentHookState.loading = false;
+      currentHookState.data = {
+        runConversation: {
+          questions: [{ assistant: 'Assistant', question: 'Only a question here' }],
+          // conversation and finalOutput are missing
+        },
+      };
+    });
+    expect(await screen.findByText('Only a question here')).toBeInTheDocument();
+    // Check that previous data is cleared or not displayed if component logic dictates so
+    expect(screen.queryByText('Only conversation here')).not.toBeInTheDocument();
+    expect(screen.queryByText('This is the final output.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Assistant is typing...')).not.toBeInTheDocument();
+
+    // Test case 3: Only finalOutput is present
+    act(() => {
+      currentHookState.loading = true; // Reset to loading before new data
+    });
+    expect(screen.getByText('Assistant is typing...')).toBeInTheDocument();
+
+    act(() => {
+      currentHookState.loading = false;
+      currentHookState.data = {
+        runConversation: {
+          finalOutput: 'Only final output here',
+          // conversation and questions are missing
+        },
+      };
+    });
+    expect(await screen.findByText('Only final output here')).toBeInTheDocument();
+    expect(screen.queryByText('Only a question here')).not.toBeInTheDocument();
+    expect(screen.queryByText('Only conversation here')).not.toBeInTheDocument();
+    expect(screen.queryByText('Assistant is typing...')).not.toBeInTheDocument();
   });
 });
