@@ -2517,7 +2517,8 @@ def run_conversation(
             print(
                 f"\nRound {rnd + 1} Summary: {summarize_conversation([msg for msg in conversation_history if msg['round'] == rnd])}\n"
             )
-            call_for_final_vote = False            if rnd < num_rounds - 1:
+            call_for_final_vote = False
+            if rnd < num_rounds - 1:
                 final_vote_caller = None
                 continue_votes = 0
                 end_votes = 0
