@@ -102,7 +102,11 @@ const AssistantConfigPanel: React.FC<AssistantConfigPanelProps> = ({
         </div>
 
         <div>
-          <Label htmlFor="num-rounds" className="block text-sm font-medium text-text-primary mb-1">
+          <Label
+            htmlFor="num-rounds"
+            className="block text-sm font-medium text-text-primary mb-1"
+            title="A 'round' consists of each selected assistant processing the conversation sequence once. The lead personality speaks last in each turn."
+          >
             Number of Rounds (per turn):
           </Label>
           <Input

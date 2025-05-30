@@ -136,11 +136,18 @@ describe('MessageBubble', () => {
     it('preserves whitespace in message.content', () => {
       const contentWithWhitespace = 'Line 1\n  Line 2\n    Line 3';
       const message = createMessage('assistant', contentWithWhitespace);
-      render(<MessageBubble message={message} isUser={false} />);
-      const contentElement = screen.getByText(contentWithWhitespace);
+      render(<MessageBubble message={message} isUser={false} data-testid="message-bubble-test" />);
+      // Find the <p> tag that should have the 'whitespace-pre-wrap' class.
+      // This assumes the content is rendered within a <p> tag that has this class.
+      // Based on MessageBubble.tsx: <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+      const allParagraphs = screen.getAllByText((content, element) => {
+        return element?.tagName.toLowerCase() === 'p' && content.trim() !== '' && element.classList.contains('whitespace-pre-wrap');
+      });
+      // Find the specific paragraph that contains our whitespace content
+      const contentElement = allParagraphs.find(el => el.textContent === contentWithWhitespace);
+      expect(contentElement).toBeInTheDocument();
       expect(contentElement).toHaveClass('whitespace-pre-wrap');
-      // Check innerHTML or textContent to be sure, though getByText matching usually implies this.
-      expect(contentElement.textContent).toBe(contentWithWhitespace);
+      expect(contentElement?.textContent).toBe(contentWithWhitespace);
     });
   });
 
