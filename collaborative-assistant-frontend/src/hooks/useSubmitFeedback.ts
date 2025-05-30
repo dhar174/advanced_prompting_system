@@ -1,5 +1,5 @@
-import { useMutation, ApolloError } from '@apollo/client';
-import { SUBMIT_FEEDBACK, SubmitFeedbackVariables, SubmitFeedbackData } from '../graphql/mutations/feedbackMutations';
+import { useMutation, type ApolloError } from '@apollo/client';
+import { SUBMIT_FEEDBACK, type SubmitFeedbackVariables, type SubmitFeedbackData } from '../graphql/mutations/feedbackMutations';
 
 type SubmitFeedbackMutateFunction = (
   variables: SubmitFeedbackVariables

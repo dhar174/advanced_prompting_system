@@ -1,3 +1,4 @@
+/// <reference types="vitest/globals" />
 import { renderHook, act } from '@testing-library/react';
 import { useRunConversation } from './useRunConversation';
 import { useMutation } from '@apollo/client';
@@ -90,9 +91,9 @@ describe('useRunConversation hook', () => {
         mockMutateFunction, // This mockMutateFunction will reject
         { data: null, loading: false, error: undefined }, // Initial state from useMutation
     ]);
-    
+
     const { result } = renderHook(() => useRunConversation());
-    
+
     await act(async () => {
         try {
             await result.current.runConversation({

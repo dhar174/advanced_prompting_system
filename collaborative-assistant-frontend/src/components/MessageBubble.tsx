@@ -1,6 +1,6 @@
 import React from 'react';
 // Using Card for structure, but could be a simple div
-// import { Card } from './ui/Card'; 
+// import { Card } from './ui/Card';
 
 interface Message {
   role: string;

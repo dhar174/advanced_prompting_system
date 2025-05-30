@@ -1,4 +1,5 @@
-import { render, screen, act, waitFor } from '@testing-library/react';
+/// <reference types="vitest/globals" />
+import { render, screen, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ConversationPage from './ConversationPage'; // Changed to default import
 import { useRunConversation } from '../hooks/useRunConversation';
@@ -40,7 +41,7 @@ describe('ConversationPage Integration Test', () => {
   const renderConversationPage = () => {
     // Wrap with ApolloProvider if your components expect it, even with mocked hooks
     return render(
-      <ApolloProvider client={client}> 
+      <ApolloProvider client={client}>
         <ConversationPage />
       </ApolloProvider>
     );
@@ -53,11 +54,11 @@ describe('ConversationPage Integration Test', () => {
     // Start a conversation
     const startButton = screen.getByRole('button', { name: /Start New Conversation/i });
     await userEvent.click(startButton);
-    
+
     const textarea = screen.getByPlaceholderText('Type your message...') as HTMLTextAreaElement;
     await userEvent.type(textarea, 'Hello Assistant');
-    
-    const sendButton = screen.getByTestId('send-message-button'); 
+
+    const sendButton = screen.getByTestId('send-message-button');
     await userEvent.click(sendButton);
 
     expect(screen.getByText('Hello Assistant')).toBeInTheDocument();
@@ -82,7 +83,7 @@ describe('ConversationPage Integration Test', () => {
     await userEvent.type(textarea, 'User message');
     // Use data-testid for the send button
     const sendButton = screen.getByTestId('send-message-button');
-    
+
     // Mock the hook to return data after the next call
     mockData = {
       runConversation: {
@@ -99,7 +100,7 @@ describe('ConversationPage Integration Test', () => {
       mockRunConversationFn.mockImplementation(async () => { /* Simulating promise resolution */ }),
       { loading: false, error: null, data: mockData }, // Simulate data being available immediately for this test
     ]);
-    
+
     // Re-render or trigger update if necessary for the hook mock to take effect.
     // For this setup, the next interaction should use the new mock values.
     // However, it's often better to set the mock *before* the action that triggers its use.
@@ -110,7 +111,7 @@ describe('ConversationPage Integration Test', () => {
     // To simulate the data update, we need to re-render with the new mock state.
     // This is a common challenge in testing hooks that update asynchronously.
     // A more robust way is to have the mock function itself update the data/loading/error states.
-    
+
     // For this test, let's update the mock and re-render the component.
     // This is not ideal but demonstrates the goal.
     // A better approach would involve `act` and managing the hook's state from the mock itself.
@@ -161,9 +162,9 @@ describe('ConversationPage Integration Test', () => {
 
     // Wait for the error message to appear (it might be displayed asynchronously)
     // Using findByText to wait for the element. Check for the main message content.
-    expect(await screen.findByText((content, element) => {
-      const hasText = (node: Element | null) => node?.textContent?.includes('Error: Network Error') || false;
-      return hasText(element) && element?.classList.contains('text-red-700');
+    expect(await screen.findByText((_content, element) => { // content is unused
+      const hasText = (node: Element | null): boolean => node?.textContent?.includes('Error: Network Error') || false;
+      return hasText(element) && (element?.classList.contains('text-red-700') || false); // ensure boolean
     })).toBeInTheDocument();
   });
 });

@@ -1,5 +1,5 @@
 import { gql } from '@apollo/client';
-import { ConversationInputType, FeedbackInputType, QuestionInputType } from '../graphqlTypes';
+import type { ConversationInputType, FeedbackInputType, QuestionInputType } from '../graphqlTypes';
 
 export const SUBMIT_FEEDBACK = gql`
   mutation SubmitFeedback(

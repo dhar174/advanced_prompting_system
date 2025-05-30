@@ -1,8 +1,8 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChatInput from './ChatInput';
 import { describe, it, expect, vi } from 'vitest';
-import { Send, Loader2 } from 'lucide-react'; // Import icons for checking
+// import { Send, Loader2 } from 'lucide-react'; // TSC flags as unused due to mock
 
 // Mock lucide-react icons
 vi.mock('lucide-react', async (importOriginal) => {

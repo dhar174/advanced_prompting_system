@@ -1,5 +1,5 @@
-import { useMutation, ApolloError } from '@apollo/client';
-import { RUN_CONVERSATION, RunConversationVariables, RunConversationData } from '../graphql/mutations/conversationMutations';
+import { useMutation, type ApolloError } from '@apollo/client';
+import { RUN_CONVERSATION, type RunConversationVariables, type RunConversationData } from '../graphql/mutations/conversationMutations';
 
 type RunConversationMutateFunction = (
   variables: RunConversationVariables
@@ -23,6 +23,6 @@ export const useRunConversation = (): UseRunConversationResult => {
       // console.error("Error in runConversation mutation:", e);
     }
   };
-  
+
   return { runConversation, data, loading, error };
 };

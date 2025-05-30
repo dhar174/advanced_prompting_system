@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Button } from './Button';
 import { describe, it, expect, vi } from 'vitest';
@@ -63,10 +63,10 @@ describe('Button component', () => {
     // userEvent.click on a disabled button should not throw, but also not call handler
     // fireEvent.click might be more direct for testing if userEvent has issues with disabled
     // However, userEvent aims to simulate real user behavior more closely.
-    
+
     // Attempt click
     await userEvent.click(screen.getByText('Disabled Click'));
-    
+
     // Check if handler was called
     expect(handleClick).not.toHaveBeenCalled();
   });

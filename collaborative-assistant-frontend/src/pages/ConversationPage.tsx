@@ -4,7 +4,7 @@ import ChatInput from '../components/ChatInput';
 import MessageBubble from '../components/MessageBubble';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { useRunConversation } from '../hooks/useRunConversation';
-import { ConversationInputType, ConversationType, QuestionType } from '../graphql/graphqlTypes';
+import type { ConversationInputType, ConversationType, QuestionType } from '../graphql/graphqlTypes';
 import toast from 'react-hot-toast'; // Using react-hot-toast for errors
 
 const AVAILABLE_PERSONALITIES = ['Helpful Assistant', 'Sarcastic Assistant', 'Domain Expert', 'Creative Writer', 'Code Generator', 'Summarizer'];
@@ -16,14 +16,14 @@ const ConversationPage: React.FC = () => {
   ]);
   const [currentQuestions, setCurrentQuestions] = useState<QuestionType[]>([]);
   const [finalOutput, setFinalOutput] = useState<string | null>(null);
-  
+
   const [availablePersonalities] = useState<string[]>(AVAILABLE_PERSONALITIES);
   const [selectedPersonalities, setSelectedPersonalities] = useState<string[]>(['Helpful Assistant']);
   const [leadPersonality, setLeadPersonality] = useState<string>('Helpful Assistant');
   const [numRounds, setNumRounds] = useState<number>(INITIAL_ROUNDS);
   const [isConversationActive, setIsConversationActive] = useState<boolean>(false);
 
-  const [runConversation, { data: runConversationData, loading: runConversationLoading, error: runConversationError }] = useRunConversation();
+  const { runConversation, data: runConversationData, loading: runConversationLoading, error: runConversationError } = useRunConversation();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -88,15 +88,14 @@ const ConversationPage: React.FC = () => {
       name: msg.name,
       content: msg.content,
     }));
-    
+
     try {
        await runConversation({
-        variables: {
-            conversation: conversationInput,
-            assistantPersonalities: selectedPersonalities,
-            leadPersonality,
-            numRounds,
-        }
+        // variables are passed directly to the runConversation function from the hook
+        conversation: conversationInput,
+        assistantPersonalities: selectedPersonalities,
+        leadPersonality,
+        numRounds,
       });
     } catch (error) {
         // Error is handled by the useEffect for runConversationError
@@ -159,8 +158,8 @@ const ConversationPage: React.FC = () => {
             )}
             <div ref={messagesEndRef} />
           </CardContent>
-          <ChatInput 
-            onSendMessage={handleSendMessage} 
+          <ChatInput
+            onSendMessage={handleSendMessage}
             isLoading={runConversationLoading} // Input disabled only when loading. User can type if conversation is active but not loading.
           />
         </Card>

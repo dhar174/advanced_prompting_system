@@ -1,5 +1,5 @@
 import { gql } from '@apollo/client';
-import { ConversationInputType, ConversationType, QuestionType } from '../graphqlTypes';
+import type { ConversationInputType, ConversationType, QuestionType } from '../graphqlTypes';
 
 export const RUN_CONVERSATION = gql`
   mutation RunConversation(

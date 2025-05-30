@@ -40,9 +40,9 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, isLoading }) => {
         rows={1} // Start with 1 row, will auto-grow with content due to flex
         disabled={isLoading}
       />
-      <Button 
-        onClick={handleSubmit} 
-        disabled={isLoading || !inputValue.trim()} 
+      <Button
+        onClick={handleSubmit}
+        disabled={isLoading || !inputValue.trim()}
         size="lg" // Make button a bit larger
         variant="primary"
         className="h-[40px]" // Match textarea height if rows=1
