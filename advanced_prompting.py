@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from typing import List, Tuple, Optional, Dict
 import tiktoken
 import os
+import json # Added for JSON parsing
 
 import complexity_measures
 from complexity_measures import (
@@ -1900,8 +1901,10 @@ class AdvancedPromptEngineer:
     def determine_output_type_from_content(self, content: str, file_path: str, task: Task) -> OutputType:
         """
         Determines the output type of the content based on its structure or file extension.
+        Relies first on file_path extension, then content sniffing, then task's default, 
+        and finally a generic text file type.
         """
-        if file_path:
+        if file_path and isinstance(file_path, str):
             if file_path.endswith(".py"):
                 return OutputType(output_type="Python Script", file_extension=".py")
             elif file_path.endswith(".json"):
@@ -1912,44 +1915,65 @@ class AdvancedPromptEngineer:
                 return OutputType(output_type="CSV", file_extension=".csv")
             elif file_path.endswith(".pdf"):
                 return OutputType(output_type="PDF", file_extension=".pdf")
-        # Fallback based on content or task default
-        # For now, using task.output_type or a generic text file as fallback
-        # More sophisticated content analysis could be added here.
-        if "def " in content and "\n" in content or "import " in content:
-             return OutputType(output_type="Python Script", file_extension=".py")
-        if content.strip().startswith("{") and content.strip().endswith("}") or \
-           content.strip().startswith("[") and content.strip().endswith("]"):
-             return OutputType(output_type="JSON", file_extension=".json")
-        if "<html" in content.lower() or "<body" in content.lower():
-             return OutputType(output_type="HTML", file_extension=".html")
-        # Default fallback
-        return task.output_type if task.output_type else OutputType(output_type="Text File", file_extension=".txt")
+
+        # Content sniffing if file_path was None, empty, or didn't yield a type
+        if content and isinstance(content, str):
+            content_lower = content.lower()
+            # Python sniffing: look for common Python keywords
+            if ("def " in content and "\n" in content) or \
+               ("class " in content and "\n" in content) or \
+               "import " in content_lower or \
+               "print(" in content_lower: # Basic but common
+                return OutputType(output_type="Python Script", file_extension=".py")
+            # JSON sniffing: try to parse
+            try:
+                json.loads(content)
+                return OutputType(output_type="JSON", file_extension=".json")
+            except json.JSONDecodeError:
+                pass # Not JSON
+            # HTML sniffing: look for common HTML tags
+            html_tags = ["<html>", "<body>", "<div>", "<p>", "<h1>", "<title>", "<head>"]
+            if any(tag in content_lower for tag in html_tags):
+                return OutputType(output_type="HTML", file_extension=".html")
+        
+        # Fallback 1: task's predefined output type
+        if task and hasattr(task, 'output_type') and isinstance(task.output_type, OutputType):
+            # Avoid returning a generic text type if a more specific one was expected by the task
+            if not (task.output_type.output_type == "Text File" and task.output_type.file_extension == ".txt"):
+                 return task.output_type
+        
+        # Default fallback: Generic text file
+        return OutputType(output_type="Text File", file_extension=".txt")
 
     def invoke_collaborative_reasoning(self, task: Task, plan_step: PlanStep) -> FinalStepOutput:
         """
         Invokes collaborative reasoning for a given task and plan step.
-        This can involve multiple agents or personas working together.
+        This involves selecting personalities, running a conversation, and converting the output.
         """
-        from conversation_manager import run_conversation # Moved import here
+        from conversation_manager import run_conversation # Import here to avoid circular dependencies at module level
 
-        problem_statement_for_conversation = [{"content": f"Step {plan_step.step_number}: {plan_step.description}"}]
+        # Ensure plan_step.description is a string, even if None
+        problem_description = plan_step.description if plan_step.description is not None else ""
+        problem_statement_for_conversation = [{"content": f"Step {plan_step.step_number}: {problem_description}"}]
         
         selected_personalities = self.select_personalities_for_planstep(plan_step, task)
         
         if not selected_personalities:
-            lead_personality = "Strategist" # Default if no personalities are selected
+            # Default lead personality if selection returns empty (though current select_personalities always returns at least base)
+            lead_personality = "Strategist" 
         else:
-            lead_personality = selected_personalities[0]
+            lead_personality = selected_personalities[0] # First selected is the lead
 
-        # Assuming run_conversation is expected to create a file and return its path
-        # num_rounds can be adjusted based on complexity or configuration
+        # Call the conversation manager to run the multi-agent discussion
+        # num_rounds is set to 2 as a default for this collaborative step.
         final_output_path = run_conversation(
-            problem_statement=problem_statement_for_conversation, # Pass as list of dicts
+            problem_statement=problem_statement_for_conversation,
             selected_personalities=selected_personalities,
             lead_personality=lead_personality,
-            num_rounds=2 # Example number of rounds
+            num_rounds=2 
         )
         
+        # Convert the path/result of the conversation into a standard FinalStepOutput
         return self.convert_conversation_output_to_final_step_output(
             final_output_path, plan_step, task
         )
@@ -1957,34 +1981,59 @@ class AdvancedPromptEngineer:
     def select_personalities_for_planstep(self, plan_step: PlanStep, task: Task) -> List[str]:
         """
         Selects suitable personalities/agents for a given plan step and task.
+        Starts with base personalities and adds more based on keywords in the plan step description.
+        Limits the total number of personalities to 3.
         """
         base_personalities = ["Strategist", "Educator"]
+        
+        if plan_step.description is None:
+            # If description is None, no keyword analysis can be done, return base (capped)
+            return base_personalities[:min(len(base_personalities), 3)]
+
         description_lower = plan_step.description.lower()
 
         if "code" in description_lower or "script" in description_lower or "python" in description_lower:
             if "Software Engineer" not in base_personalities:
                  base_personalities.append("Software Engineer")
-        if "analysis" in description_lower or "data" in description_lower:
+        if "analysis" in description_lower or "data" in description_lower: # "data" is a bit broad, but for example
             if "Business Analyst" not in base_personalities:
                 base_personalities.append("Business Analyst")
         if "design" in description_lower or "ui" in description_lower or "ux" in description_lower:
             if "UX Designer" not in base_personalities:
                 base_personalities.append("UX Designer")
         
-        return base_personalities[:3] # Limit to 3 personalities
+        return base_personalities[:3] # Return up to the first 3 selected personalities
 
     def should_use_multi_agent_reasoning(self, plan_step: PlanStep, task: Task) -> bool:
         """
-        Determines if multi-agent reasoning should be used for a plan step.
+        Determines if multi-agent reasoning should be used for a plan step based on complexity indicators.
+        Returns True if the sum of triggered indicators is 2 or more.
         """
-        description_lower = plan_step.description.lower()
+        # Initialize indicators to False or 0
+        desc_len_indicator = False
+        design_indicator = False
+        strategy_indicator = False
+        analysis_indicator = False
+        brainstorm_indicator = False
+
+        if plan_step.description is not None:
+            description_lower = plan_step.description.lower()
+            desc_len_indicator = len(plan_step.description) > 200
+            design_indicator = "design" in description_lower
+            strategy_indicator = "strategy" in description_lower
+            analysis_indicator = "analysis" in description_lower
+            brainstorm_indicator = "brainstorm" in description_lower
+        
+        # Task complexity indicator (ensure task.complexity is valid)
+        task_complexity_indicator = hasattr(task, 'complexity') and isinstance(task.complexity, (int, float)) and task.complexity > 7
+
         complexity_indicators = [
-            len(plan_step.description) > 200,
-            "design" in description_lower,
-            "strategy" in description_lower,
-            "analysis" in description_lower,
-            "brainstorm" in description_lower,
-            task.complexity > 7  # Assuming task.complexity is an int
+            desc_len_indicator,
+            design_indicator,
+            strategy_indicator,
+            analysis_indicator,
+            brainstorm_indicator,
+            task_complexity_indicator 
         ]
         return sum(complexity_indicators) >= 2
 
@@ -1995,43 +2044,38 @@ class AdvancedPromptEngineer:
         Converts the output from a conversation (e.g., a file path to the transcript)
         into a FinalStepOutput object.
         """
-        final_content = f"Output path: {final_output_path}" # Default content if file not found/readable
-        if os.path.exists(final_output_path):
+        final_content = f"Output path: {final_output_path}" # Default if path is None or file doesn't exist
+        
+        if final_output_path and os.path.exists(final_output_path):
             try:
                 with open(final_output_path, 'r') as f:
                     final_content = f.read()
+                if not final_content.strip(): # Handle empty file case
+                    final_content = f"Successfully read empty file: {final_output_path}"
             except Exception as e:
                 final_content = f"Error reading file {final_output_path}: {e}"
+        elif final_output_path is None:
+             final_content = "No output path provided by conversation."
         
         output_type = self.determine_output_type_from_content(final_content, final_output_path, task)
         
-        # Regarding task.steps and task.remaining_budget:
-        # task.steps is List[Step], so len(task.steps) is valid.
-        # task.remaining_budget is not a direct attribute.
-        # For this synthetic step, remaining_budget can be set to 0 or derived.
-        # Let's assume a placeholder logic for remaining_budget for now.
-        # A more robust system would track budget through the 'Task' or 'Interaction' state.
-        current_step_number = len(task.steps) + 1 if hasattr(task, 'steps') and isinstance(task.steps, list) else 1
+        # Calculate step_number ensuring task.steps is treated as a list
+        step_number_for_conversion_step = (len(task.steps) if isinstance(task.steps, list) else 0) + 1
         
-        # Placeholder for remaining_budget, as task object doesn't directly have it.
-        # This might be part of a larger interaction state not fully available here.
-        # For a conversion step, perhaps 0 is appropriate, or it's based on plan_step's context.
-        # If plan_step is the last in a sequence, budget might be low.
-        # Using a default/placeholder value for now.
-        step_remaining_budget = 0 # Placeholder
-
+        # The 'Step' created here is a synthetic step representing the conversion process itself.
+        # Its remaining_budget is set to 0 as it's an artifact, not a budgeted reasoning step.
         created_step = Step(
-            description=f"Converted output from conversation for: {plan_step.description}",
-            step_number=current_step_number,
-            remaining_budget=step_remaining_budget, 
+            description=f"Converted output from conversation for plan step: {plan_step.description or 'N/A'}",
+            step_number=step_number_for_conversion_step,
+            remaining_budget=0, 
             plan_step_number=plan_step.step_number
         )
         
         return FinalStepOutput(
             final_output=final_content,
             output_type=output_type,
-            version=1, # Default version
-            component_type="response_to_prompt", # This might need to be more dynamic
+            version=1, # Default version for the first conversion
+            component_type="response_to_prompt", # Default, could be refined based on output_type
             associated_plan_step=plan_step,
             step=created_step
         )
