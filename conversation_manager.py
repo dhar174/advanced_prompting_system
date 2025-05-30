@@ -2136,14 +2136,25 @@ class MediatorReviseOrDecide(BaseModel):
 
 
 def run_conversation(
-    problem_statement, selected_personalities, lead_personality, num_rounds=3
+    problem_statement, selected_personalities, lead_personality, num_rounds=3, context=None
 ):
-    original_prompt = problem_statement[0]["content"]
+    if isinstance(problem_statement, list) and problem_statement and isinstance(problem_statement[0], dict) and "content" in problem_statement[0]:
+        original_prompt = problem_statement[0]["content"]
+    elif isinstance(problem_statement, str):
+        original_prompt = problem_statement
+    else:
+        # Fallback or error handling if problem_statement is not in expected format
+        original_prompt = str(problem_statement) # Or raise an error
+
     original_prompt = (
         "The Primary User has provided the following prompt, from which the problem statement will be defined: "
         + original_prompt
     )
-    print("problem statement", original_prompt, "\n")    # primary_user = problem_statement[0]['name']
+
+    if context:
+        original_prompt += f"\n\nAdditional Context: {context}"
+
+    print("problem statement with context (if any)", original_prompt, "\n")    # primary_user = problem_statement[0]['name']
     # TODO: FIXME - Commented-out code for conversation history and final content generation
     # The following code was commented out and needs review for potential restoration or removal
     # Have the Mediator finalize the output based on the final decision, creating the final output content that fulfills the problem statement and the user's needs that will be saved to the final file
