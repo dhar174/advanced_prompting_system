@@ -2144,9 +2144,7 @@ def run_conversation(
         original_prompt = problem_statement
     else:
         # Fallback or error handling if problem_statement is not in expected format
-        raise InvalidProblemStatementError(
-            f"Invalid problem_statement type: {type(problem_statement)}. Expected a string or a list of dictionaries with a 'content' key."
-        )
+        original_prompt = str(problem_statement) # Or raise an error
 
     original_prompt = (
         "The Primary User has provided the following prompt, from which the problem statement will be defined: "
