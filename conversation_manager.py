@@ -712,11 +712,11 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
             else:
                 no_votes += 1
                 no_voters.append(assistant_name)
-                print(f"\nNo Vote from {assistant_name} on the consensus problem statement.\n")
-        else:
-            # TODO: Handle binary vote errors more gracefully
-            print(f"\nError getting vote from {assistant_name}: {binary_vote}\n")
-            no_votes += 1  # Count errors as no votes for safety            no_voters.append(assistant_name)
+                print(f"\nNo Vote from {assistant_name} on the consensus problem statement.\n")        else:
+            # Handle binary vote errors more gracefully
+            print(f"⚠️  Error getting vote from {assistant_name}: {binary_vote}")
+            no_votes += 1  # Count errors as no votes for safety
+            no_voters.append(assistant_name)
         
         # For no votes, ask the assistant to provide feedback on the problem statement  
         if isinstance(binary_vote, BinaryVote) and not binary_vote.vote:
@@ -792,9 +792,42 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
                     no_votes += 1
                     no_voters.append(assistant_name)
                     print(
-                        f"\nRepeat No Vote from {assistant_name} on the consensus problem statement.\n"
-                    )
-    # Check if the consensus problem statement is confirmed
+                        f"\nRepeat No Vote from {assistant_name} on the consensus problem statement.\n"                    )
+    
+    # Check if the consensus problem statement is confirmed - Enhanced with edge case handling
+    total_votes = yes_votes + no_votes
+    total_assistants = len(selected_personalities)
+    
+    print(f"📊 Problem Definition Vote Results: {yes_votes} YES, {no_votes} NO (Total: {total_votes}/{total_assistants} assistants)")
+    
+    # Handle edge cases first
+    if total_votes == 0:
+        print("❌ CRITICAL: No valid votes received on problem definition!")
+        raise Exception("All assistants failed to vote on problem definition. Cannot proceed.")
+    
+    elif yes_votes == no_votes and yes_votes > 0:
+        print(f"⚖️ TIE VOTE on problem definition: {yes_votes} YES vs {no_votes} NO")
+        print("🔄 Requiring revision due to tie vote...")
+        # For ties, force revision
+        if previous_def_rounds < 2:  # Limit revision attempts
+            return define_problem(problem_statement, selected_personalities, previous_def_rounds + 1)
+        else:
+            print("⚠️ Maximum revision attempts reached. Using original problem statement as fallback.")
+            return problem_statement
+    
+    elif total_votes < (total_assistants / 2):
+        print(f"⚠️ LOW PARTICIPATION in problem definition: Only {total_votes}/{total_assistants} assistants voted")
+        if yes_votes > no_votes and yes_votes >= (total_assistants / 3):
+            print("✓ Proceeding despite low participation due to clear majority")
+        else:
+            print("❌ Insufficient participation and unclear mandate for problem definition")
+            if previous_def_rounds < 2:
+                return define_problem(problem_statement, selected_personalities, previous_def_rounds + 1)
+            else:
+                print("⚠️ Maximum attempts reached. Using original problem statement.")
+                return problem_statement
+    
+    # Normal voting logic
     if yes_votes > no_votes and no_votes == 0:
         print(
             f"\nConsensus Problem Statement Confirmed with full consensus: {best_definition['definition']}\n"
@@ -2485,9 +2518,12 @@ def run_conversation(
                 f"\nRound {rnd + 1} Summary: {summarize_conversation([msg for msg in conversation_history if msg['round'] == rnd])}\n"
             )
             call_for_final_vote = False
-
             if rnd < num_rounds - 1:
                 final_vote_caller = None
+                continue_votes = 0
+                end_votes = 0
+                voting_errors = 0
+                
                 for assistant_name, _ in assistant_priorities:
                     vote_prompt = "Please cast a binary vote to determine whether to continue the conversation into the next round. Based on the discussion so far, do you believe another round is needed to reach a conclusion or make a decision? Respond with a boolean value (True/False) only. True to continue, False to vote on a final decision. If you vote False, the conversation will proceed to a final vote, but you will need to provide a final decision or solution based on the information available."
                     continue_vote = cast_binary_vote(
@@ -2495,15 +2531,40 @@ def run_conversation(
                         [msg for msg in conversation_history if msg["round"] == rnd],
                         vote_prompt,
                     )
-                    if continue_vote:
-                        continue
+                    
+                    # Handle voting results with proper error checking
+                    if isinstance(continue_vote, BinaryVote):
+                        if continue_vote.vote:
+                            continue_votes += 1
+                        else:
+                            end_votes += 1
+                            if final_vote_caller is None:  # First assistant to vote to end
+                                final_vote_caller = assistant_name
                     else:
+                        # Handle voting errors
+                        print(f"⚠️  Error getting continue vote from {assistant_name}: {continue_vote}")
+                        voting_errors += 1
+                        # Default to continue on error to avoid premature termination
+                        continue_votes += 1
+                
+                total_continue_votes = continue_votes + end_votes + voting_errors
+                print(f"📊 Continue Vote Results: {continue_votes} CONTINUE, {end_votes} END, {voting_errors} ERRORS")
+                
+                # Determine whether to continue based on majority or first end vote
+                if end_votes > 0 and final_vote_caller is not None:
+                    call_for_final_vote = True
+                    print(f"\nFinal Vote Called by {final_vote_caller} to end the conversation in Round {rnd + 1}.\n")
+                elif total_continue_votes == 0:
+                    # All votes failed - default to ending if we're near the end, otherwise continue
+                    if rnd >= (num_rounds - 2):
                         call_for_final_vote = True
-                        final_vote_caller = assistant_name
-                        print(
-                            f"\nFinal Vote Called by {final_vote_caller} to end the conversation in Round {rnd + 1}.\n"
-                        )
-                        break
+                        final_vote_caller = lead_personality
+                        print(f"\nFinal Vote Called due to voting errors and approaching round limit.\n")
+                    else:
+                        print("⚠️ All continue votes failed, but continuing due to early round number")
+                else:
+                    print(f"✓ Continuing to next round (Round {rnd + 2})")
+            
             if rnd == num_rounds - 1:
                 call_for_final_vote = True
                 final_vote_caller = lead_personality
@@ -2577,18 +2638,141 @@ def run_conversation(
                             "role": "system",
                             "content": f"Final Decision: {safe_get_message_field(final_decision_response, 'content', 'No decision content')}",
                         },
-                    ]
-                    final_binary_vote = cast_binary_vote(
+                    ]                    final_binary_vote = cast_binary_vote(
                         assistant_name, final_vote_messages, final_vote_prompt
                     )
-                    if final_binary_vote:
-                        yes_votes += 1
+                    # Handle both successful votes and errors
+                    if isinstance(final_binary_vote, BinaryVote):
+                        if final_binary_vote.vote:
+                            yes_votes += 1
+                        else:
+                            no_votes += 1
+                            no_voters.append(assistant_name)
                     else:
-                        no_votes += 1
+                        # Handle voting errors
+                        print(f"⚠️  Error getting vote from {assistant_name}: {final_binary_vote}")
+                        no_votes += 1  # Count errors as no votes for safety
                         no_voters.append(assistant_name)
-                # Check if the final decision is confirmed
+                
+                # Calculate total participation for voting validation
+                total_votes = yes_votes + no_votes
+                total_assistants = len(assistant_priorities)
+                  print(f"📊 Final Vote Results: {yes_votes} YES, {no_votes} NO (Total: {total_votes}/{total_assistants} assistants)")
+                
+                # Check if the final decision is confirmed - Enhanced with tie-breaking and edge case handling
+                
+                # Handle edge cases first
+                if total_votes == 0:
+                    print("❌ CRITICAL: No valid votes received from any assistant!")
+                    print("🔄 Falling back to mediator decision due to complete voting failure.")
+                    # Force mediator to make final decision
+                    mediator_fallback_prompt = (
+                        f"{assistant_personalities[mediator_name]} "
+                        "CRITICAL SITUATION: All assistants failed to cast valid votes on the final decision. "
+                        "As the mediator, you must make the final call on whether to proceed with the proposed solution. "
+                        "Review the conversation and make a definitive decision."
+                    )
+                    mediator_fallback_messages = [
+                        {"role": "system", "content": mediator_fallback_prompt},
+                        {"role": "user", "content": f"Proposed Final Decision: {safe_get_message_field(final_decision_response, 'content', 'No decision content')}"},
+                        {"role": "user", "content": f"Problem Statement: {problem_definition}"}
+                    ]
+                    try:
+                        mediator_emergency_response = client.beta.chat.completions.parse(
+                            model="gpt-4o-mini",
+                            messages=mediator_fallback_messages,
+                            response_format=MediatorReviseOrDecide,
+                        )
+                        mediator_decision = mediator_emergency_response.choices[0].message.parsed
+                        print(f"🏛️ Emergency Mediator Decision: {mediator_decision}")
+                    except Exception as e:
+                        print(f"❌ Emergency mediator decision failed: {e}")
+                        # Ultimate fallback - proceed with original decision
+                        mediator_decision = MediatorReviseOrDecide(
+                            final_decision=safe_get_message_field(final_decision_response, 'content', 'No decision content'),
+                            keep_output=True
+                        )
+                        print("⚠️ Using ultimate fallback: proceeding with original proposal")
+                
+                elif yes_votes == no_votes and yes_votes > 0:
+                    print(f"⚖️ TIE VOTE DETECTED: {yes_votes} YES vs {no_votes} NO")
+                    print("🏛️ Invoking mediator tie-breaker protocol...")
+                    
+                    # Mediator breaks the tie
+                    tie_breaker_prompt = (
+                        f"{assistant_personalities[mediator_name]} "
+                        "A tie vote has occurred on the final decision. As the mediator, you must break the tie. "
+                        "Review the proposed solution, the conversation context, and make a definitive decision. "
+                        "Consider the feedback from both sides and determine the best path forward."
+                    )
+                    tie_breaker_messages = [
+                        {"role": "system", "content": tie_breaker_prompt},
+                        {"role": "user", "content": f"Proposed Final Decision: {safe_get_message_field(final_decision_response, 'content', 'No decision content')}"},
+                        {"role": "user", "content": f"Problem Statement: {problem_definition}"},
+                        {"role": "user", "content": f"Vote was tied: {yes_votes} assistants voted YES, {no_votes} assistants voted NO"}
+                    ]
+                    try:
+                        tie_breaker_response = client.beta.chat.completions.parse(
+                            model="gpt-4o-mini",
+                            messages=tie_breaker_messages,
+                            response_format=MediatorReviseOrDecide,
+                        )
+                        mediator_decision = tie_breaker_response.choices[0].message.parsed
+                        print(f"🏛️ Tie-breaker Decision: {'ACCEPT' if mediator_decision.keep_output else 'REVISE'}")
+                        conversation_history.append({
+                            "role": "system",
+                            "name": mediator_name,
+                            "round": rnd,
+                            "content": f"Mediator Tie-breaker Decision: {'Accepted' if mediator_decision.keep_output else 'Revised'} - {mediator_decision.final_decision}"
+                        })
+                    except Exception as e:
+                        print(f"❌ Tie-breaker decision failed: {e}")
+                        # Default tie-breaker: slight preference for proceeding
+                        mediator_decision = MediatorReviseOrDecide(
+                            final_decision="Tie-breaker fallback: proceeding with original proposal due to decision error.",
+                            keep_output=True
+                        )
+                        print("⚠️ Using tie-breaker fallback: slight preference for proceeding")
+                
+                elif total_votes < (total_assistants / 2):
+                    print(f"⚠️ LOW PARTICIPATION: Only {total_votes}/{total_assistants} assistants voted (less than 50%)")
+                    print("🔄 Considering insufficient participation...")
+                    
+                    # Check if we still have a clear majority despite low participation
+                    if yes_votes > no_votes and yes_votes >= (total_assistants / 3):
+                        print("✓ Proceeding despite low participation due to clear majority")
+                    else:
+                        print("❌ Insufficient participation and unclear mandate")
+                        print("🏛️ Requiring mediator approval due to low participation")
+                        # Force mediator review for low participation
+                        participation_prompt = (
+                            f"{assistant_personalities[mediator_name]} "
+                            f"Low participation in final vote: only {total_votes}/{total_assistants} assistants voted. "
+                            "As mediator, determine if this is sufficient to proceed or if the decision needs revision."
+                        )
+                        participation_messages = [
+                            {"role": "system", "content": participation_prompt},
+                            {"role": "user", "content": f"Vote Results: {yes_votes} YES, {no_votes} NO out of {total_assistants} total assistants"},
+                            {"role": "user", "content": f"Proposed Decision: {safe_get_message_field(final_decision_response, 'content', 'No decision content')}"}
+                        ]
+                        try:
+                            participation_response = client.beta.chat.completions.parse(
+                                model="gpt-4o-mini",
+                                messages=participation_messages,
+                                response_format=MediatorReviseOrDecide,
+                            )
+                            mediator_decision = participation_response.choices[0].message.parsed
+                            print(f"🏛️ Low Participation Decision: {'PROCEED' if mediator_decision.keep_output else 'REVISE'}")
+                        except Exception as e:
+                            print(f"❌ Low participation decision failed: {e}")
+                            mediator_decision = MediatorReviseOrDecide(
+                                final_decision="Low participation fallback: proceeding with caution.",
+                                keep_output=True
+                            )
 
-                if yes_votes > no_votes and no_votes == 0:                    print(
+                # Normal voting logic (only executed if no edge cases above)
+                if total_votes > 0 and yes_votes != no_votes and total_votes >= (total_assistants / 2):
+                    if yes_votes > no_votes and no_votes == 0:print(
                         f"\nFinal Decision Confirmed with full consensus: {safe_get_message_field(final_decision_response, 'content', 'No decision content')}\n"
                     )
                     conversation_history.append(
@@ -2652,11 +2836,18 @@ def run_conversation(
                             "role": "system",
                             "name": lead_personality,
                             "round": rnd,
-                            "content": f"Final Output: {final_output}",
-                        }
+                            "content": f"Final Output: {final_output}",                        }
                     )
-                    with open("conversation_history.json", "w") as f:
-                        json.dump(conversation_history, f, indent=4)
+                    try:
+                        with open("conversation_history.json", "w") as f:
+                            json.dump(conversation_history, f, indent=4)
+                        print("✓ Conversation history saved to conversation_history.json")
+                    except (IOError, OSError, PermissionError) as e:
+                        print(f"✗ Error saving conversation history to conversation_history.json: {e}")
+                        print("⚠️  Conversation data may be lost. Check disk space and file permissions.")
+                    except Exception as e:
+                        print(f"✗ Unexpected error saving conversation history: {e}")
+                        print("⚠️  Conversation data may be lost.")
                 elif (
                     yes_votes > no_votes
                     and no_votes > 0
@@ -2794,11 +2985,18 @@ def run_conversation(
                             "role": "system",
                             "name": lead_personality,
                             "round": rnd,
-                            "content": f"Final Output: {final_output}",
-                        }
+                            "content": f"Final Output: {final_output}",                        }
                     )
-                    with open("conversation_history.json", "w") as f:
-                        json.dump(conversation_history, f, indent=4)
+                    try:
+                        with open("conversation_history.json", "w") as f:
+                            json.dump(conversation_history, f, indent=4)
+                        print("✓ Conversation history saved to conversation_history.json")
+                    except (IOError, OSError, PermissionError) as e:
+                        print(f"✗ Error saving conversation history to conversation_history.json: {e}")
+                        print("⚠️  Conversation data may be lost. Check disk space and file permissions.")
+                    except Exception as e:
+                        print(f"✗ Unexpected error saving conversation history: {e}")
+                        print("⚠️  Conversation data may be lost.")
                 elif not mediator_decision.keep_output:
                     # Use mediator_decision.final_decision as the new final decision
                     final_decision_response["content"] = (
@@ -2868,10 +3066,19 @@ def run_conversation(
                             "role": "system",
                             "name": lead_personality,
                             "round": rnd,
-                            "content": f"Final Output: {final_output}",
-                        }
+                            "content": f"Final Output: {final_output}",                        }
                     )
-    with open(f"conversation_history_{str(datetime.now())}.json", "w") as f:
-        json.dump(conversation_history, f, indent=4)
+    try:
+        filename = f"conversation_history_{str(datetime.now()).replace(':', '-').replace(' ', '_')}.json"
+        with open(filename, "w") as f:
+            json.dump(conversation_history, f, indent=4)
+        print(f"✓ Final conversation history saved to {filename}")
+    except (IOError, OSError, PermissionError) as e:
+        print(f"✗ Error saving final conversation history to {filename}: {e}")
+        print("⚠️  Final conversation data may be lost. Check disk space and file permissions.")
+    except Exception as e:
+        print(f"✗ Unexpected error saving final conversation history: {e}")
+        print("⚠️  Final conversation data may be lost.")
+    
     # print("Conversation History in manager: ", conversation_history, "Type: ", type(conversation_history), "Type Content: ", type(conversation_history[0]["content"]))
     return (conversation_history, questions_asked, final_output)
