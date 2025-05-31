@@ -34,7 +34,7 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, isLoading }) => {
       <Textarea
         value={inputValue}
         onChange={handleInputChange}
-        onKeyDown={handleKeyDown}
+        onKeyDown={handleKeyPress}
         placeholder="Type your message..."
         className="flex-1 resize-none"
         rows={1} // Start with 1 row, will auto-grow with content due to flex

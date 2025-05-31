@@ -5,7 +5,7 @@ import MessageBubble from '../components/MessageBubble';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { useRunConversation } from '../hooks/useRunConversation';
 import type { ConversationInputType, ConversationType, QuestionType } from '../graphql/graphqlTypes';
-import toast from 'react-hot-toast'; // Using react-hot-toast for errors
+import toast from 'react-hot-toast';
 
 const AVAILABLE_PERSONALITIES = ['Helpful Assistant', 'Sarcastic Assistant', 'Domain Expert', 'Creative Writer', 'Code Generator', 'Summarizer'];
 const INITIAL_ROUNDS = 3;
@@ -41,9 +41,8 @@ const ConversationPage: React.FC = () => {
       setCurrentQuestions(questions || []);
       setFinalOutput(newFinalOutput);
 
-      // Logic to deactivate conversation can be more sophisticated, e.g., based on number of turns or if final output is substantial
-      if (newFinalOutput && conversation.length >= numRounds * selectedPersonalities.length * 2) { // Example condition
-         // setIsConversationActive(false); // Keep it active to allow follow-up or feedback
+      if (newFinalOutput && conversation.length >= numRounds * selectedPersonalities.length * 2) {
+         // setIsConversationActive(false);
       }
     }
   }, [runConversationData, numRounds, selectedPersonalities.length]);
@@ -52,7 +51,6 @@ const ConversationPage: React.FC = () => {
     if (runConversationError) {
       console.error("Error running conversation:", runConversationError);
       toast.error(`Error: ${runConversationError.message}`);
-      // setIsConversationActive(false); // Allow user to retry or change config
     }
   }, [runConversationError]);
 
@@ -75,11 +73,11 @@ const ConversationPage: React.FC = () => {
     const userMessage: ConversationInputType = {
       role: 'user',
       content: messageContent,
-      name: 'User', // Explicitly set user name for input
+      name: 'User',
     };
 
     const currentHistoryWithUserMessage = [...conversationHistory, userMessage];
-    setConversationHistory(currentHistoryWithUserMessage); // Optimistic update
+    setConversationHistory(currentHistoryWithUserMessage);
     setCurrentQuestions([]);
     setFinalOutput(null);
 
@@ -91,7 +89,6 @@ const ConversationPage: React.FC = () => {
 
     try {
        await runConversation({
-        // variables are passed directly to the runConversation function from the hook
         conversation: conversationInput,
         assistantPersonalities: selectedPersonalities,
         leadPersonality,
@@ -99,7 +96,6 @@ const ConversationPage: React.FC = () => {
       });
     } catch (error) {
         // Error is handled by the useEffect for runConversationError
-        // If not using toast for errors, you might update UI here
     }
   };
 
@@ -115,7 +111,7 @@ const ConversationPage: React.FC = () => {
           numRounds={numRounds}
           onNumRoundsChange={setNumRounds}
           onStartConversation={handleStartConversation}
-          isConversationActive={isConversationActive && runConversationLoading} // Panel disabled when active AND loading
+          isConversationActive={isConversationActive && runConversationLoading}
         />
       </div>
 
@@ -150,7 +146,6 @@ const ConversationPage: React.FC = () => {
                 </div>
               </div>
             )}
-             {/* Inline error display as an alternative/addition to toast */}
             {runConversationError && !runConversationLoading && (
                 <div className="mt-4 p-3 bg-red-100/50 border border-red-300 text-red-700 rounded-md text-sm">
                     <strong>Error:</strong> {runConversationError.message}. Please try again or adjust settings.
@@ -160,7 +155,7 @@ const ConversationPage: React.FC = () => {
           </CardContent>
           <ChatInput
             onSendMessage={handleSendMessage}
-            isLoading={runConversationLoading} // Input disabled only when loading. User can type if conversation is active but not loading.
+            isLoading={runConversationLoading}
           />
         </Card>
       </div>
