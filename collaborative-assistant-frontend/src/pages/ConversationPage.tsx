@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import AssistantConfigPanel from '../components/AssistantConfigPanel';
 import ChatInput from '../components/ChatInput';
-import MessageBubble from '../components/MessageBubble';
+// MessageBubble is no longer directly used here, but ConversationDisplay uses it.
+// import MessageBubble from '../components/MessageBubble';
+import ConversationDisplay from '../components/ConversationDisplay';
+import FeedbackDisplay from '../components/FeedbackDisplay';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { useRunConversation } from '../hooks/useRunConversation';
 import type { ConversationInputType, ConversationType, QuestionType } from '../graphql/graphqlTypes';
@@ -42,7 +45,10 @@ const ConversationPage: React.FC = () => {
       setFinalOutput(newFinalOutput);
 
       if (newFinalOutput && conversation.length >= numRounds * selectedPersonalities.length * 2) {
-         // setIsConversationActive(false);
+        // Signifies the end of the planned conversation rounds.
+        // Set isConversationActive to false to prevent further messages
+        // and prompt the user to start a new conversation.
+        setIsConversationActive(false);
       }
     }
   }, [runConversationData, numRounds, selectedPersonalities.length]);
@@ -121,37 +127,18 @@ const ConversationPage: React.FC = () => {
             <CardTitle className="text-text-primary">Conversation Thread</CardTitle>
           </CardHeader>
           <CardContent className="flex-grow overflow-y-auto p-6 space-y-4 h-[calc(100vh-180px)] scrollbar-thin scrollbar-thumb-slate-400 scrollbar-track-surface-ground/50">
-            {conversationHistory.map((msg, index) => (
-              <MessageBubble key={index} message={msg} isUser={msg.role === 'user'} />
-            ))}
-            {runConversationLoading && (
-              <div className="text-center text-sm text-text-secondary italic py-2">Assistant is typing...</div>
-            )}
-            {currentQuestions.length > 0 && !runConversationLoading && (
-              <div className="mt-4 p-4 border-t border-slate-200">
-                <h3 className="text-md font-semibold mb-2 text-text-primary">Questions for Feedback:</h3>
-                {currentQuestions.map((q, i) => (
-                  <div key={i} className="p-3 bg-yellow-100/50 border border-yellow-300 rounded-md mb-2 text-sm text-yellow-800">
-                    <p className="font-medium">{q.assistant}:</p>
-                    <p>{q.question}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-            {finalOutput && !runConversationLoading && (
-              <div className="mt-4 p-4 border-t border-slate-200">
-                <h3 className="text-md font-semibold mb-2 text-text-primary">Final Output:</h3>
-                <div className="p-3 bg-green-100/50 border border-green-300 rounded-md text-sm text-green-800 whitespace-pre-wrap">
-                  {finalOutput}
-                </div>
-              </div>
-            )}
-            {runConversationError && !runConversationLoading && (
-                <div className="mt-4 p-3 bg-red-100/50 border border-red-300 text-red-700 rounded-md text-sm">
-                    <strong>Error:</strong> {runConversationError.message}. Please try again or adjust settings.
-                </div>
-            )}
-            <div ref={messagesEndRef} />
+            <ConversationDisplay
+              conversationHistory={conversationHistory}
+              runConversationLoading={runConversationLoading}
+              runConversationError={runConversationError}
+              // messagesEndRef is no longer passed here
+            />
+            <FeedbackDisplay
+              currentQuestions={currentQuestions}
+              finalOutput={finalOutput}
+              runConversationLoading={runConversationLoading}
+            />
+            <div ref={messagesEndRef} /> {/* Correct placement of messagesEndRef */}
           </CardContent>
           <ChatInput
             onSendMessage={handleSendMessage}
