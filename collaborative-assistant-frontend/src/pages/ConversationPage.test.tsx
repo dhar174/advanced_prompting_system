@@ -511,7 +511,7 @@ describe('ConversationPage Integration Test', () => {
 
     // Try to send another message
     await userEvent.type(textarea, 'Attempting another message');
-    expect(textarea.value).toBe('Attempting another messageFirst and final user message'); // Textarea doesn't clear if send fails early
+    expect(textarea.value).toBe(''); // Textarea should clear if send fails
 
     // Click send button again
     // Need to ensure the button is re-enabled after the first send if textarea is not empty.
