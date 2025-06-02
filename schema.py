@@ -40,12 +40,86 @@ class Feedback:
     assistant: str
     rating: int
 
+# Define the Subtask type
+@strawberry.type
+class Subtask:
+    subtask_number: int
+    completed: bool
+    subtask_description: str
+    subtask_name: str
+    subtask_explanation: str
+    subtask_output: str
+    subtask_full_text: str
+    subtasks: List["Subtask"]
+
+# Define the PlanStep type
+@strawberry.type
+class PlanStep:
+    step_number: int
+    completed: bool
+    step_name: str
+    step_description: str
+    step_explanation: str
+    step_output: str
+    step_full_text: str
+    subtasks: List[Subtask]
+
+# Define the Plan type
+@strawberry.type
+class Plan:
+    steps: List[PlanStep]
+
+# Define the ConversationMemory type
+@strawberry.type
+class ConversationMemory:
+    facts: List[str]
+    arguments: List[str]
+    decisions: List[str]
+    direct_replies: List[str]
+    recommended_actions: List[str]
+    to_do_list: List[str]
+    completed_tasks: List[str]
+    rounds_left: int
+    decided_output_type: Optional[str]
+
+# Define the AgentCollaboration type
+@strawberry.type
+class AgentCollaboration:
+    agent_name: str
+    priority_score: float
+    contributions: List[str]
+    votes_cast: List[str]
+    questions_asked: List[str]
+
+# Define the ComplexityMetrics type
+@strawberry.type
+class ComplexityMetrics:
+    overall_score: float
+    reasoning_depth: float
+    solution_complexity: float
+    collaboration_intensity: float
+    confidence_level: float
+
+# Define the ProcessingStatus type
+@strawberry.type
+class ProcessingStatus:
+    current_round: int
+    total_rounds: int
+    current_step: str
+    progress_percentage: float
+    estimated_time_remaining: Optional[int]
+
 # Define the response types for running a conversation
 @strawberry.type
 class RunConversationResponse:
     conversation: List[Conversation]
     questions: Optional[List[Question]]
-    final_output : str
+    final_output: str
+    plan: Optional[Plan]
+    conversation_memory: Optional[ConversationMemory]
+    agent_collaboration: List[AgentCollaboration]
+    complexity_metrics: Optional[ComplexityMetrics]
+    processing_status: Optional[ProcessingStatus]
 
 # Define the response type for submitting feedback
 @strawberry.type
@@ -61,8 +135,7 @@ class Query:
 
 # Define the root Mutation class
 @strawberry.type
-class Mutation:
-    @strawberry.mutation
+class Mutation:    @strawberry.mutation
     def run_conversation(self, conversation: List[ConversationInput], assistant_personalities: List[str], leadPersonality: str, num_rounds: int) -> RunConversationResponse:
         from conversation_manager import run_conversation
         for c in conversation:
@@ -76,7 +149,7 @@ class Mutation:
         print("in schema: ", conversation_dicts, "type:", type(conversation_dicts))  # Debug this to ensure you are receiving a proper list
         
         # You should pass the structured data directly into run_conversation.
-        result = run_conversation(conversation_dicts, assistant_personalities,leadPersonality, num_rounds)
+        result = run_conversation(conversation_dicts, assistant_personalities, leadPersonality, num_rounds)
 
         conversation_history, questions_asked, final_output = result
         print(conversation_history)
@@ -87,10 +160,17 @@ class Mutation:
             for entry in conversation_history
         ]
 
+        # TODO: Extract additional data structures from conversation_manager
+        # For now, return basic structure with placeholders for new fields
         return RunConversationResponse(
             conversation=conversation_objs,
             questions=questions_asked,
-            final_output = final_output
+            final_output=final_output,
+            plan=None,  # TODO: Extract from conversation_manager
+            conversation_memory=None,  # TODO: Extract from conversation_manager
+            agent_collaboration=[],  # TODO: Extract from conversation_manager
+            complexity_metrics=None,  # TODO: Extract from conversation_manager
+            processing_status=None  # TODO: Extract from conversation_manager
         )
 
 

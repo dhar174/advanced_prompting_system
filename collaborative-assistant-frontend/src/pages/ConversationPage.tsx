@@ -5,9 +5,23 @@ import ChatInput from '../components/ChatInput';
 // import MessageBubble from '../components/MessageBubble';
 import ConversationDisplay from '../components/ConversationDisplay';
 import FeedbackDisplay from '../components/FeedbackDisplay';
+import { PlanDisplay } from '../components/PlanDisplay';
+import { ConversationMemoryDisplay } from '../components/ConversationMemoryDisplay';
+import { AgentCollaborationDisplay } from '../components/AgentCollaborationDisplay';
+import { ComplexityMetricsDisplay } from '../components/ComplexityMetricsDisplay';
+import { ProcessingStatusDisplay } from '../components/ProcessingStatusDisplay';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { useRunConversation } from '../hooks/useRunConversation';
-import type { ConversationInputType, ConversationType, QuestionType } from '../graphql/graphqlTypes';
+import type { 
+  ConversationInputType, 
+  ConversationType, 
+  QuestionType,
+  PlanType,
+  ConversationMemoryType,
+  AgentCollaborationType,
+  ComplexityMetricsType,
+  ProcessingStatusType
+} from '../graphql/graphqlTypes';
 import toast from 'react-hot-toast';
 
 const AVAILABLE_PERSONALITIES = ['Helpful Assistant', 'Sarcastic Assistant', 'Domain Expert', 'Creative Writer', 'Code Generator', 'Summarizer'];
