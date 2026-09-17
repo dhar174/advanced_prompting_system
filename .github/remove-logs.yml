@@ -1,0 +1,35 @@
+name: Delete Debug Complexity Logs
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup-debug-logs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find and delete files
+        run: |
+          # Find tracked files starting with 'debug_log_complexity' and remove them
+          find . -type f -name "debug_log_complexity*" -not -path "./.git/*" -exec git rm -f {} +
+
+      - name: Commit and push changes
+        run: |
+          # Only commit if git rm staged any file deletions
+          if ! git diff --cached --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git commit -m "chore: purge debug_log_complexity files [skip ci]"
+            git push
+          else
+            echo "No matching debug log files found."
+          fi
