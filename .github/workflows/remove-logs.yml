@@ -1,9 +1,6 @@
 name: Delete Debug Complexity Logs
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
@@ -23,12 +20,12 @@ jobs:
           echo "=== Root directory contents ==="
           ls -la
           echo "=== Glob search in root ==="
-          ls -d ./debug_log_complexity* 2>/dev/null || echo "No direct match found via glob"
+          ls -d ./logging_debug_log_complexity* 2>/dev/null || echo "No direct match found via glob"
 
       - name: Delete matched files
         run: |
           # 1. Match both tracked and untracked/ignored files case-insensitively
-          find . -maxdepth 1 -type f -iname 'debug_log_complexity*' | while IFS= read -r file; do
+          find . -maxdepth 1 -type f -iname 'logging_debug_log_complexity*' | while IFS= read -r file; do
             echo "Deleting: $file"
             # Remove from git index if tracked, otherwise regular rm
             git rm -f --ignore-unmatch "$file" 2>/dev/null || rm -f "$file"
