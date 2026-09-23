@@ -1316,7 +1316,7 @@ class TestAdvancedPromptingAdapterMethods(unittest.TestCase):
             mock_determine.assert_called_once_with(f"Output path: {dummy_path}", dummy_path, self.mock_task)
 
     @patch('advanced_prompting.AdvancedPromptEngineer.convert_conversation_output_to_final_step_output')
-    @patch('advanced_prompting.run_conversation') 
+    @patch('conversation_manager.run_conversation') 
     @patch('advanced_prompting.AdvancedPromptEngineer.select_personalities_for_planstep')
     def test_invoke_collaborative_reasoning(self, mock_select_personalities, mock_run_conversation, mock_convert_output):
         mock_select_personalities.return_value = ["Strategist", "Educator"]

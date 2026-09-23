@@ -58,7 +58,13 @@ class TestGraphQLContract(unittest.TestCase):
                     "content": "Test response",
                 }
             ],
-            [],
+            [
+                {
+                    "assistant": "Educator",
+                    "reply": "What is the expected complexity?",
+                    "asking_assistant": "Strategist",
+                }
+            ],
             "Test final output",
         )
 
@@ -77,7 +83,12 @@ class TestGraphQLContract(unittest.TestCase):
                         "content": "Test response",
                     }
                 ],
-                "questions": [],
+                "questions": [
+                    {
+                        "assistant": "Educator",
+                        "question": "What is the expected complexity?",
+                    }
+                ],
                 "finalOutput": "Test final output",
             }
         }

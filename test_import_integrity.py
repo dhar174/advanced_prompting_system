@@ -26,12 +26,19 @@ class TestConversationManagerImportIntegrity(unittest.TestCase):
             self.fail(f"conversation_manager.py has syntax errors: {e}")
 
     def test_import_succeeds(self):
-        """conversation_manager module must import without errors."""
-        try:
-            module = sys.modules.get("conversation_manager") or importlib.import_module("conversation_manager")
-            self.assertIsNotNone(module)
-        except Exception as e:
-            self.fail(f"conversation_manager failed to import: {e}")
+        """conversation_manager module must import cleanly in an isolated clean process."""
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, "-c", "import conversation_manager"],
+            cwd=os.path.dirname(__file__),
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"Clean-process import of conversation_manager failed with code {result.returncode}:\nstdout: {result.stdout}\nstderr: {result.stderr}",
+        )
 
     def test_output_type_exists(self):
         """OutputType class must be available after import."""

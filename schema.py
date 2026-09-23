@@ -87,10 +87,18 @@ class Mutation:
             for entry in conversation_history
         ]
 
+        question_objs = [
+            Question(
+                assistant=q.get("assistant", ""),
+                question=q.get("question") or q.get("reply") or "",
+            )
+            for q in questions_asked
+        ]
+
         return RunConversationResponse(
             conversation=conversation_objs,
-            questions=questions_asked,
-            final_output = final_output
+            questions=question_objs,
+            final_output=final_output,
         )
 
 

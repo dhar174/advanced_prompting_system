@@ -99,11 +99,9 @@ def normalize_message(value: Any, default_role: str = 'assistant', default_name:
     if isinstance(value, str):
         return {'role': default_role, 'content': value, 'name': default_name}
     if isinstance(value, ErrorResult) or (hasattr(value, 'error_message') and hasattr(value, 'error_type')):
-        return {
-            'role': 'system',
-            'content': f'Error: {getattr(value, "error_message", "")}',
-            'name': 'error',
-        }
+        raise ValueError(
+            f"Cannot normalize ErrorResult as a valid conversation message: {getattr(value, 'error_message', str(value))}"
+        )
     # Handle ConversationInput or other model objects
     if hasattr(value, 'content'):
         return {
@@ -1093,8 +1091,7 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
         print(
             f"\nConsensus Problem Statement Confirmed with majority vote, {yes_votes} to {no_votes}: {best_definition['definition']}\n"
         )
-        return best_definition["definition"]
-    elif yes_votes > no_votes and no_votes > 0 and no_votes >= (yes_votes / 2):
+    else:
         # If the consensus is not confirmed, ask the assistants to vote again on the revised problem statement after all no-voters have provided feedback
         print(
             f"\nConsensus Problem Statement Not Confirmed: {best_definition['definition']}. Voting again after feedback.\n"
@@ -1173,55 +1170,54 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
             best_definition["definition"] = safe_get_message_field(mediator_response, 'content', 'Default problem definition')
 
         # Ask the assistants to vote again on the revised problem statement
+        revised_bin_vote_prompt = "Please cast a binary vote to confirm the revised problem statement. Respond with a boolean value (True/False) only."
+        revised_yes_votes = 0
+        revised_no_votes = 0
+        revised_voting_errors = 0
         for assistant_name, assistant_prompt in selected_personalities.items():
-            revised_bin_vote_prompt = "Please cast a binary vote to confirm the revised problem statement. Respond with a boolean value (True/False) only."
-            revised_yes_votes = 0
-            revised_no_votes = 0
-            revised_voting_errors = 0
-            for assistant_name, assistant_prompt in selected_personalities.items():
-                revised_consensus_messages = [
-                    {
-                        "role": "system",
-                        "content": f"{assistant_prompt} Please review the revised problem statement and cast your vote to confirm it.",
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Please cast your vote to confirm the revised problem statement:\n\n{best_definition['definition']}",
-                    },
-                    {
-                        "role": "system",
-                        "content": f"Revised Problem Statement: {best_definition['definition']}",
-                    },
-                ]
-                revised_binary_vote = cast_binary_vote(
-                    assistant_name, revised_consensus_messages, revised_bin_vote_prompt
-                )
-                if isinstance(revised_binary_vote, BinaryVote):
-                    if revised_binary_vote.vote:
-                        revised_yes_votes += 1
-                    else:
-                        revised_no_votes += 1
+            revised_consensus_messages = [
+                {
+                    "role": "system",
+                    "content": f"{assistant_prompt} Please review the revised problem statement and cast your vote to confirm it.",
+                },
+                {
+                    "role": "user",
+                    "content": f"Please cast your vote to confirm the revised problem statement:\n\n{best_definition['definition']}",
+                },
+                {
+                    "role": "system",
+                    "content": f"Revised Problem Statement: {best_definition['definition']}",
+                },
+            ]
+            revised_binary_vote = cast_binary_vote(
+                assistant_name, revised_consensus_messages, revised_bin_vote_prompt
+            )
+            if isinstance(revised_binary_vote, BinaryVote):
+                if revised_binary_vote.vote:
+                    revised_yes_votes += 1
                 else:
-                    revised_voting_errors += 1
-            # Check if the revised problem statement is confirmed
-            if revised_yes_votes > revised_no_votes and revised_no_votes == 0:
-                print(
-                    f"\nRevised Consensus Problem Statement Confirmed with full consensus: {best_definition['definition']}\n"
-                )
-                return best_definition["definition"]
-            elif (
-                revised_yes_votes > revised_no_votes
-                and revised_no_votes > 0
-                and revised_no_votes < (revised_yes_votes / 2)
-            ):
-                print(
-                    f"\nRevised Consensus Problem Statement Confirmed with majority vote, {revised_yes_votes} to {revised_no_votes}: {best_definition['definition']}\n"
-                )
-                return best_definition["definition"]
+                    revised_no_votes += 1
             else:
-                raise Exception(
-                    "Consensus not reached on the revised problem statement."
-                )
+                revised_voting_errors += 1
+        # Check if the revised problem statement is confirmed
+        if revised_yes_votes > revised_no_votes and revised_no_votes == 0:
+            print(
+                f"\nRevised Consensus Problem Statement Confirmed with full consensus: {best_definition['definition']}\n"
+            )
+            return best_definition["definition"]
+        elif (
+            revised_yes_votes > revised_no_votes
+            and revised_no_votes > 0
+            and revised_no_votes < (revised_yes_votes / 2)
+        ):
+            print(
+                f"\nRevised Consensus Problem Statement Confirmed with majority vote, {revised_yes_votes} to {revised_no_votes}: {best_definition['definition']}\n"
+            )
+            return best_definition["definition"]
+        else:
+            raise Exception(
+                "Consensus not reached on the revised problem statement."
+            )
 
 
 def output_type_determination(response) -> Union[OutputType, ErrorResult]:
@@ -2059,6 +2055,26 @@ def final_output_correction(
         return f"Error: {str(e)}"
 
 
+def match_output_type_to_sample(output_type_str: str) -> str:
+    """Find the best match from output_type_samples using Jaro-Winkler with deterministic fallback."""
+    o_types = list(output_type_samples.keys())
+    best_match = None
+    best_score = 0.0
+    for o_type in o_types:
+        score = jarowinkler_similarity(output_type_str, o_type)
+        if score > best_score:
+            best_score = score
+            best_match = o_type
+
+    if best_match is None or best_score < MINIMUM_SIMILARITY_THRESHOLD:
+        print(f"Warning: No good matches found for output type '{output_type_str}' (best score: {best_score})")
+        if DEFAULT_FALLBACK_OUTPUT_TYPE not in output_type_samples:
+            raise ValueError(f"Default fallback output type '{DEFAULT_FALLBACK_OUTPUT_TYPE}' not found in output_type_samples")
+        return DEFAULT_FALLBACK_OUTPUT_TYPE
+
+    return best_match
+
+
 def analyze_final_output(
     final_output,
     lead_personality,
@@ -2080,30 +2096,8 @@ def analyze_final_output(
     Returns:
         final_output (str): The revised final output that meets the criteria.
 
-    """    # for type_of_output, find best match from the output_type_samples using regex
-    o_types = list(output_type_samples.keys())
-    best_match = None
-    best_score = 0
-    for o_type in o_types:
-        score = jarowinkler_similarity(output_type.output_type, o_type)
-        if score > best_score:
-            best_score = score
-            best_match = o_type
-    
-    # Handle case where no matches are found (all scores are 0) or similarity is too low
-    if best_match is None or best_score < MINIMUM_SIMILARITY_THRESHOLD:
-        print(f"Warning: No good matches found for output type '{output_type.output_type}' (best score: {best_score})")
-        print(f"Available output types: {list(o_types)}")
-        
-        # Validate that our fallback exists in the samples
-        if DEFAULT_FALLBACK_OUTPUT_TYPE not in output_type_samples:
-            raise ValueError(f"Default fallback output type '{DEFAULT_FALLBACK_OUTPUT_TYPE}' not found in output_type_samples")
-        
-        best_match = DEFAULT_FALLBACK_OUTPUT_TYPE
-        print(f"Falling back to: {best_match}")
-    else:
-        print(f"Found match for output type '{output_type.output_type}': {best_match} (score: {best_score:.3f})")
-    
+    """
+    best_match = match_output_type_to_sample(output_type.output_type)
     output_type_short = output_type_samples[best_match]
     sample_original_prompt = output_type_short["sample_original_prompt"]
     sample_problem_statement = output_type_short["sample_problem_statement"]
@@ -2451,13 +2445,20 @@ def run_conversation(
     # test = test_finalize_output(final_output_response, "py")
     # print(test)
     # exit()
+    if isinstance(selected_personalities, dict):
+        personalities_for_problem = dict(selected_personalities)
+    elif isinstance(selected_personalities, (list, tuple, set)):
+        personalities_for_problem = {
+            p: assistant_personalities.get(p, f"You are a helpful assistant acting as {p}.")
+            for p in selected_personalities
+        }
+    else:
+        personalities_for_problem = dict(assistant_personalities)
+    assistant_personalities.update(personalities_for_problem)
+
     problem_definition = define_problem(
         original_prompt,
-        {
-            assistant_name: assistant_prompt
-            for assistant_name, assistant_prompt in assistant_personalities.items()
-            if assistant_name in selected_personalities
-        },
+        personalities_for_problem,
     )
     conversation_history = [
         {
@@ -2683,10 +2684,12 @@ def run_conversation(
                     )
                 conversation_memory.direct_replies = {}
 
-        conversation_memory = analyze_to_do_list(
+        todo_analysis = analyze_to_do_list(
             conversation_memory,
             [msg for msg in conversation_history if msg["round"] == rnd],
         )
+        if isinstance(todo_analysis, ConversationMemory):
+            conversation_memory = todo_analysis
         print(
             f"\nMemory Summary in Round {rnd}: {conversation_memory.get_memory_summary()}\n"
         )
@@ -2776,10 +2779,12 @@ def run_conversation(
         # Clear questions after handling
 
         print(f"\n\nQuestions Asked in Round {rnd}: {questions_asked}\n\n")
-        conversation_memory = analyze_to_do_list(
+        todo_analysis_post = analyze_to_do_list(
             conversation_memory,
             [msg for msg in conversation_history if msg["round"] == rnd],
         )
+        if isinstance(todo_analysis_post, ConversationMemory):
+            conversation_memory = todo_analysis_post
         print(
             f"\n\nMemory Summary in Round {rnd}: {conversation_memory.get_memory_summary()}\n\n"
         )
@@ -2865,13 +2870,13 @@ def run_conversation(
                 final_decision_messages.append(
                     {"role": "system", "content": final_decision_prompt}
                 )
-                for role, content in final_decision_messages:
+                for message in final_decision_messages:
                     conversation_history.append(
                         {
-                            "role": role,
+                            "role": message["role"],
                             "name": "Mediator",
                             "round": rnd,
-                            "content": content,
+                            "content": message["content"],
                         }
                     )
                 final_decision_response = get_assistant_response(
@@ -2892,6 +2897,7 @@ def run_conversation(
                 no_votes = 0
                 no_voters = []
                 voting_errors = 0
+                mediator_decision = None
                 summary = summarize_conversation(conversation_history)
 
                 for assistant_name, _ in assistant_priorities:
@@ -3276,7 +3282,7 @@ def run_conversation(
                     except Exception as e:
                         print(f"✗ Unexpected error saving conversation history: {e}")
                         print("⚠️  Conversation data may be lost.")
-                elif not mediator_decision.keep_output:
+                elif mediator_decision is not None and not mediator_decision.keep_output:
                     # Use mediator_decision.final_decision as the new final decision
                     final_decision_response["content"] = (
                         mediator_decision.final_decision
@@ -3347,6 +3353,70 @@ def run_conversation(
                             "round": rnd,
                             "content": f"Final Output: {final_output}",
                             }
+                    )
+                elif mediator_decision is not None and mediator_decision.keep_output:
+                    # Emergency or tie-breaker mediator decided to keep the proposed decision
+                    conversation_history.append(
+                        {
+                            "role": "system",
+                            "name": mediator_name,
+                            "round": rnd,
+                            "content": f"Final Decision: {safe_get_message_field(final_decision_response, 'content', 'No decision content')} (Confirmed by Mediator)",
+                        }
+                    )
+                    final_content_prompt = "Based on the final decision or solution provided by the assistant who called for the final vote, please generate the final output content that fulfills the problem statement and the user's needs. This means creating the final output content based on the decision or solution provided, ensuring it aligns with the problem statement and the conversation so far and meets the user's requirements and expectations. For instance, if the final decision is a text answer, generate the text answer. If it's a code snippet, generate the code snippet. If it's a report, generate the report content. If it's a prototype, generate the prototype content. If it's structured data, generate the structured data content. If it's a technical document, generate the technical document content. Please provide the final output content that fulfills the problem statement and the user's needs based on the final decision or solution provided."
+                    final_content_messages = [
+                        {
+                            "role": "system",
+                            "content": final_content_prompt
+                            + f" The output type for the final decision is: {output_type.output_type} with file extension: {output_type.file_extension} and should solve the problem statement: {problem_definition} by following the final decision or solution provided by {final_vote_caller}.",
+                        },
+                        {
+                            "role": "user",
+                            "content": f"Please generate the final output content based on the final decision or solution provided by {final_vote_caller}:\n\n{safe_get_message_field(final_decision_response, 'content', 'No decision content')}. The problem statement it must completely solve is: {problem_definition}. The output you generate should be the final completion of the problem statement and the user's needs, and should not include any further steps or discussions but will represent the final output content that fulfills the problem statement and the user's needs ONLY.",
+                        },
+                    ]
+                    for message in final_content_messages:
+                        conversation_history.append(
+                            {
+                                "role": message["role"],
+                                "name": "Mediator",
+                                "round": rnd,
+                                "content": message["content"],
+                            }
+                        )
+
+                    final_output_response = get_assistant_response(
+                        lead_personality,
+                        assistant_personalities[lead_personality]
+                        + " "
+                        + final_content_prompt,
+                        conversation_history,
+                        None,
+                        conversation_memory,
+                    )
+                    print(
+                        f"\n\nFinal Output Response from {lead_personality}: {final_output_response}\n\n"
+                    )
+                    final_checked_output = analyze_final_output(
+                        safe_get_message_field(final_output_response, 'content', ''),
+                        lead_personality,
+                        selected_personalities,
+                        original_prompt,
+                        problem_definition,
+                        output_type,
+                    )
+                    print(f"\n\nFinal Checked Output: {final_checked_output}\n\n")
+
+                    final_output = finalize_output(final_checked_output, output_type)
+                    print(f"\n\nFinal Output filepath: {final_output}\n\n")
+                    conversation_history.append(
+                        {
+                            "role": "system",
+                            "name": lead_personality,
+                            "round": rnd,
+                            "content": f"Final Output: {final_output}",
+                        }
                     )
     try:
         filename = f"conversation_history_{str(datetime.now()).replace(':', '-').replace(' ', '_')}.json"

@@ -48,5 +48,23 @@ class TestRetrieval(unittest.TestCase):
         result = self.engineer.retrieve_information("task")
         self.assertEqual("", result)
 
+    def test_retrieval_propagates_into_generate_initial_prompt(self):
+        """Verify that retrieved information propagates into generate_initial_prompt."""
+        from advanced_prompting import OutputType
+        self.engineer.knowledge_base["sample task"] = "KNOWLEDGE_BASE_DATA"
+        self.mock_external_result = "EXTERNAL_API_DATA"
+        
+        retrieved = self.engineer.retrieve_information("sample task")
+        _, prompt = self.engineer.generate_initial_prompt(
+            task="sample task",
+            retrieved_info=retrieved,
+            step_budget=5,
+            complexity=1,
+            output_type=OutputType(output_type="text", file_extension=".txt"),
+        )
+
+        self.assertIn("KNOWLEDGE_BASE_DATA", prompt)
+        self.assertIn("EXTERNAL_API_DATA", prompt)
+
 if __name__ == "__main__":
     unittest.main()

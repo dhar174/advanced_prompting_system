@@ -29,23 +29,11 @@ class TestSmokeSuite(unittest.TestCase):
         """2. Verify output-type fallback returns configured default for unrelated type."""
         from conversation_manager import (
             DEFAULT_FALLBACK_OUTPUT_TYPE,
-            MINIMUM_SIMILARITY_THRESHOLD,
-            output_type_samples,
+            match_output_type_to_sample,
         )
-        from jarowinkler import jarowinkler_similarity
 
         unrelated_type = "999999999999999"
-        best_match = None
-        best_score = 0.0
-
-        for sample_type in output_type_samples:
-            score = jarowinkler_similarity(unrelated_type.lower(), sample_type.lower())
-            if score > best_score:
-                best_score = score
-                best_match = sample_type
-
-        # When similarity is below threshold, fallback is selected
-        selected_type = best_match if best_score >= MINIMUM_SIMILARITY_THRESHOLD else DEFAULT_FALLBACK_OUTPUT_TYPE
+        selected_type = match_output_type_to_sample(unrelated_type)
         self.assertEqual(selected_type, DEFAULT_FALLBACK_OUTPUT_TYPE)
 
     def test_3_file_generators_propagate_write_failures(self):
@@ -59,20 +47,28 @@ class TestSmokeSuite(unittest.TestCase):
                 generate_text_file_output("Some text", "fake_output.txt")
 
     def test_4_run_conversation_contract_mock_shape(self):
-        """4. Verify run_conversation contract shape is a 3-tuple in mocks/fixtures."""
+        """4. Verify run_conversation contract shape is a 3-tuple when executed with mocked LLM boundaries."""
         import conversation_manager
+        from conversation_manager import BinaryVote
 
-        # Production signature contract: (conversation_history, questions_asked, final_output)
-        mock_history = [{"role": "assistant", "name": "Strategist", "content": "plan"}]
-        mock_questions = []
-        mock_output = "path/to/final_output.txt"
-        production_tuple = (mock_history, mock_questions, mock_output)
+        with patch("conversation_manager.define_problem", return_value="Test problem statement"), \
+             patch("conversation_manager.cast_binary_vote", return_value=BinaryVote(vote=True, reason="OK")), \
+             patch("conversation_manager.get_assistant_response", return_value={"role": "assistant", "content": "Done"}), \
+             patch("conversation_manager.analyze_final_output", return_value="Checked output"), \
+             patch("conversation_manager.finalize_output", return_value="path/to/final_output.txt"), \
+             patch("builtins.open", mock_open()):
+            production_tuple = conversation_manager.run_conversation(
+                problem_statement="Test statement",
+                selected_personalities={"Strategist": "You are a strategist"},
+                lead_personality="Strategist",
+                num_rounds=1
+            )
 
         self.assertIsInstance(production_tuple, tuple)
         self.assertEqual(len(production_tuple), 3)
         self.assertIsInstance(production_tuple[0], list)
         self.assertIsInstance(production_tuple[1], list)
-        self.assertIsInstance(production_tuple[2], str)
+        self.assertEqual(production_tuple[2], "path/to/final_output.txt")
 
     def test_5_invoke_collaborative_reasoning_consumes_tuple(self):
         """5. AdvancedPromptEngineer.invoke_collaborative_reasoning consumes 3-tuple properly."""

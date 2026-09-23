@@ -14,123 +14,88 @@ import conversation_manager
 
 class TestVotingSemantics(unittest.TestCase):
 
-    @patch('conversation_manager.cast_binary_vote')
-    @patch('conversation_manager.get_assistant_response')
-    def test_all_yes_votes(self, mock_get_response, mock_cast_vote):
-        """Test that all YES votes result in consensus."""
-        # Setup mocks
-        mock_cast_vote.return_value = BinaryVote(vote=True, reason="Looks good")
-        mock_get_response.return_value = {"role": "assistant", "content": "Test"}
-        
-        # Test just the counting logic directly since it's embedded in the main loop
-        yes_votes = 0
-        no_votes = 0
-        voting_errors = 0
-        
-        votes = [
-            BinaryVote(vote=True, reason="1"),
-            BinaryVote(vote=True, reason="2"),
+    def test_cast_binary_vote_yes(self):
+        """Test that cast_binary_vote returns parsed BinaryVote(vote=True) on successful affirmative vote."""
+        mock_response = MagicMock()
+        mock_response.choices = [
+            MagicMock(message=MagicMock(parsed=BinaryVote(vote=True)))
         ]
-        
-        for v in votes:
-            if isinstance(v, BinaryVote):
-                if v.vote:
-                    yes_votes += 1
-                else:
-                    no_votes += 1
-            else:
-                voting_errors += 1
-                
-        self.assertEqual(yes_votes, 2)
-        self.assertEqual(no_votes, 0)
-        self.assertEqual(voting_errors, 0)
+        with patch.object(conversation_manager.client.beta.chat.completions, "parse", return_value=mock_response):
+            vote = conversation_manager.cast_binary_vote("Strategist", [], "Confirm?")
+        self.assertIsInstance(vote, BinaryVote)
+        self.assertTrue(vote.vote)
 
-    def test_all_no_votes(self):
-        """Test that all NO votes result in correct counts."""
-        yes_votes = 0
-        no_votes = 0
-        voting_errors = 0
-        
-        votes = [
-            BinaryVote(vote=False, reason="1"),
-            BinaryVote(vote=False, reason="2"),
+    def test_cast_binary_vote_no(self):
+        """Test that cast_binary_vote returns parsed BinaryVote(vote=False) on negative vote."""
+        mock_response = MagicMock()
+        mock_response.choices = [
+            MagicMock(message=MagicMock(parsed=BinaryVote(vote=False)))
         ]
-        
-        for v in votes:
-            if isinstance(v, BinaryVote):
-                if v.vote:
-                    yes_votes += 1
-                else:
-                    no_votes += 1
-            else:
-                voting_errors += 1
-                
-        self.assertEqual(yes_votes, 0)
-        self.assertEqual(no_votes, 2)
-        self.assertEqual(voting_errors, 0)
+        with patch.object(conversation_manager.client.beta.chat.completions, "parse", return_value=mock_response):
+            vote = conversation_manager.cast_binary_vote("Strategist", [], "Confirm?")
+        self.assertIsInstance(vote, BinaryVote)
+        self.assertFalse(vote.vote)
 
-    def test_binary_vote_false_truthiness(self):
-        """Test that BinaryVote(vote=False) is never counted as YES because it is truthy."""
-        yes_votes = 0
-        no_votes = 0
-        voting_errors = 0
-        
-        vote = BinaryVote(vote=False, reason="No")
-        
-        # Ensure it's truthy but doesn't increment yes_votes with correct semantics
-        self.assertTrue(bool(vote), "BinaryVote(vote=False) is a truthy object")
-        
-        if isinstance(vote, BinaryVote):
-            if vote.vote:
-                yes_votes += 1
-            else:
-                no_votes += 1
-        else:
-            voting_errors += 1
-            
-        self.assertEqual(yes_votes, 0)
-        self.assertEqual(no_votes, 1)
+    def test_cast_binary_vote_error_result(self):
+        """Test that cast_binary_vote catches exceptions and returns an ErrorResult."""
+        with patch.object(conversation_manager.client.beta.chat.completions, "parse", side_effect=RuntimeError("API error")):
+            result = conversation_manager.cast_binary_vote("Strategist", [], "Confirm?")
+        self.assertIsInstance(result, ErrorResult)
+        self.assertEqual(result.error_type, "LLMCallError")
+        self.assertIn("API error", result.error_details)
 
-    def test_error_result_not_yes(self):
-        """Test that ErrorResult is never counted as YES."""
-        yes_votes = 0
-        no_votes = 0
-        voting_errors = 0
-        
-        vote = ErrorResult(error_type="TestError", error_message="Fail")
-        
-        if isinstance(vote, BinaryVote):
-            if vote.vote:
-                yes_votes += 1
-            else:
-                no_votes += 1
-        else:
-            voting_errors += 1
-            
-        self.assertEqual(yes_votes, 0)
-        self.assertEqual(no_votes, 0)
-        self.assertEqual(voting_errors, 1)
+    def test_define_problem_all_yes_votes(self):
+        """Test that define_problem reaches consensus without revision when all binary votes are YES."""
+        from conversation_manager import ConfidenceVote
+        mock_llm_response = MagicMock()
+        mock_llm_response.choices = [MagicMock(message=MagicMock(content="Proposed problem statement"))]
 
-    def test_error_votes_not_double_counted(self):
-        """Test that ErrorResult increments voting_errors but not no_votes/continue_votes."""
-        continue_votes = 0
-        end_votes = 0
-        voting_errors = 0
-        
-        vote = ErrorResult(error_type="TestError", error_message="Fail")
-        
-        if isinstance(vote, BinaryVote):
-            if vote.vote:
-                continue_votes += 1
-            else:
-                end_votes += 1
-        else:
-            voting_errors += 1
-            # Note: Previously there was a double count here with continue_votes += 1
-            
-        self.assertEqual(continue_votes, 0)
-        self.assertEqual(end_votes, 0)
-        self.assertEqual(voting_errors, 1)
+        with patch.object(conversation_manager.client.chat.completions, "create", return_value=mock_llm_response), \
+             patch("conversation_manager.cast_confidence_vote", return_value=ConfidenceVote(confidence=0.9)), \
+             patch("conversation_manager.cast_binary_vote", return_value=BinaryVote(vote=True)), \
+             patch("conversation_manager.get_assistant_response") as mock_get_response:
+            result = conversation_manager.define_problem("Raw prompt", {"Strategist": "prompt"})
+            self.assertEqual(result, "Proposed problem statement")
+            # Revision should NOT be called since all votes were YES
+            mock_get_response.assert_not_called()
+
+    def test_define_problem_binary_vote_false_truthiness(self):
+        """Test that BinaryVote(vote=False) is never counted as YES despite being a truthy object."""
+        from conversation_manager import ConfidenceVote
+        mock_llm_response = MagicMock()
+        mock_llm_response.choices = [MagicMock(message=MagicMock(content="Original problem statement"))]
+
+        false_vote = BinaryVote(vote=False)
+        # Ensure it is truthy as a Pydantic object
+        self.assertTrue(bool(false_vote))
+
+        revision_reply = {"role": "assistant", "content": "Revision: Better problem statement"}
+
+        with patch.object(conversation_manager.client.chat.completions, "create", return_value=mock_llm_response), \
+             patch("conversation_manager.cast_confidence_vote", return_value=ConfidenceVote(confidence=0.9)), \
+             patch("conversation_manager.cast_binary_vote", side_effect=[false_vote, BinaryVote(vote=True)]), \
+             patch("conversation_manager.get_assistant_response", return_value=revision_reply) as mock_get_response:
+            result = conversation_manager.define_problem("Raw prompt", {"Strategist": "prompt"})
+            # Verify revision WAS invoked because vote=False was not counted as YES
+            self.assertTrue(mock_get_response.called)
+            self.assertEqual(result, "Better problem statement")
+
+    def test_define_problem_error_result_not_counted_as_yes(self):
+        """Test that ErrorResult is tracked as an error and never counted as YES."""
+        from conversation_manager import ConfidenceVote
+        mock_llm_response = MagicMock()
+        mock_llm_response.choices = [MagicMock(message=MagicMock(content="Original problem statement"))]
+
+        err_vote = ErrorResult(error_type="LLMCallError", error_message="Failed")
+
+        with patch.object(conversation_manager.client.chat.completions, "create", return_value=mock_llm_response), \
+             patch("conversation_manager.cast_confidence_vote", return_value=ConfidenceVote(confidence=0.9)), \
+             patch("conversation_manager.cast_binary_vote", return_value=err_vote), \
+             patch("conversation_manager.get_assistant_response") as mock_get_response:
+            # When all votes error out, define_problem detects zero valid votes and raises an exception
+            with self.assertRaises(Exception):
+                conversation_manager.define_problem("Raw prompt", {"Strategist": "prompt"})
+            mock_get_response.assert_not_called()
 
     def test_final_decision_messages_preserve_values(self):
         """Test that Final-decision messages preserve actual role and content values."""

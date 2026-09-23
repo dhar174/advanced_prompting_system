@@ -1505,23 +1505,40 @@ class Step(BaseModel):
     #     final_step_output (str): The final output generated at this step.
     # """
 
-    # def __init__(
-    #     self,
-    #     description: str,
-    #     step_number: int,
-    #     remaining_budget: int,
-    #     reflection: Reflection | None = None,
-    #     thoughts: str = None,
-    #     plan_step_number: int = None,
-    #     final_step_output: FinalStepOutput | None = None,
-    # ):
-    #     self.description = description
-    #     self.step_number = step_number
-    #     self.remaining_budget = remaining_budget
-    #     self.reflection = reflection
-    #     self.thoughts = thoughts
-    #     self.plan_step_number = plan_step_number
-    #     self.final_step_output = final_step_output
+    def __init__(
+        self,
+        description: str = "",
+        step_number: int = 1,
+        remaining_budget: int = 0,
+        reflection: Optional[Reflection] = None,
+        thoughts: Optional[str] = None,
+        plan_step_number: Optional[int] = None,
+        final_step_output: Optional[FinalStepOutput] = None,
+        **kwargs,
+    ):
+        super().__init__(
+            description=kwargs.get("description", description),
+            step_number=kwargs.get("step_number", step_number),
+            remaining_budget=kwargs.get("remaining_budget", remaining_budget),
+            reflection=kwargs.get("reflection", reflection),
+            thoughts=kwargs.get("thoughts", thoughts),
+            plan_step_number=kwargs.get("plan_step_number", plan_step_number),
+            final_step_output=kwargs.get("final_step_output", final_step_output),
+            **{
+                k: v
+                for k, v in kwargs.items()
+                if k
+                not in {
+                    "description",
+                    "step_number",
+                    "remaining_budget",
+                    "reflection",
+                    "thoughts",
+                    "plan_step_number",
+                    "final_step_output",
+                }
+            },
+        )
 
     def __repr__(self):
         return f"Step(description={self.description}, step_number={self.step_number}, remaining_budget={self.remaining_budget}, reflection={self.reflection})"
@@ -1975,8 +1992,16 @@ class AdvancedPromptEngineer:
             num_rounds=2 
         )
         
-        if not isinstance(result, tuple) or len(result) != 3:
-            raise ValueError(f"Expected run_conversation to return a 3-tuple, got {type(result)}")
+        if (
+            not isinstance(result, tuple)
+            or len(result) != 3
+            or not isinstance(result[0], list)
+            or not isinstance(result[1], list)
+            or not (result[2] is None or isinstance(result[2], str))
+        ):
+            raise ValueError(
+                f"Expected run_conversation to return a 3-tuple (List[dict], List[dict], Optional[str]), got {type(result)} with values {result}"
+            )
             
         conversation_history, questions_asked, final_output_path = result
         
@@ -2077,7 +2102,7 @@ class AdvancedPromptEngineer:
         # The 'Step' created here is a synthetic step representing the conversion process itself.
         # Its remaining_budget is set to 0 as it's an artifact, not a budgeted reasoning step.
         created_step = Step(
-            description=f"Converted output from conversation for plan step: {plan_step.description or 'N/A'}",
+            description=f"Converted output from conversation for: {plan_step.description}",
             step_number=step_number_for_conversion_step,
             remaining_budget=0, 
             plan_step_number=plan_step.step_number
@@ -4210,19 +4235,37 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
         restart_limit: int = 3,
         max_plan_steps: int = 0,
         **kwargs # To capture other potential arguments for self_consistency
-    ) -> FinalStepOutput: # Return type normalized to FinalStepOutput
+    ) -> Interaction:
         """
         Decides whether to use multi-agent or single-agent (self-consistency) reasoning.
+        Returns an Interaction object consistent with the main loop and self_consistency.
         """
         plan_step_num = plan_step.step_number
 
         if self.should_use_multi_agent_reasoning(plan_step, task):
             print_saver.print_and_store(f"Using multi-agent reasoning for plan step: {plan_step.step_name} (ID: {plan_step_num})")
-            # Note: invoke_collaborative_reasoning returns FinalStepOutput,
-            # but this method is expected to return Interaction if it follows the self_consistency path.
-            # This might require further refactoring or adjustment of return types/logic upstream.
-            # For now, returning as is, but this is a potential type mismatch.
-            return self.invoke_collaborative_reasoning(task, plan_step)
+            final_step_output = self.invoke_collaborative_reasoning(task, plan_step)
+            step = getattr(final_step_output, 'step', None) or Step(
+                description=plan_step.description or "",
+                step_number=step_number,
+                plan_step_number=plan_step_num,
+                thoughts="",
+                reflection=None,
+                remaining_budget=0,
+            )
+            reflection = Reflection(
+                content="Multi-agent collaborative reasoning completed.",
+                reward=1.0,
+                step_number=step.step_number,
+            )
+            return Interaction(
+                task=task,
+                steps=[step],
+                reflections=[reflection],
+                answer=getattr(final_step_output, 'final_output', "") or "",
+                final_reward=1.0,
+                step_outputs=[final_step_output] if final_step_output else [],
+            )
         else:
             print_saver.print_and_store(f"Using single-agent reasoning (self-consistency) for plan step: {plan_step.step_name} (ID: {plan_step_num})")
             
@@ -4263,23 +4306,7 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
                 consistency_multiplier=consistency_multiplier,
                 max_plan_steps=max_plan_steps
             )
-            
-            step = interaction.steps[-1] if interaction.steps else Step(
-                description=plan_step.description or "",
-                step_number=step_number,
-                plan_step_number=plan_step_num,
-                thoughts="",
-                reflection=""
-            )
-            
-            return FinalStepOutput(
-                final_output=interaction.answer or "",
-                output_type=output_type,
-                version=1,
-                component_type="self_consistency",
-                associated_plan_step=plan_step,
-                step=step
-            )
+            return interaction
 
     def refine_prompt_via_meta_prompt(
         self, performance_data: str
