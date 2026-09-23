@@ -24,7 +24,7 @@ except ImportError as e:
     print(f"❌ Import error: {e}")
     sys.exit(1)
 from jarowinkler import jarowinkler_similarity
-from schema import OutputType
+from conversation_manager import OutputType
 
 
 def test_output_type_matching():
@@ -113,6 +113,7 @@ def test_output_type_matching():
     else:
         print("❌ SOME TESTS FAILED! Please review the implementation.")
 
+    assert all_tests_passed, "Some output type matching tests failed"
     return all_tests_passed
 
 
@@ -144,19 +145,18 @@ def test_original_bug_scenario():
     # Fixed code does this:
     if best_match is None or best_score < MINIMUM_SIMILARITY_THRESHOLD:
         print("✅ Bug fix activated: Detected low/no similarity")
-        if DEFAULT_FALLBACK_OUTPUT_TYPE not in output_type_samples:
-            print("❌ Fallback type not available!")
-            return False
+        assert DEFAULT_FALLBACK_OUTPUT_TYPE in output_type_samples, "Fallback type not available!"
         best_match = DEFAULT_FALLBACK_OUTPUT_TYPE
         print(f"✅ Using safe fallback: {best_match}")
 
     try:
         output_type_short = output_type_samples[best_match]
         print("✅ Successfully accessed output_type_samples without KeyError")
+        assert output_type_short is not None
         return True
     except KeyError as e:
         print(f"❌ KeyError still occurred: {e}")
-        return False
+        assert False, f"KeyError still occurred: {e}"
 
 
 if __name__ == "__main__":

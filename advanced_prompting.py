@@ -15,7 +15,7 @@ import random
 from tqdm import tqdm
 from conversation_manager import output_type_determination, OutputType
 from pydantic import BaseModel, Field, ValidationError, field_validator
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Union
 import tiktoken
 import os
 import json # Added for JSON parsing
@@ -1897,6 +1897,8 @@ class AdvancedPromptEngineer:
         self.config = config
         self.knowledge_base = {}  # For Retrieval-Augmented Generation
         self.task_object = None
+        self.last_conversation_history = None
+        self.last_questions_asked = None
 
     def determine_output_type_from_content(self, content: str, file_path: str, task: Task) -> OutputType:
         """
@@ -1952,8 +1954,8 @@ class AdvancedPromptEngineer:
         """
         from conversation_manager import run_conversation # Import here to avoid circular dependencies at module level
 
-        # Ensure plan_step.description is a string, even if None
-        problem_description = plan_step.description if plan_step.description is not None else ""
+        # Ensure problem_description is a string, even if None
+        problem_description = getattr(plan_step, 'description', None) or getattr(plan_step, 'step_description', '') or ""
         problem_statement_for_conversation = [{"content": f"Step {plan_step.step_number}: {problem_description}"}]
         
         selected_personalities = self.select_personalities_for_planstep(plan_step, task)
@@ -1966,12 +1968,21 @@ class AdvancedPromptEngineer:
 
         # Call the conversation manager to run the multi-agent discussion
         # num_rounds is set to 2 as a default for this collaborative step.
-        final_output_path = run_conversation(
+        result = run_conversation(
             problem_statement=problem_statement_for_conversation,
             selected_personalities=selected_personalities,
             lead_personality=lead_personality,
             num_rounds=2 
         )
+        
+        if not isinstance(result, tuple) or len(result) != 3:
+            raise ValueError(f"Expected run_conversation to return a 3-tuple, got {type(result)}")
+            
+        conversation_history, questions_asked, final_output_path = result
+        
+        # Retain conversation metadata for auditing / introspection (Issue #29 & #20)
+        self.last_conversation_history = conversation_history
+        self.last_questions_asked = questions_asked
         
         # Convert the path/result of the conversation into a standard FinalStepOutput
         return self.convert_conversation_output_to_final_step_output(
@@ -1986,11 +1997,12 @@ class AdvancedPromptEngineer:
         """
         base_personalities = ["Strategist", "Educator"]
         
-        if plan_step.description is None:
+        desc = getattr(plan_step, 'description', None) or getattr(plan_step, 'step_description', None)
+        if desc is None:
             # If description is None, no keyword analysis can be done, return base (capped)
             return base_personalities[:min(len(base_personalities), 3)]
 
-        description_lower = plan_step.description.lower()
+        description_lower = desc.lower()
 
         if "code" in description_lower or "script" in description_lower or "python" in description_lower:
             if "Software Engineer" not in base_personalities:
@@ -3673,14 +3685,15 @@ class AdvancedPromptEngineer:
         ]
 
     def retrieve_information(self, task: str) -> str:
-        """
-        Combines internal knowledge base and external information.
-        """
-        # TODO: Implement actual retrieval of internal information
-        # internal_info = self.knowledge_base.get(task, "")
-        # external_info = self.retrieve_external_info(task)
-        # return f"{internal_info}\n{external_info}"
-        return ""
+        """Retrieve information from internal knowledge base and external sources."""
+        internal_info = self.knowledge_base.get(task, "")
+        try:
+            external_info = self.retrieve_external_info(task)
+        except Exception:
+            external_info = ""
+        # Combine available sources, filtering out empty strings
+        parts = [p for p in [internal_info, external_info] if p]
+        return "\n".join(parts)
 
     # -------------------------------
     # Chain-of-Thought (CoT) Prompting
@@ -4197,7 +4210,7 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
         restart_limit: int = 3,
         max_plan_steps: int = 0,
         **kwargs # To capture other potential arguments for self_consistency
-    ) -> Interaction | FinalStepOutput: # Return type can be Interaction or FinalStepOutput
+    ) -> FinalStepOutput: # Return type normalized to FinalStepOutput
         """
         Decides whether to use multi-agent or single-agent (self-consistency) reasoning.
         """
@@ -4220,8 +4233,8 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
             # TODO: Ensure system_prompt and initial_user_prompt are correctly sourced or constructed
             # For now, using placeholders or simplified versions.
             _system_prompt, initial_user_prompt = self.generate_initial_prompt(
-                task_description=task.refined_description, 
-                retrieved_info="", # Placeholder
+                task=task.refined_description, 
+                retrieved_info=self.retrieve_information(task.description),
                 step_budget=step_budget, 
                 complexity=task.complexity, 
                 output_type=output_type
@@ -4236,12 +4249,12 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
             backtrack_limit = kwargs.get('backtrack_limit', 3)
             consistency_multiplier = kwargs.get('consistency_multiplier', 3)
             
-            return self.self_consistency(
+            interaction = self.self_consistency(
                 task=task,
                 prompt=prompt_for_self_consistency, # Or potentially the combined prompt used in messages
                 existing_interaction=existing_interaction,
                 messages=messages_for_self_consistency, # Pass constructed messages
-                output_type=output_type.output_type, # Pass string representation
+                output_type=output_type,  # Pass full OutputType object
                 step_budget=step_budget,
                 step_number=step_number,
                 plan_step_number=plan_step_num,
@@ -4249,6 +4262,23 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
                 backtrack_limit=backtrack_limit,
                 consistency_multiplier=consistency_multiplier,
                 max_plan_steps=max_plan_steps
+            )
+            
+            step = interaction.steps[-1] if interaction.steps else Step(
+                description=plan_step.description or "",
+                step_number=step_number,
+                plan_step_number=plan_step_num,
+                thoughts="",
+                reflection=""
+            )
+            
+            return FinalStepOutput(
+                final_output=interaction.answer or "",
+                output_type=output_type,
+                version=1,
+                component_type="self_consistency",
+                associated_plan_step=plan_step,
+                step=step
             )
 
     def refine_prompt_via_meta_prompt(
@@ -6968,7 +6998,7 @@ Task: {task}
         prompt: str,
         existing_interaction: Interaction,
         messages: List[dict],
-        output_type: str,
+        output_type: Union[str, "OutputType"],  # Accept both string and OutputType object
         step_budget: int,
         step_number: int,
         plan_step_number: int,

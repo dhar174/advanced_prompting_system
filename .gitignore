@@ -406,3 +406,12 @@ logging_debug_log_complexity_2025-02-12 11:54:58.txt
 logging_debug_log_complexity_2025-02-12 13:13:49.txt
 .gitignore
 updated_exercises.ipynb
+
+# Generic ignore patterns
+logging_debug_log_complexity_*
+debug_log_complexity_*
+*.pyc
+__pycache__/
+.pytest_cache/
+node_modules/
+dist/

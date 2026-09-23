@@ -51,7 +51,7 @@ class LLMCallError(ConversationManagerError):
     """Exception raised when LLM API calls fail."""
     pass
 
-class ValidationError(ConversationManagerError):
+class ConversationValidationError(ConversationManagerError):
     """Exception raised when data validation fails."""
     pass
 
@@ -63,8 +63,6 @@ class ErrorResult(BaseModel):
     error_details: Optional[str] = Field(None, description="Additional error details")
     timestamp: datetime = Field(default_factory=datetime.now, description="When the error occurred")
 
-# Default fallback values for type safety
-DEFAULT_OUTPUT_TYPE = OutputType(output_type="simple_text", file_extension="txt")
 
 # Configuration constants for output type matching
 DEFAULT_FALLBACK_OUTPUT_TYPE = "Simple Concise Answer"
@@ -90,9 +88,37 @@ def validate_message_structure(msg: Dict[str, Any]) -> bool:
     required_fields = ['role', 'content']
     return all(field in msg for field in required_fields)
 
+def normalize_message(value: Any, default_role: str = 'assistant', default_name: str = '') -> Dict[str, Any]:
+    """Normalize a message from various sources into canonical dict shape."""
+    if isinstance(value, dict):
+        return {
+            'role': value.get('role', default_role),
+            'content': str(value.get('content', '')),
+            'name': value.get('name', default_name),
+        }
+    if isinstance(value, str):
+        return {'role': default_role, 'content': value, 'name': default_name}
+    if isinstance(value, ErrorResult) or (hasattr(value, 'error_message') and hasattr(value, 'error_type')):
+        return {
+            'role': 'system',
+            'content': f'Error: {getattr(value, "error_message", "")}',
+            'name': 'error',
+        }
+    # Handle ConversationInput or other model objects
+    if hasattr(value, 'content'):
+        return {
+            'role': getattr(value, 'role', default_role),
+            'content': str(value.content),
+            'name': getattr(value, 'name', default_name),
+        }
+    return {'role': default_role, 'content': str(value), 'name': default_name}
+
 class OutputType(BaseModel):
     output_type: str = Field(..., description="The type of output to generate.")
     file_extension: str = Field(..., description="The file extension for the output.")
+
+# Default fallback values for type safety
+DEFAULT_OUTPUT_TYPE = OutputType(output_type="simple_text", file_extension="txt")
 
 
 output_functions = [
@@ -223,48 +249,164 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 client = openai.OpenAI()
 
 
+class ArgumentItem(BaseModel):
+    round: int = Field(..., description="The round number when this argument was recorded.")
+    arguments: Union[str, List[str]] = Field(..., description="Argument statement or list of statements.")
+    speaker: Optional[str] = Field(None, description="Assistant or speaker name who presented the argument.")
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+
+class DecisionItem(BaseModel):
+    round: int = Field(..., description="The round number when this decision was established.")
+    decision: str = Field(..., description="The decision content.")
+    decided_by: Optional[str] = Field(None, description="Party or mediator who established the decision.")
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+
+class ToDoItem(BaseModel):
+    task: str = Field(..., description="Description of the task to be completed.")
+    status: str = Field("pending", description="Current status of the task ('pending', 'in_progress', 'completed').")
+    assigned_to: Optional[str] = Field(None, description="Assistant or role assigned to the task.")
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+    def __str__(self) -> str:
+        return self.task
+
+
 class ConversationMemory:
     def __init__(self, num_rounds: int = 3) -> None:
         self.facts: List[str] = []
-        self.arguments: List[Dict[str, Any]] = []  # [{"round": 1, "arguments": [argument1, argument2, ...]}]
-        self.decisions: List[Dict[str, Any]] = []  # [{"round": 1, "decision": decision1}]
-        self.direct_replies: Dict[str, str] = {}  # {"assistant_name": "reply"}
-        self.recommended_actions: List[str] = []  # [action1, action2, ...]
-        self.to_do_list: List[Any] = []  # [item1, item2, ...] # FIXME: Define a more specific type for to_do_list items
-        self.completed_tasks: Dict[str, str] = {}  # {"task": "completion"}
+        self.arguments: List[ArgumentItem] = []
+        self.decisions: List[DecisionItem] = []
+        self.direct_replies: Dict[str, str] = {}
+        self.recommended_actions: List[str] = []
+        self.to_do_list: List[ToDoItem] = []
+        self.completed_tasks: Dict[str, str] = {}
         self.rounds_left: int = num_rounds
-        self.decided_output_type: Optional[OutputType] = None # Changed to Optional[OutputType]
+        self.decided_output_type: Optional[OutputType] = None
 
-    def add_fact(self, fact: str) -> None:
-        if fact and fact not in self.facts:
-            self.facts.append(fact)
+    def add_fact(self, fact: Any) -> None:
+        if isinstance(fact, list):
+            for f in fact:
+                self.add_fact(f)
+            return
+        if fact and isinstance(fact, str):
+            fact_clean = fact.strip()
+            if fact_clean and fact_clean not in self.facts:
+                self.facts.append(fact_clean)
 
-    def add_argument(self, argument: Any, round_num: int) -> None: # FIXME: Define a more specific type for argument
-        if argument and argument not in self.arguments:
-            self.arguments.append({"round": round_num, "arguments": argument})
+    def add_argument(
+        self,
+        argument: Any,
+        round_num: int = 1,
+        speaker: Optional[str] = None,
+    ) -> None:
+        if not argument:
+            return
+        if isinstance(argument, list):
+            for arg in argument:
+                self.add_argument(arg, round_num=round_num, speaker=speaker)
+            return
+        if isinstance(argument, ArgumentItem):
+            item = argument
+        elif isinstance(argument, dict):
+            item = ArgumentItem(
+                round=argument.get("round", round_num),
+                arguments=argument.get("arguments", str(argument)),
+                speaker=argument.get("speaker", speaker),
+            )
+        else:
+            item = ArgumentItem(round=round_num, arguments=argument, speaker=speaker)
 
-    def add_decision(self, decision: Any, round_num: int) -> None: # FIXME: Define a more specific type for decision
-        if decision and decision not in self.decisions:
-            self.decisions.append({"round": round_num, "decision": decision})
+        if item not in self.arguments:
+            self.arguments.append(item)
+
+    def add_decision(
+        self,
+        decision: Any,
+        round_num: int = 1,
+        decided_by: Optional[str] = None,
+    ) -> None:
+        if not decision:
+            return
+        if isinstance(decision, list):
+            for dec in decision:
+                self.add_decision(dec, round_num=round_num, decided_by=decided_by)
+            return
+        if isinstance(decision, DecisionItem):
+            item = decision
+        elif isinstance(decision, dict):
+            item = DecisionItem(
+                round=decision.get("round", round_num),
+                decision=str(decision.get("decision", "")),
+                decided_by=decision.get("decided_by", decided_by),
+            )
+        else:
+            item = DecisionItem(round=round_num, decision=str(decision), decided_by=decided_by)
+
+        if item not in self.decisions:
+            self.decisions.append(item)
 
     def add_direct_reply(self, assistant_name: str, reply: str) -> None:
         if assistant_name and reply:
             self.direct_replies[assistant_name] = reply
 
-    def add_recommended_action(self, action: str) -> None:
+    def add_recommended_action(self, action: Any) -> None:
+        if isinstance(action, list):
+            for act in action:
+                self.add_recommended_action(act)
+            return
         if action and action not in self.recommended_actions:
             self.recommended_actions.append(action)
 
-    def add_to_do_item(self, item: Any) -> None: # FIXME: Define a more specific type for item
-        if item and item not in self.to_do_list:
-            self.to_do_list.append(item)
+    def add_to_do_item(
+        self,
+        item: Any,
+        assigned_to: Optional[str] = None,
+    ) -> None:
+        if not item:
+            return
+        if isinstance(item, ToDoItem):
+            if item not in self.to_do_list:
+                self.to_do_list.append(item)
+        elif isinstance(item, dict):
+            todo = ToDoItem(
+                task=str(item.get("task", "")),
+                status=item.get("status", "pending"),
+                assigned_to=item.get("assigned_to", assigned_to),
+            )
+            if todo not in self.to_do_list:
+                self.to_do_list.append(todo)
+        elif isinstance(item, list):
+            for sub_item in item:
+                self.add_to_do_item(sub_item, assigned_to=assigned_to)
+        else:
+            todo = ToDoItem(task=str(item), assigned_to=assigned_to)
+            if todo not in self.to_do_list:
+                self.to_do_list.append(todo)
 
-    def add_completed_task(self, task: str, completion: str) -> None:
-        if task and completion:
-            self.completed_tasks[task] = completion
-            # remove task from to do list
-            if task in self.to_do_list:
-                self.to_do_list.remove(task)
+    def add_completed_task(self, task: Union[str, ToDoItem], completion: str = "completed") -> None:
+        task_str = task.task if isinstance(task, ToDoItem) else str(task)
+        if task_str:
+            self.completed_tasks[task_str] = completion
+            for todo in self.to_do_list:
+                if todo.task == task_str or str(todo) == task_str:
+                    todo.status = "completed"
 
     def decrement_rounds_left(self) -> None:
         self.rounds_left -= 1
@@ -272,65 +414,173 @@ class ConversationMemory:
     def set_decided_output_type(self, output_type: OutputType) -> None:
         self.decided_output_type = output_type
 
-    def get_memory_summary(self) -> str:
-        summary = ""
-        if self.facts:
-            summary += (
-                "Known Facts:\n"
-                + "\n".join(f"- {fact}" for fact in self.facts)
-                + "\n\n"
+    def compact_memory(self, max_items_per_category: int = 10) -> None:
+        """Compact memory items in place, preserving newest facts/arguments and active decisions."""
+        if len(self.facts) > max_items_per_category:
+            self.facts = self.facts[-max_items_per_category:]
+        if len(self.arguments) > max_items_per_category:
+            self.arguments = self.arguments[-max_items_per_category:]
+        if len(self.recommended_actions) > max_items_per_category:
+            self.recommended_actions = self.recommended_actions[-max_items_per_category:]
+        pending_todos = [t for t in self.to_do_list if t.status != "completed"]
+        completed_todos = [t for t in self.to_do_list if t.status == "completed"]
+        if len(completed_todos) > 5:
+            completed_todos = completed_todos[-5:]
+        self.to_do_list = pending_todos + completed_todos
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize complete ConversationMemory state to a JSON-compatible dictionary."""
+        return {
+            "facts": list(self.facts),
+            "arguments": [
+                arg.model_dump() if hasattr(arg, "model_dump") else (arg.dict() if hasattr(arg, "dict") else dict(arg))
+                for arg in self.arguments
+            ],
+            "decisions": [
+                dec.model_dump() if hasattr(dec, "model_dump") else (dec.dict() if hasattr(dec, "dict") else dict(dec))
+                for dec in self.decisions
+            ],
+            "direct_replies": dict(self.direct_replies),
+            "recommended_actions": list(self.recommended_actions),
+            "to_do_list": [
+                todo.model_dump() if hasattr(todo, "model_dump") else (todo.dict() if hasattr(todo, "dict") else dict(todo))
+                for todo in self.to_do_list
+            ],
+            "completed_tasks": dict(self.completed_tasks),
+            "rounds_left": self.rounds_left,
+            "decided_output_type": (
+                self.decided_output_type.model_dump()
+                if hasattr(self.decided_output_type, "model_dump")
+                else (self.decided_output_type.dict() if hasattr(self.decided_output_type, "dict") else None)
+            ) if self.decided_output_type else None,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ConversationMemory":
+        """Deserialize a dictionary back into a fully-typed ConversationMemory instance."""
+        memory = cls(num_rounds=data.get("rounds_left", 3))
+        memory.facts = list(data.get("facts", []))
+        for arg in data.get("arguments", []):
+            if isinstance(arg, ArgumentItem):
+                memory.arguments.append(arg)
+            elif isinstance(arg, dict):
+                memory.arguments.append(ArgumentItem(**arg))
+        for dec in data.get("decisions", []):
+            if isinstance(dec, DecisionItem):
+                memory.decisions.append(dec)
+            elif isinstance(dec, dict):
+                memory.decisions.append(DecisionItem(**dec))
+        memory.direct_replies = dict(data.get("direct_replies", {}))
+        memory.recommended_actions = list(data.get("recommended_actions", []))
+        for todo in data.get("to_do_list", []):
+            if isinstance(todo, ToDoItem):
+                memory.to_do_list.append(todo)
+            elif isinstance(todo, dict):
+                memory.to_do_list.append(ToDoItem(**todo))
+            elif isinstance(todo, str):
+                memory.to_do_list.append(ToDoItem(task=todo))
+        memory.completed_tasks = dict(data.get("completed_tasks", {}))
+        memory.rounds_left = data.get("rounds_left", memory.rounds_left)
+        output_type_data = data.get("decided_output_type")
+        if output_type_data:
+            if isinstance(output_type_data, OutputType):
+                memory.decided_output_type = output_type_data
+            elif isinstance(output_type_data, dict):
+                memory.decided_output_type = OutputType(**output_type_data)
+        return memory
+
+    def get_memory_summary(
+        self,
+        max_tokens: Optional[int] = None,
+        max_items_per_category: Optional[int] = None,
+    ) -> str:
+        summary_sections = []
+
+        facts_list = self.facts
+        if max_items_per_category and len(facts_list) > max_items_per_category:
+            omitted = len(facts_list) - max_items_per_category
+            facts_list = facts_list[-max_items_per_category:]
+            summary_sections.append(
+                f"Known Facts (latest {max_items_per_category}, {omitted} earlier omitted):\n"
+                + "\n".join(f"- {fact}" for fact in facts_list)
             )
-        if self.arguments:
-            summary += (
-                "Arguments:\n"
-                + "\n".join(f"- {arg['arguments']}" for arg in self.arguments)
-                + "\n\n"
+        elif facts_list:
+            summary_sections.append(
+                "Known Facts:\n" + "\n".join(f"- {fact}" for fact in facts_list)
             )
+
+        args_list = self.arguments
+        if max_items_per_category and len(args_list) > max_items_per_category:
+            omitted = len(args_list) - max_items_per_category
+            args_list = args_list[-max_items_per_category:]
+            formatted_args = []
+            for arg in args_list:
+                val = arg.arguments if hasattr(arg, "arguments") else arg.get("arguments", str(arg))
+                formatted_args.append(f"- {val}")
+            summary_sections.append(
+                f"Arguments (latest {max_items_per_category}, {omitted} earlier omitted):\n"
+                + "\n".join(formatted_args)
+            )
+        elif args_list:
+            formatted_args = []
+            for arg in args_list:
+                val = arg.arguments if hasattr(arg, "arguments") else arg.get("arguments", str(arg))
+                formatted_args.append(f"- {val}")
+            summary_sections.append("Arguments:\n" + "\n".join(formatted_args))
+
         if self.decisions:
-            summary += (
-                "Decisions:\n"
-                + "\n".join(f"- {decision['decision']}" for decision in self.decisions)
-                + "\n\n"
+            formatted_decisions = []
+            for dec in self.decisions:
+                val = dec.decision if hasattr(dec, "decision") else dec.get("decision", str(dec))
+                formatted_decisions.append(f"- {val}")
+            summary_sections.append("Decisions:\n" + "\n".join(formatted_decisions))
+
+        actions_list = self.recommended_actions
+        if max_items_per_category and len(actions_list) > max_items_per_category:
+            actions_list = actions_list[-max_items_per_category:]
+        if actions_list:
+            summary_sections.append(
+                "Recommended Actions:\n" + "\n".join(f"- {action}" for action in actions_list)
             )
-        if self.recommended_actions:
-            summary += (
-                "Recommended Actions:\n"
-                + "\n".join(f"- {action}" for action in self.recommended_actions)
-                + "\n\n"
-            )
+
         if self.decided_output_type:
-            summary += f"Decided Output Type of Final Output: {self.decided_output_type.output_type}\n\n"
+            summary_sections.append(
+                f"Decided Output Type of Final Output: {self.decided_output_type.output_type}"
+            )
+
         if self.to_do_list:
-            # Convert completed tasks to a set of tuples
-            completed_tasks_set = {
-                tuple(task) if isinstance(task, list) else task
-                for task in self.completed_tasks
-            }
+            pending_items = []
+            for item in self.to_do_list:
+                task_str = item.task if hasattr(item, "task") else (item.get("task", str(item)) if isinstance(item, dict) else str(item))
+                status = item.status if hasattr(item, "status") else (item.get("status", "pending") if isinstance(item, dict) else "pending")
+                if status != "completed" and task_str not in self.completed_tasks:
+                    pending_items.append(f"- {task_str}")
+            if pending_items:
+                summary_sections.append("To Do List:\n" + "\n".join(pending_items))
 
-            # Filter to-do items
-            to_do_items = [
-                item
-                for item in self.to_do_list
-                if (tuple(item) if isinstance(item, list) else item)
-                not in completed_tasks_set
-            ]
+        if self.completed_tasks:
+            summary_sections.append(
+                "Completed Tasks:\n"
+                + "\n".join(f"- {task}: {comp}" for task, comp in self.completed_tasks.items())
+            )
 
-            # Ensure all items are lists
-            to_do_items = [
-                item if isinstance(item, list) else [item] for item in to_do_items
-            ]
+        summary_sections.append(
+            f"Rounds Left in Conversation to Complete Solution to Problem Statement: {self.rounds_left}"
+        )
 
-            # Join list items into strings and format them
-            to_do_items = [
-                f"- {', '.join(map(str, item)).replace('[', '').replace(']', '')}"
-                for item in to_do_items
-            ]            # Add to summary
-            summary += "To Do List:\n" + "\n".join(to_do_items) + "\n\n"
-        # TODO: Uncomment and implement completed tasks display when needed
-        #     summary += "Completed Tasks:\n" + "\n".join(f"- {completion}" for completion in self.completed_tasks) + "\n\n"
-        summary += f"Rounds Left in Conversation to Complete Solution to Problem Statement: {self.rounds_left}"
+        full_summary = "\n\n".join(summary_sections)
 
-        return summary
+        if max_tokens and len(full_summary) > max_tokens * 4:
+            core_sections = []
+            if self.decided_output_type:
+                core_sections.append(f"Decided Output Type: {self.decided_output_type.output_type}")
+            if self.decisions:
+                core_sections.append("Key Decisions:\n" + "\n".join(f"- {getattr(d, 'decision', str(d))}" for d in self.decisions[-3:]))
+            core_sections.append(f"Rounds Left: {self.rounds_left}")
+            truncated_summary = "[Summary Compacted due to token limit]\n\n" + "\n\n".join(core_sections)
+            return truncated_summary
+
+        return full_summary
 
 
 def is_question(response_content: str) -> bool:
@@ -685,6 +935,7 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
     yes_voters = []
     no_votes = 0
     no_voters = []
+    voting_errors = 0
     for assistant_name, assistant_prompt in selected_personalities.items():
         consensus_messages = [
             {
@@ -712,11 +963,11 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
             else:
                 no_votes += 1
                 no_voters.append(assistant_name)
-                print(f"\nNo Vote from {assistant_name} on the consensus problem statement.\n")        else:
+                print(f"\nNo Vote from {assistant_name} on the consensus problem statement.\n")
+        else:
             # Handle binary vote errors more gracefully
             print(f"⚠️  Error getting vote from {assistant_name}: {binary_vote}")
-            no_votes += 1  # Count errors as no votes for safety
-            no_voters.append(assistant_name)
+            voting_errors += 1
         
         # For no votes, ask the assistant to provide feedback on the problem statement  
         if isinstance(binary_vote, BinaryVote) and not binary_vote.vote:
@@ -760,11 +1011,12 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
                 f"\nRevision Response from {best_definition['assistant']}: {revision_response}\n"
             )
             # Update the problem statement based on the revision or, if justified, allow the assistant that cast the 'no' vote to vote again based on the justification
-            if revision_response["content"].startswith("Revision:"):
+            revision_content = safe_get_message_field(revision_response, 'content', '')
+            if revision_content.startswith("Revision:"):
                 best_definition["definition"] = (
-                    revision_response["content"].replace("Revision:", "").strip()
+                    revision_content.replace("Revision:", "").strip()
                 )
-            elif revision_response["content"].startswith("Justification:"):
+            elif revision_content.startswith("Justification:"):
                 # Ask the assistant to vote again based on the justification
                 justification_messages = [
                     {
@@ -774,7 +1026,8 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
                     {
                         "role": "user",
                         "content": f"Please cast your vote to confirm the consensus problem statement based on the justification provided by {best_definition['assistant']}:\n\n{safe_get_message_field(revision_response, 'content', 'No revision content')}",
-                    },                    {
+                    },
+                    {
                         "role": "system",
                         "content": f"Defined Problem Statement: {best_definition['definition']}, Justification: {safe_get_message_field(revision_response, 'content', 'No justification content')}",
                     },
@@ -782,17 +1035,20 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
                 binary_vote = cast_binary_vote(
                     assistant_name, justification_messages, bin_vote_prompt
                 )
-                if binary_vote:
-                    yes_votes += 1
-                    yes_voters.append(assistant_name)
-                    print(
-                        f"\nRevised Vote from {assistant_name} on the consensus problem statement.\n"
-                    )
+                if isinstance(binary_vote, BinaryVote):
+                    if binary_vote.vote:
+                        yes_votes += 1
+                        yes_voters.append(assistant_name)
+                        print(
+                            f"\nRevised Vote from {assistant_name} on the consensus problem statement.\n"
+                        )
+                    else:
+                        no_votes += 1
+                        no_voters.append(assistant_name)
+                        print(
+                            f"\nRepeat No Vote from {assistant_name} on the consensus problem statement.\n"                    )
                 else:
-                    no_votes += 1
-                    no_voters.append(assistant_name)
-                    print(
-                        f"\nRepeat No Vote from {assistant_name} on the consensus problem statement.\n"                    )
+                    voting_errors += 1
     
     # Check if the consensus problem statement is confirmed - Enhanced with edge case handling
     total_votes = yes_votes + no_votes
@@ -905,7 +1161,8 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
                 {
                     "role": "user",
                     "content": f"Please rewrite the problem statement based on the feedback provided by the assistants and the justification. The original prompt was:\n\n{problem_statement} and the revised problem statement was:\n\n{best_definition['definition']}",
-                },                {
+                },
+                {
                     "role": "user",
                     "content": f"Feedback from {best_definition['assistant']}: {safe_get_message_field(revision_response, 'content', 'No revision content')}\n\nFeedback from other assistants: {', '.join(safe_get_feedback_field(feedback, 'content', 'No feedback content') for feedback in feedbacks)}",
                 },
@@ -920,6 +1177,7 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
             revised_bin_vote_prompt = "Please cast a binary vote to confirm the revised problem statement. Respond with a boolean value (True/False) only."
             revised_yes_votes = 0
             revised_no_votes = 0
+            revised_voting_errors = 0
             for assistant_name, assistant_prompt in selected_personalities.items():
                 revised_consensus_messages = [
                     {
@@ -938,10 +1196,13 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
                 revised_binary_vote = cast_binary_vote(
                     assistant_name, revised_consensus_messages, revised_bin_vote_prompt
                 )
-                if revised_binary_vote:
-                    revised_yes_votes += 1
+                if isinstance(revised_binary_vote, BinaryVote):
+                    if revised_binary_vote.vote:
+                        revised_yes_votes += 1
+                    else:
+                        revised_no_votes += 1
                 else:
-                    revised_no_votes += 1
+                    revised_voting_errors += 1
             # Check if the revised problem statement is confirmed
             if revised_yes_votes > revised_no_votes and revised_no_votes == 0:
                 print(
@@ -1972,7 +2233,17 @@ class TaskList(BaseModel):
 
 def analyze_to_do_list(conversation_memory, conversation_history):
     # Extract the to-do list from the conversation memory
-    to_do_list = ", ".join(" ".join(task) for task in conversation_memory.to_do_list)
+    to_do_items_str = []
+    for task in conversation_memory.to_do_list:
+        if isinstance(task, ToDoItem):
+            to_do_items_str.append(task.task)
+        elif isinstance(task, list):
+            to_do_items_str.append(" ".join(str(t) for t in task))
+        elif isinstance(task, dict):
+            to_do_items_str.append(task.get("task", str(task)))
+        else:
+            to_do_items_str.append(str(task))
+    to_do_list = ", ".join(to_do_items_str)
     if not to_do_list:
         return "No to-do items were identified in the conversation memory."
     # Prepare the messages for the assistant
@@ -1992,7 +2263,7 @@ def analyze_to_do_list(conversation_memory, conversation_history):
         {"role": "assistant", "content": f"{output_analysis}"},
         {
             "role": "user",
-            "content": f"Great work, thanks! Now for the real one: To-Do List:\n{', '.join(to_do_list)}, and the conversation history: {', '.join([safe_get_message_field(msg, 'name', 'Unknown')+': '+ safe_get_message_field(msg, 'content', 'No content') for msg in conversation_history if validate_message_structure(msg)])}",
+            "content": f"Great work, thanks! Now for the real one: To-Do List:\n{to_do_list}, and the conversation history: {', '.join([safe_get_message_field(msg, 'name', 'Unknown')+': '+ safe_get_message_field(msg, 'content', 'No content') for msg in conversation_history if validate_message_structure(msg)])}",
         },
     ]
     # Make the API call to analyze the to-do list using structured outputs with beta.chat.completions.parse
@@ -2082,7 +2353,7 @@ def get_assistant_response(
             messages.append({"role": "user", "content": msg_content})
 
     if memory_summary != "":
-        messages.append(
+        messages.append({"role": "system", "content": f"Conversation memory summary: {memory_summary}"})
     if initial_prompt:
         messages.append({"role": "user", "content": initial_prompt})
 
@@ -2138,13 +2409,18 @@ class MediatorReviseOrDecide(BaseModel):
 def run_conversation(
     problem_statement, selected_personalities, lead_personality, num_rounds=3, context=None
 ):
-    if isinstance(problem_statement, list) and problem_statement and isinstance(problem_statement[0], dict) and "content" in problem_statement[0]:
-        original_prompt = problem_statement[0]["content"]
-    elif isinstance(problem_statement, str):
+    # Normalize problem_statement input
+    if isinstance(problem_statement, str):
         original_prompt = problem_statement
+    elif isinstance(problem_statement, list) and len(problem_statement) > 0:
+        if isinstance(problem_statement[0], dict):
+            original_prompt = problem_statement[0].get('content', str(problem_statement[0]))
+        else:
+            original_prompt = str(problem_statement[0])
+    elif isinstance(problem_statement, dict):
+        original_prompt = problem_statement.get('content', str(problem_statement))
     else:
-        # Fallback or error handling if problem_statement is not in expected format
-        original_prompt = str(problem_statement) # Or raise an error
+        original_prompt = str(problem_statement)
 
     original_prompt = (
         "The Primary User has provided the following prompt, from which the problem statement will be defined: "
@@ -2278,7 +2554,8 @@ def run_conversation(
                 )
                 # Extract the output type from the response
                 output_type = response.choices[0].message.parsed
-                print(f"\nMediator Output Type Decision: {output_type}\n")            except Exception as e:
+                print(f"\nMediator Output Type Decision: {output_type}\n")
+            except Exception as e:
                 # TODO: Implement better fallback strategy for output type determination
                 print(f"\nError in Mediator Output Type Decision: {str(e)}\n")
                 output_type = DEFAULT_OUTPUT_TYPE  # Use safe fallback instead of error string
@@ -2347,6 +2624,7 @@ def run_conversation(
             print(
                 f"\n \n Name: {mediator_name} \n Role: {safe_get_message_field(mediator_response, 'role', 'Unknown')} \n Response: {safe_get_message_field(mediator_response, 'content', 'No content')} \n"
             )
+            mediator_response = normalize_message(mediator_response, default_role="system")
             conversation_history.append(
                 {
                     "role": mediator_response["role"],
@@ -2373,24 +2651,15 @@ def run_conversation(
             print(
                 f"\n \n Name: {assistant_name} \n Role: {safe_get_message_field(assistant_response, 'role', 'Unknown')} \n Response: {safe_get_message_field(assistant_response, 'content', 'No content')} \n"
             )
-            # Convert `ConversationInput` to a dict if needed
-            if isinstance(assistant_response["content"], ConversationInput):
-                assistant_response["content"] = assistant_response["content"].content
-            # Ensure content is always extracted as a string
+            
+            assistant_response = normalize_message(assistant_response)
+            
             conversation_history.append(
                 {
-                    "role": (
-                        assistant_response["role"]
-                        if isinstance(assistant_response["role"], str)
-                        else str(assistant_response["role"])
-                    ),
+                    "role": assistant_response["role"],
                     "name": assistant_name,
                     "round": rnd,
-                    "content": (
-                        assistant_response["content"]
-                        if isinstance(assistant_response["content"], str)
-                        else str(assistant_response["content"])
-                    ),
+                    "content": assistant_response["content"],
                 }
             )
 
@@ -2442,9 +2711,7 @@ def run_conversation(
             f"\n Name: {mediator_name} \n Role: {safe_get_message_field(mediator_response, 'role', 'Unknown')} \n Response: {safe_get_message_field(mediator_response, 'content', 'No content')} \n"
         )
 
-        # Convert mediator response if needed
-        if isinstance(mediator_response["content"], ConversationInput):
-            mediator_response["content"] = mediator_response["content"].content
+        mediator_response = normalize_message(mediator_response, default_role="system")
         conversation_history.append(
             {
                 "role": mediator_response["role"],
@@ -2478,11 +2745,7 @@ def run_conversation(
                         },
                     )
 
-                    # Convert responder response if needed
-                    if isinstance(responder_response["content"], ConversationInput):
-                        responder_response["content"] = responder_response[
-                            "content"
-                        ].content
+                    responder_response = normalize_message(responder_response)
 
                     conversation_history.append(
                         {
@@ -2493,7 +2756,7 @@ def run_conversation(
                         }
                     )
                     print(
-                        f"\n Name: {q['asking_assistant']} is directing a question to {responder_name}. Question: {q['reply']} \n Role: {safe_get_message_field(responder_response, 'role', 'Unknown')} \n Response from {responder_name}: {safe_get_message_field(responder_response, 'content', 'No content')} \n \n"
+                        f"\n Name: {q['asking_assistant']} is directing a question to {responder_name}. Question: {q['reply']} \n Role: {responder_response['role']} \n Response from {responder_name}: {responder_response['content']} \n \n"
                     )
 
                     conversation_history.append(
@@ -2501,7 +2764,7 @@ def run_conversation(
                             "role": responder_response["role"],
                             "name": responder_response["name"],
                             "round": rnd,
-                            "content": f"In response to {q['asking_assistant']}: {safe_get_message_field(responder_response, 'content', 'No content')}",
+                            "content": f"In response to {q['asking_assistant']}: {responder_response['content']}",
                         }
                     )
                     conversation_memory = extract_information(
@@ -2555,8 +2818,6 @@ def run_conversation(
                         # Handle voting errors
                         print(f"⚠️  Error getting continue vote from {assistant_name}: {continue_vote}")
                         voting_errors += 1
-                        # Default to continue on error to avoid premature termination
-                        continue_votes += 1
                 
                 total_continue_votes = continue_votes + end_votes + voting_errors
                 print(f"📊 Continue Vote Results: {continue_votes} CONTINUE, {end_votes} END, {voting_errors} ERRORS")
@@ -2630,6 +2891,7 @@ def run_conversation(
                 yes_votes = 0
                 no_votes = 0
                 no_voters = []
+                voting_errors = 0
                 summary = summarize_conversation(conversation_history)
 
                 for assistant_name, _ in assistant_priorities:
@@ -2640,8 +2902,9 @@ def run_conversation(
                         },
                         {
                             "role": "user",
-                            "content": f"Here is a summary of the conversation so far:\n\n{summary}",
-                        },                        {
+                            "content": f"Conversation Summary: {summary}",
+                        },
+                        {
                             "role": "user",
                             "content": f"Please cast your vote to confirm the final decision or solution provided by {final_vote_caller}:\n\n{safe_get_message_field(final_decision_response, 'content', 'No decision content')}",
                         },
@@ -2649,7 +2912,8 @@ def run_conversation(
                             "role": "system",
                             "content": f"Final Decision: {safe_get_message_field(final_decision_response, 'content', 'No decision content')}",
                         },
-                    ]                    final_binary_vote = cast_binary_vote(
+                    ]
+                    final_binary_vote = cast_binary_vote(
                         assistant_name, final_vote_messages, final_vote_prompt
                     )
                     # Handle both successful votes and errors
@@ -2662,13 +2926,12 @@ def run_conversation(
                     else:
                         # Handle voting errors
                         print(f"⚠️  Error getting vote from {assistant_name}: {final_binary_vote}")
-                        no_votes += 1  # Count errors as no votes for safety
-                        no_voters.append(assistant_name)
+                        voting_errors += 1
                 
                 # Calculate total participation for voting validation
                 total_votes = yes_votes + no_votes
                 total_assistants = len(assistant_priorities)
-                  print(f"📊 Final Vote Results: {yes_votes} YES, {no_votes} NO (Total: {total_votes}/{total_assistants} assistants)")
+                print(f"📊 Final Vote Results: {yes_votes} YES, {no_votes} NO (Total: {total_votes}/{total_assistants} assistants)")
                 
                 # Check if the final decision is confirmed - Enhanced with tie-breaking and edge case handling
                 
@@ -2807,13 +3070,13 @@ def run_conversation(
                             "content": f"Please generate the final output content based on the final decision or solution provided by {final_vote_caller}:\n\n{safe_get_message_field(final_decision_response, 'content', 'No decision content')}. The problem statement it must completely solve is: {problem_definition}. The output you generate should be the final completion of the problem statement and the user's needs, and should not include any further steps or discussions but will represent the final output content that fulfills the problem statement and the user's needs ONLY.",
                         },
                     ]
-                    for role, content in final_content_messages:
+                    for message in final_content_messages:
                         conversation_history.append(
                             {
-                                "role": role,
+                                "role": message["role"],
                                 "name": "Mediator",
                                 "round": rnd,
-                                "content": content,
+                                "content": message["content"],
                             }
                         )
 
@@ -2830,7 +3093,7 @@ def run_conversation(
                         f"\n\nFinal Output Response from {lead_personality}: {final_output_response}\n\n"
                     )
                     final_checked_output = analyze_final_output(
-                        final_output_response["content"],
+                        safe_get_message_field(final_output_response, 'content', ''),
                         lead_personality,
                         selected_personalities,
                         original_prompt,
@@ -2847,7 +3110,8 @@ def run_conversation(
                             "role": "system",
                             "name": lead_personality,
                             "round": rnd,
-                            "content": f"Final Output: {final_output}",                        }
+                            "content": f"Final Output: {final_output}",
+                            }
                     )
                     try:
                         with open("conversation_history.json", "w") as f:
@@ -2886,7 +3150,8 @@ def run_conversation(
                                 {
                                     "role": "user",
                                     "content": f"Please provide feedback on the final decision or solution provided by {final_vote_caller} and suggest improvements or changes to align it better with the problem statement and the conversation so far.",
-                                },                                {
+                                },
+                                {
                                     "role": "user",
                                     "content": f"Final Decision: {safe_get_message_field(final_decision_response, 'content', 'No decision content')}",
                                 },
@@ -2918,7 +3183,8 @@ def run_conversation(
                         )
                         # Extract the decision from the response
                         mediator_decision = response.choices[0].message.parsed
-                        print(f"\nMediator Decision: {mediator_decision}\n")                    except Exception as e:
+                        print(f"\nMediator Decision: {mediator_decision}\n")
+                    except Exception as e:
                         # TODO: Implement better fallback strategy for mediator decisions
                         print(f"\nError in Mediator Decision: {str(e)}\n")
                         # Create a safe fallback MediatorReviseOrDecide object
@@ -2935,7 +3201,8 @@ def run_conversation(
                             final_decision="Fallback decision due to type error.",
                             keep_output=True
                         )
-                    if mediator_decision.keep_output:                        conversation_history.append(
+                    if mediator_decision.keep_output:
+                        conversation_history.append(
                             {
                                 "role": "system",
                                 "name": mediator_name,
@@ -2956,13 +3223,13 @@ def run_conversation(
                             "content": f"Please generate the final output content based on the final decision or solution provided by {final_vote_caller}:\n\n{safe_get_message_field(final_decision_response, 'content', 'No decision content')}. The problem statement it must completely solve is: {problem_definition}. The output you generate should be the final completion of the problem statement and the user's needs, and should not include any further steps or discussions but will represent the final output content that fulfills the problem statement and the user's needs ONLY.",
                         },
                     ]
-                    for role, content in final_content_messages:
+                    for message in final_content_messages:
                         conversation_history.append(
                             {
-                                "role": role,
+                                "role": message["role"],
                                 "name": "Mediator",
                                 "round": rnd,
-                                "content": content,
+                                "content": message["content"],
                             }
                         )
 
@@ -2979,7 +3246,7 @@ def run_conversation(
                         f"\n\nFinal Output Response from {lead_personality}: {final_output_response}\n\n"
                     )
                     final_checked_output = analyze_final_output(
-                        final_output_response["content"],
+                        safe_get_message_field(final_output_response, 'content', ''),
                         lead_personality,
                         selected_personalities,
                         original_prompt,
@@ -2996,7 +3263,8 @@ def run_conversation(
                             "role": "system",
                             "name": lead_personality,
                             "round": rnd,
-                            "content": f"Final Output: {final_output}",                        }
+                            "content": f"Final Output: {final_output}",
+                            }
                     )
                     try:
                         with open("conversation_history.json", "w") as f:
@@ -3035,13 +3303,13 @@ def run_conversation(
                             "content": f"Please generate the final output content based on the final decision or solution provided by {final_vote_caller}:\n\n{safe_get_message_field(final_decision_response, 'content', 'No decision content')}",
                         },
                     ]
-                    for role, content in final_content_messages:
+                    for message in final_content_messages:
                         conversation_history.append(
                             {
-                                "role": role,
+                                "role": message["role"],
                                 "name": mediator_name,
                                 "round": rnd,
-                                "content": content,
+                                "content": message["content"],
                             }
                         )
 
@@ -3058,7 +3326,7 @@ def run_conversation(
                         f"\n\nFinal Output Response from {lead_personality}: {final_output_response}\n\n"
                     )
                     final_checked_output = analyze_final_output(
-                        final_output_response["content"],
+                        safe_get_message_field(final_output_response, 'content', ''),
                         lead_personality,
                         selected_personalities,
                         original_prompt,
@@ -3077,7 +3345,8 @@ def run_conversation(
                             "role": "system",
                             "name": lead_personality,
                             "round": rnd,
-                            "content": f"Final Output: {final_output}",                        }
+                            "content": f"Final Output: {final_output}",
+                            }
                     )
     try:
         filename = f"conversation_history_{str(datetime.now()).replace(':', '-').replace(' ', '_')}.json"

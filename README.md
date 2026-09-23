@@ -152,6 +152,23 @@ PromptEngineeringConfig
 - `temperature`: Sampling temperature (default: 0.7)
 - `model`: GPT model to use (default: "gpt-4o-mini")
 
+## Testing
+
+### Backend Tests
+To run the authoritative offline regression and contract test suite:
+```bash
+pytest -q
+```
+This verifies smoke tests (`test_smoke.py`), import integrity (`test_import_integrity.py`), voting consensus semantics (`test_voting_semantics.py`), safe dynamic message boundary handling (`test_message_handling.py`), functional RAG retrieval (`test_retrieval.py`), and GraphQL schema contracts (`test_graphql_contract.py`) with zero live network or OpenAI calls in ~25 seconds.
+
+### Frontend Tests
+To run the full Vitest component and integration suite:
+```bash
+cd collaborative-assistant-frontend
+npm test -- --run
+```
+This executes all 111 component, hook, and integration tests across the React client.
+
 ## License
 
 MIT

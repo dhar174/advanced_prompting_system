@@ -1320,7 +1320,11 @@ class TestAdvancedPromptingAdapterMethods(unittest.TestCase):
     @patch('advanced_prompting.AdvancedPromptEngineer.select_personalities_for_planstep')
     def test_invoke_collaborative_reasoning(self, mock_select_personalities, mock_run_conversation, mock_convert_output):
         mock_select_personalities.return_value = ["Strategist", "Educator"]
-        mock_run_conversation.return_value = "path/to/dummy_output.txt" # run_conversation returns a path
+        mock_run_conversation.return_value = (
+            [{"role": "assistant", "content": "example"}],
+            [],
+            "path/to/dummy_output.txt",
+        )
         
         # Define what the mocked convert_conversation_output_to_final_step_output should return
         expected_final_step_output = FinalStepOutput(

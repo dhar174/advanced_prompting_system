@@ -1,7 +1,3 @@
-from ast import Tuple
-from calendar import c
-from curses import nl
-from doctest import debug
 import inspect
 import os
 import re
@@ -9,12 +5,8 @@ import math
 import pickle
 import string
 import sys
-from tkinter import BOTH
-from typing import Dict, List, Optional
-from cv2 import merge
-from flask import g
+from typing import Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
-from regex import P, sub
 from scipy import stats
 from sklearn.model_selection import GridSearchCV, cross_val_score
 import spacy
@@ -39,32 +31,30 @@ from textstat import flesch_reading_ease
 
 
 # Initialize the Count Vectorizer
-date_str = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+date_str = dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 save_path = f"debug_log_complexity_{date_str}.txt"
 
-client = openai.OpenAI()
+openai_api_key = os.getenv("OPENAI_API_KEY")
+if not openai_api_key:
+    openai_api_key = "dummy_key_for_testing"
+openai.api_key = openai_api_key
 
+try:
+    client = openai.OpenAI(api_key=openai_api_key)
+except Exception:
+    client = None
 
 import numpy as np
 import logging
 from functools import lru_cache
 
-
 # Set up logging
 logging.basicConfig(level=logging.DEBUG, filename="logging_" + save_path, filemode="w")
 
-
 import scipy.sparse as sp
-import numpy as np
-import logging
-
-
-import numpy as np
-import logging
 from typing import Tuple
 
 DEBUG_INDICATOR = True
-
 
 class printer:
     def __init__(self, debug_indicator=False):
@@ -83,14 +73,7 @@ class printer:
             # do nothing
             pass
 
-
 printer = printer(DEBUG_INDICATOR)
-
-openai_api_key = os.getenv("OPENAI_API_KEY")
-if not openai_api_key:
-    printer.print_custom("[Language Model] OpenAI API key not found.")
-    raise ValueError("OpenAI API key not found.")
-openai.api_key = openai_api_key
 
 
 def cosine_similarity_custom(vector_a, matrix_b):
@@ -238,15 +221,21 @@ def get_embedding(text, model="text-embedding-3-small"):
     return embedding
 
 
-# Initialize Hugging Face's SRL pipeline
-try:
-    srl_pipeline = pipeline(
-        "token-classification",
-        model="dbmdz/bert-large-cased-finetuned-conll03-english",
-    )
-except Exception as e:
-    printer.print_custom(f"Error loading SRL model: {e}")
-    srl_pipeline = None
+# Hugging Face's SRL pipeline (lazily loaded on demand)
+srl_pipeline = None
+
+def get_srl_pipeline():
+    global srl_pipeline
+    if srl_pipeline is None:
+        try:
+            srl_pipeline = pipeline(
+                "token-classification",
+                model="dbmdz/bert-large-cased-finetuned-conll03-english",
+            )
+        except Exception as e:
+            printer.print_custom(f"Error loading SRL model: {e}")
+            srl_pipeline = False
+    return srl_pipeline if srl_pipeline is not False else None
 
 
 def jaccard_similarity(str1: str, str2: str) -> float:
@@ -279,19 +268,33 @@ for package in nltk_packages:
         )
     except LookupError:
         nltk.download(package)
-nltk.download("averaged_perceptron_tagger_eng")
-# Initialize spaCy model
 try:
-    nlp_spacy = spacy.load("en_core_web_trf")
-except OSError:
-    from spacy.cli import download
+    nltk.data.find("taggers/averaged_perceptron_tagger_eng")
+except LookupError:
+    nltk.download("averaged_perceptron_tagger_eng", quiet=True)
 
-    download("en_core_web_trf")
-    nlp_spacy = spacy.load("en_core_web_trf")
+# Initialize spaCy model (lazily loaded on demand)
+nlp_spacy = None
+
+def get_nlp_spacy():
+    global nlp_spacy
+    if nlp_spacy is None:
+        try:
+            nlp_spacy = spacy.load("en_core_web_sm")
+        except OSError:
+            try:
+                nlp_spacy = spacy.load("en_core_web_trf")
+            except OSError:
+                nlp_spacy = False
+    return nlp_spacy if nlp_spacy is not False else None
 
 
 def get_srl_spacy(input_query: str):
-    doc = nlp_spacy(input_query)
+    nlp = get_nlp_spacy()
+    if not nlp:
+        printer.print_custom("[spaCy] Model not loaded.")
+        return 0, 0
+    doc = nlp(input_query)
 
     # Extract predicates (verbs) and arguments using dependency parsing
     predicates = [token for token in doc if token.pos_ == "VERB"]
@@ -559,11 +562,12 @@ def is_complex_srl(
     Returns:
         float: Score between 0 and 1 indicating complexity.
     """
-    if not srl_pipeline:
+    pipeline_inst = get_srl_pipeline()
+    if not pipeline_inst:
         printer.print_custom("[SRL] SRL Pipeline not available.")
         return 0.0
 
-    result = srl_pipeline(input_query)
+    result = pipeline_inst(input_query)
     printer.print_custom(f"[SRL] Result: {result}")
 
     # Extract predicates (verbs) and arguments from result
@@ -726,6 +730,7 @@ class PlanStep(BaseModel):
     completed: bool = Field(description="Whether the step has been completed.")
     step_name: str = Field(..., description="The name or title of the step.")
     step_description: str = Field(..., description="The description of the step.")
+    description: Optional[str] = Field(default=None, description="Optional alias for step_description.")
     step_explanation: str = Field(..., description="The explanation of the step.")
     step_output: str = Field(..., description="The output or result of the step.")
     step_full_text: str = Field(..., description="The full text of the step.")
