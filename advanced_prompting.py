@@ -6,6 +6,8 @@ import difflib
 
 from Levenshtein import ratio
 import openai
+from provider_client import LazyClient
+client = LazyClient()
 import os
 import re
 import time
@@ -2149,7 +2151,7 @@ class AdvancedPromptEngineer:
             {"role": "user", "content": system_prompt},
         ]
         try:
-            prompt_response = openai.chat.completions.create(
+            prompt_response = client.chat.completions.create(
                 model=self.config.model,
                 messages=messages,
                 temperature=0.2,
@@ -2170,7 +2172,7 @@ class AdvancedPromptEngineer:
             {"role": "user", "content": system_prompt},
         ]
         try:
-            prompt_response = openai.chat.completions.create(
+            prompt_response = client.chat.completions.create(
                 model=self.config.model,
                 messages=messages,
                 temperature=0.2,
@@ -2323,7 +2325,7 @@ class AdvancedPromptEngineer:
             {"role": "user", "content": this_step},
         ]
         try:
-            prompt_response = openai.chat.completions.create(
+            prompt_response = client.chat.completions.create(
                 model=self.config.model,
                 messages=messages,
                 temperature=0.2,
@@ -2488,7 +2490,7 @@ class AdvancedPromptEngineer:
         """
         messages.append({"role": "user", "content": user_prompt})
         try:
-            decision_response = openai.chat.completions.create(
+            decision_response = client.chat.completions.create(
                 model=self.config.model,
                 messages=messages,
                 temperature=0.2,
@@ -2742,7 +2744,7 @@ class AdvancedPromptEngineer:
         ]
 
         try:
-            response = openai.chat.completions.create(
+            response = client.chat.completions.create(
                 model=self.config.model,
                 messages=messages,
                 temperature=0.2,
@@ -3366,7 +3368,7 @@ class AdvancedPromptEngineer:
         ]
         final_output = None
         try:
-            response = openai.chat.completions.create(
+            response = client.chat.completions.create(
                 model=self.config.model,
                 messages=messages,
                 temperature=0.2,
@@ -3491,7 +3493,7 @@ class AdvancedPromptEngineer:
         }
         messages = [system_message, {"role": "user", "content": prompt}]
         try:
-            response = openai.beta.chat.completions.parse(
+            response = client.beta.chat.completions.parse(
                 model="gpt-4o-mini",  # Specify the model
                 messages=messages,  # Pass the messages directly as a list of dicts
                 response_format=CompletionStatus,  # Define the response format
@@ -3560,7 +3562,7 @@ class AdvancedPromptEngineer:
             assert isinstance(
                 subtask, Subtask
             ), f"Invalid subtask type. Please provide a valid Subtask object. Type: {type(subtask)}"
-            response = openai.beta.chat.completions.parse(
+            response = client.beta.chat.completions.parse(
                 model="gpt-4o-mini",  # Specify the model
                 messages=messages,  # Pass the messages directly as a list of dicts
                 response_format=CompletionStatus,  # Define the response format
@@ -3665,7 +3667,7 @@ class AdvancedPromptEngineer:
             {"role": "user", "content": prompt},
         ]
 
-        response = openai.beta.chat.completions.parse(
+        response = client.beta.chat.completions.parse(
             model=self.config.model,
             messages=messages,
             response_format=FinalReviewScore,
@@ -4246,7 +4248,7 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
             print_saver.print_and_store(f"Using multi-agent reasoning for plan step: {plan_step.step_name} (ID: {plan_step_num})")
             final_step_output = self.invoke_collaborative_reasoning(task, plan_step)
             step = getattr(final_step_output, 'step', None) or Step(
-                description=plan_step.description or "",
+                description=plan_step.step_description or "",
                 step_number=step_number,
                 plan_step_number=plan_step_num,
                 thoughts="",
@@ -4324,7 +4326,7 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
             {"role": "user", "content": meta_prompt},
         ]
         try:
-            response = openai.beta.chat.completions.parse(
+            response = client.beta.chat.completions.parse(
                 model="gpt-4o-mini",  # Specify the model
                 messages=messages,  # Pass the messages directly as a list of dicts
                 response_format=PromptSuggestions,  # Parse the response into the PromptSuggestions class
@@ -4595,7 +4597,7 @@ Task: {task}
             max_delay = 16
             try:
 
-                response = openai.beta.chat.completions.parse(
+                response = client.beta.chat.completions.parse(
                     model=self.config.model,
                     messages=messages,
                     response_format=StepNumber,
@@ -4644,7 +4646,7 @@ Task: {task}
 
         for attempt in range(self.config.max_retries):
             try:
-                response = openai.chat.completions.create(
+                response = client.chat.completions.create(
                     model=self.config.model,
                     messages=messages,
                     temperature=temperature if temperature > 0.0 else None,
@@ -6980,7 +6982,7 @@ Task: {task}
         max_delay = 16
         for attempt in range(self.config.max_retries):
             try:
-                decision_response = openai.beta.chat.completions.parse(
+                decision_response = client.beta.chat.completions.parse(
                     model=self.config.model,
                     messages=messages,
                     response_format=response_choices,
@@ -7399,7 +7401,7 @@ Task: {task}
         ]
 
         # Call the OpenAI API to generate the modified prompt
-        response = openai.chat.completions.create(
+        response = client.chat.completions.create(
             model=self.config.model,
             messages=messages,
         )
@@ -7415,7 +7417,7 @@ Task: {task}
         first_prompt = self.automatic_prompt_engineering(task)
 
         # Call the OpenAI API to generate the refined prompt
-        response = openai.chat.completions.create(
+        response = client.chat.completions.create(
             model=self.config.model,
             messages=[
                 {
@@ -7485,7 +7487,7 @@ Task: {task}
     #     Determines the expected output for the given task.
     #     """
     #     # Call the OpenAI API to generate the expected output
-    #     response = openai.chat.completions.create(
+    #     response = client.chat.completions.create(
     #         model=self.config.model,
     #         messages=[
     #             {
@@ -7764,7 +7766,7 @@ Task: {task}
             agent_prompt = current_planstep_prompt.replace(initial_prompt, "")
             if self.config.agents > 0:
                 agent_interaction = self.collaborative_reasoning_main(
-                    Task(
+                    task=Task(
                         curr_desc,
                         self.task_into_prompt(curr_desc),
                         complexity,
@@ -7775,14 +7777,13 @@ Task: {task}
                         plan,
                         _output_type,
                     ),
-                    agent_prompt,
-                    main_interaction,
-                    task_object.output_type,
-                    max(count / len([p for p in plan.steps if not p.completed]), 1),
-                    step,
-                    curr_num,
-                    3,
-                    max_step,
+                    plan_step=current_plan_step,
+                    existing_interaction=main_interaction,
+                    output_type=task_object.output_type,
+                    step_budget=max(count // len([p for p in plan.steps if not p.completed]), 1),
+                    step_number=step,
+                    restart_limit=3,
+                    max_plan_steps=max_step,
                 )
             # Step 6: Self-Consistency Check
             self_consistent_interaction = self.self_consistency(

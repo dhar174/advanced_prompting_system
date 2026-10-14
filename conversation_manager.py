@@ -244,7 +244,8 @@ output_type_experts = {
 
 # Set your OpenAI API key as an environment variable
 openai.api_key = os.getenv("OPENAI_API_KEY")
-client = openai.OpenAI()
+from provider_client import LazyClient
+client = LazyClient()
 
 
 class ArgumentItem(BaseModel):
@@ -458,25 +459,14 @@ class ConversationMemory:
         """Deserialize a dictionary back into a fully-typed ConversationMemory instance."""
         memory = cls(num_rounds=data.get("rounds_left", 3))
         memory.facts = list(data.get("facts", []))
-        for arg in data.get("arguments", []):
-            if isinstance(arg, ArgumentItem):
-                memory.arguments.append(arg)
-            elif isinstance(arg, dict):
-                memory.arguments.append(ArgumentItem(**arg))
-        for dec in data.get("decisions", []):
-            if isinstance(dec, DecisionItem):
-                memory.decisions.append(dec)
-            elif isinstance(dec, dict):
-                memory.decisions.append(DecisionItem(**dec))
+        for item in data.get("arguments", []):
+            memory.add_argument(item)
+        for item in data.get("decisions", []):
+            memory.add_decision(item)
         memory.direct_replies = dict(data.get("direct_replies", {}))
         memory.recommended_actions = list(data.get("recommended_actions", []))
         for todo in data.get("to_do_list", []):
-            if isinstance(todo, ToDoItem):
-                memory.to_do_list.append(todo)
-            elif isinstance(todo, dict):
-                memory.to_do_list.append(ToDoItem(**todo))
-            elif isinstance(todo, str):
-                memory.to_do_list.append(ToDoItem(task=todo))
+            memory.add_to_do_item(todo)
         memory.completed_tasks = dict(data.get("completed_tasks", {}))
         memory.rounds_left = data.get("rounds_left", memory.rounds_left)
         output_type_data = data.get("decided_output_type")
@@ -1091,6 +1081,7 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
         print(
             f"\nConsensus Problem Statement Confirmed with majority vote, {yes_votes} to {no_votes}: {best_definition['definition']}\n"
         )
+        return best_definition["definition"]
     else:
         # If the consensus is not confirmed, ask the assistants to vote again on the revised problem statement after all no-voters have provided feedback
         print(
@@ -2824,7 +2815,7 @@ def run_conversation(
                         print(f"⚠️  Error getting continue vote from {assistant_name}: {continue_vote}")
                         voting_errors += 1
                 
-                total_continue_votes = continue_votes + end_votes + voting_errors
+                total_continue_votes = continue_votes + end_votes
                 print(f"📊 Continue Vote Results: {continue_votes} CONTINUE, {end_votes} END, {voting_errors} ERRORS")
                 
                 # Determine whether to continue based on majority or first end vote
@@ -3020,6 +3011,10 @@ def run_conversation(
                     
                     # Check if we still have a clear majority despite low participation
                     if yes_votes > no_votes and yes_votes >= (total_assistants / 3):
+                        mediator_decision = MediatorReviseOrDecide(
+                            final_decision=safe_get_message_field(final_decision_response, 'content', ''),
+                            keep_output=True,
+                        )
                         print("✓ Proceeding despite low participation due to clear majority")
                     else:
                         print("❌ Insufficient participation and unclear mandate")
@@ -3051,8 +3046,8 @@ def run_conversation(
                             )
 
                 # Normal voting logic (only executed if no edge cases above)
-                if total_votes > 0 and yes_votes != no_votes and total_votes >= (total_assistants / 2):
-                    if yes_votes > no_votes and no_votes == 0:print(
+                if yes_votes > 0 and no_votes == 0 and total_votes >= (total_assistants / 2):
+                    print(
                         f"\nFinal Decision Confirmed with full consensus: {safe_get_message_field(final_decision_response, 'content', 'No decision content')}\n"
                     )
                     conversation_history.append(
@@ -3129,19 +3124,16 @@ def run_conversation(
                     except Exception as e:
                         print(f"✗ Unexpected error saving conversation history: {e}")
                         print("⚠️  Conversation data may be lost.")
-                elif (
-                    yes_votes > no_votes
-                    and no_votes > 0
-                    and no_votes <= (yes_votes / 2)                ):
+                elif no_votes > 0 and mediator_decision is None:
                     print(
-                        f"\nFinal Decision Confirmed with majority vote, {yes_votes} to {no_votes}: {safe_get_message_field(final_decision_response, 'content', 'No decision content')}\n"
+                        f"\nFinal proposal requires mediator review, {yes_votes} to {no_votes}: {safe_get_message_field(final_decision_response, 'content', 'No decision content')}\n"
                     )
                     conversation_history.append(
                         {
                             "role": "system",
                             "name": mediator_name,
                             "round": rnd,
-                            "content": f"Final Decision: {safe_get_message_field(final_decision_response, 'content', 'No decision content')} (Confirmed with majority vote)",
+                            "content": f"Final Decision: {safe_get_message_field(final_decision_response, 'content', 'No decision content')} (Pending mediator review)",
                         }
                     )
                     # Get feedback from the assistants who voted no and ask the Mediator to resolve the issue by revising the final decision or making a final call
@@ -3216,18 +3208,24 @@ def run_conversation(
                                 "content": f"Final Decision: {safe_get_message_field(final_decision_response, 'content', 'No decision content')} (Confirmed)",
                             }
                         )
-                        # Have the Mediator finalize the output based on the final decision, creating the final output content that fulfills the problem statement and the user's needs that will be saved to the final file
+                    else:
+                        final_decision_response["content"] = mediator_decision.final_decision
+                        conversation_history.append({
+                            "role": "system", "name": mediator_name, "round": rnd,
+                            "content": f"Final Decision: {mediator_decision.final_decision} (Revised)",
+                        })
+                    # Have the Mediator finalize the output based on the final decision, creating the final output content that fulfills the problem statement and the user's needs that will be saved to the final file
 
-                        final_content_prompt = "Based on the final decision or solution provided by the assistant who called for the final vote, please generate the final output content that fulfills the problem statement and the user's needs. This means creating the final output content based on the decision or solution provided, ensuring it aligns with the problem statement and the conversation so far and meets the user's requirements and expectations. For instance, if the final decision is a text answer, generate the text answer. If it's a code snippet, generate the code snippet. If it's a report, generate the report content. If it's a prototype, generate the prototype content. If it's structured data, generate the structured data content. If it's a technical document, generate the technical document content. Please provide the final output content that fulfills the problem statement and the user's needs based on the final decision or solution provided."
-                        final_content_messages = [
-                            {
-                                "role": "system",
-                                "content": final_content_prompt
-                                + f" The output type for the final decision is: {output_type.output_type} with file extension: {output_type.file_extension} and should solve the problem statement: {problem_definition} by following the final decision or solution provided by {final_vote_caller}."},
+                    final_content_prompt = "Based on the final decision or solution provided by the assistant who called for the final vote, please generate the final output content that fulfills the problem statement and the user's needs. This means creating the final output content based on the decision or solution provided, ensuring it aligns with the problem statement and the conversation so far and meets the user's requirements and expectations. For instance, if the final decision is a text answer, generate the text answer. If it's a code snippet, generate the code snippet. If it's a report, generate the report content. If it's a prototype, generate the prototype content. If it's structured data, generate the structured data content. If it's a technical document, generate the technical document content. Please provide the final output content that fulfills the problem statement and the user's needs based on the final decision or solution provided."
+                    final_content_messages = [
                         {
-                            "role": "user",
-                            "content": f"Please generate the final output content based on the final decision or solution provided by {final_vote_caller}:\n\n{safe_get_message_field(final_decision_response, 'content', 'No decision content')}. The problem statement it must completely solve is: {problem_definition}. The output you generate should be the final completion of the problem statement and the user's needs, and should not include any further steps or discussions but will represent the final output content that fulfills the problem statement and the user's needs ONLY.",
-                        },
+                            "role": "system",
+                            "content": final_content_prompt
+                            + f" The output type for the final decision is: {output_type.output_type} with file extension: {output_type.file_extension} and should solve the problem statement: {problem_definition} by following the final decision or solution provided by {final_vote_caller}."},
+                    {
+                        "role": "user",
+                        "content": f"Please generate the final output content based on the final decision or solution provided by {final_vote_caller}:\n\n{safe_get_message_field(final_decision_response, 'content', 'No decision content')}. The problem statement it must completely solve is: {problem_definition}. The output you generate should be the final completion of the problem statement and the user's needs, and should not include any further steps or discussions but will represent the final output content that fulfills the problem statement and the user's needs ONLY.",
+                    },
                     ]
                     for message in final_content_messages:
                         conversation_history.append(

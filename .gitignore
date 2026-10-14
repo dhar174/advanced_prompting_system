@@ -415,3 +415,6 @@ __pycache__/
 .pytest_cache/
 node_modules/
 dist/
+
+# Local offline qualification environment, logs and caches
+.qualification/

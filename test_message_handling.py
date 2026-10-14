@@ -43,7 +43,7 @@ def test_normalize_message_missing_role():
 import conversation_manager
 from unittest.mock import patch
 
-def test_problem_statement_normalization_string():
+def test_problem_statement_normalization_string(conversation_case):
     with patch('conversation_manager.define_problem', return_value="def") as spy, \
          patch('conversation_manager.get_assistant_response', return_value={"role": "assistant", "content": "ok"}), \
          patch('conversation_manager.cast_binary_vote', return_value=conversation_manager.BinaryVote(vote=True)), \
@@ -52,7 +52,7 @@ def test_problem_statement_normalization_string():
         assert spy.called
         assert spy.call_args[0][0].endswith("String problem")
 
-def test_problem_statement_normalization_list():
+def test_problem_statement_normalization_list(conversation_case):
     with patch('conversation_manager.define_problem', return_value="def") as spy, \
          patch('conversation_manager.get_assistant_response', return_value={"role": "assistant", "content": "ok"}), \
          patch('conversation_manager.cast_binary_vote', return_value=conversation_manager.BinaryVote(vote=True)), \
@@ -61,7 +61,7 @@ def test_problem_statement_normalization_list():
         assert spy.called
         assert spy.call_args[0][0].endswith("List dict problem")
 
-def test_problem_statement_normalization_dict():
+def test_problem_statement_normalization_dict(conversation_case):
     with patch('conversation_manager.define_problem', return_value="def") as spy, \
          patch('conversation_manager.get_assistant_response', return_value={"role": "assistant", "content": "ok"}), \
          patch('conversation_manager.cast_binary_vote', return_value=conversation_manager.BinaryVote(vote=True)), \

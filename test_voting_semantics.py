@@ -97,30 +97,8 @@ class TestVotingSemantics(unittest.TestCase):
                 conversation_manager.define_problem("Raw prompt", {"Strategist": "prompt"})
             mock_get_response.assert_not_called()
 
-    def test_final_decision_messages_preserve_values(self):
-        """Test that Final-decision messages preserve actual role and content values."""
-        conversation_history = []
-        rnd = 1
-        final_content_messages = [
-            {"role": "system", "content": "System message"},
-            {"role": "user", "content": "User message"}
-        ]
-        
-        for message in final_content_messages:
-            conversation_history.append(
-                {
-                    "role": message["role"],
-                    "name": "Mediator",
-                    "round": rnd,
-                    "content": message["content"],
-                }
-            )
-            
-        self.assertEqual(len(conversation_history), 2)
-        self.assertEqual(conversation_history[0]["role"], "system")
-        self.assertEqual(conversation_history[0]["content"], "System message")
-        self.assertEqual(conversation_history[1]["role"], "user")
-        self.assertEqual(conversation_history[1]["content"], "User message")
+    # Real final-decision history assertions live in
+    # test_pr34_regressions::test_final_vote_branches_execute_production.
 
 if __name__ == '__main__':
     unittest.main()

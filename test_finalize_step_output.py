@@ -14,7 +14,7 @@ from complexity_measures import Plan
 
 
 class TestFinalizeStepOutput(unittest.TestCase):
-    @patch("advanced_prompting.openai.chat.completions.create")
+    @patch("advanced_prompting.client.chat.completions.create")
     def test_finalize_step_output_success(self, mock_create):
         # Mock the OpenAI response
         mock_response = Mock()

@@ -19,6 +19,16 @@ OutputType
 
  class
 
+## Offline qualification
+
+See [PR #34 qualification](docs/pr34-offline-qualification.md) for the exact tested
+environment, evidence, unresolved quarantines and supported scope. On the qualified
+Windows checkout run `./tools/run-offline.ps1`; frontend commands use
+`./tools/run-frontend-offline.ps1 -Action test` (or `lint`, `build`). These wrappers
+remove API credentials and install process-only outbound-denial guards. Bare pytest
+intentionally fails without the guard. No full browser/end-to-end certification is
+claimed; [#35](https://github.com/dhar174/advanced_prompting_system/issues/35) tracks it.
+
 ## Installation
 
 1. Clone the repository:

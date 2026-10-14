@@ -24,7 +24,6 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 import openai
 from nltk.corpus import cmudict
-from transformers import pipeline
 import pandas as pd
 import datetime as dt
 from textstat import flesch_reading_ease
@@ -34,17 +33,9 @@ from textstat import flesch_reading_ease
 date_str = dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 save_path = f"debug_log_complexity_{date_str}.txt"
 
-openai_api_key = os.getenv("OPENAI_API_KEY")
-if openai_api_key and openai_api_key != "dummy_key_for_testing":
-    openai.api_key = openai_api_key
-    try:
-        client = openai.OpenAI(api_key=openai_api_key)
-    except Exception:
-        client = None
-else:
-    openai_api_key = None
-    openai.api_key = None
-    client = None
+from provider_client import LazyClient
+
+client = LazyClient() if os.getenv("OPENAI_API_KEY") not in (None, "", "dummy_key_for_testing") else None
 
 import numpy as np
 import logging
@@ -210,6 +201,7 @@ def get_embedding(text, model="text-embedding-3-small"):
             "OpenAI client is not configured. OPENAI_API_KEY environment variable is missing or invalid."
         )
 
+    response = None
     try:
         response = client.embeddings.create(input=text, model=model)
         if not response or not response.data or (not response.data[0].embedding):
@@ -240,6 +232,7 @@ def get_srl_pipeline():
     global srl_pipeline
     if srl_pipeline is None:
         try:
+            from transformers import pipeline
             srl_pipeline = pipeline(
                 "token-classification",
                 model="dbmdz/bert-large-cased-finetuned-conll03-english",
@@ -271,26 +264,7 @@ def jaccard_similarity(str1: str, str2: str) -> float:
     return float(len(intersection)) / len(union) if union else 0.0
 
 
-# Ensure necessary NLTK data is downloaded if available or in online mode
-if os.getenv("OFFLINE_MODE", "0") != "1" and not os.getenv("PYTEST_CURRENT_TEST"):
-    nltk_packages = ["punkt", "averaged_perceptron_tagger", "wordnet", "cmudict"]
-    for package in nltk_packages:
-        try:
-            nltk.data.find(
-                f"tokenizers/{package}" if package == "punkt" else f"corpora/{package}"
-            )
-        except LookupError:
-            try:
-                nltk.download(package, quiet=True)
-            except Exception:
-                pass
-    try:
-        nltk.data.find("taggers/averaged_perceptron_tagger_eng")
-    except LookupError:
-        try:
-            nltk.download("averaged_perceptron_tagger_eng", quiet=True)
-        except Exception:
-            pass
+# NLTK datasets must be installed explicitly; imports never download data.
 
 # Initialize spaCy model (lazily loaded on demand)
 nlp_spacy = None
@@ -391,36 +365,45 @@ def is_text_readable(text, readability_threshold=60):
     return score >= readability_threshold
 
 
-def is_real_words(text) -> bool:
-    # first tokenize each word
-    words = word_tokenize(text)
-    real_words = []
-    not_words = []
-    for word in words:
-        doc = nlp_spacy(word)
-        if doc[0].is_alpha and doc[0].has_vector or wn.synsets(word):
-            real_words.append(word)
-        elif (
-            doc[0].is_punct
-            or doc[0].is_space
-            or doc[0].is_stop
-            or doc[0].is_digit
-            or doc[0].is_currency
-            or doc[0].is_quote
-            or doc[0].is_bracket
-            or doc[0].is_oov
-            or doc[0].is_left_punct
-            or doc[0].is_right_punct
-        ):
-            # Append to real words if it is a punctuation, space, stop word, digit, currency, quote, bracket, or out of vocabulary so that it is not removed
-            real_words.append(word)
-        else:
-            printer.print_custom(f"Word not found: {word}")
-            not_words.append(word)
+def is_real_words(text) -> str:
+    nlp = get_nlp_spacy()
+    if nlp is None:
+        # Without lexical evidence, preserve input rather than discard words.
+        return text
+    try:
+        # first tokenize each word
+        words = word_tokenize(text)
+        real_words = []
+        not_words = []
+        for word in words:
+            doc = nlp(word)
+            if doc[0].is_alpha and doc[0].has_vector or wn.synsets(word):
+                real_words.append(word)
+            elif (
+                doc[0].is_punct
+                or doc[0].is_space
+                or doc[0].is_stop
+                or doc[0].is_digit
+                or doc[0].is_currency
+                or doc[0].is_quote
+                or doc[0].is_bracket
+                or doc[0].is_oov
+                or doc[0].is_left_punct
+                or doc[0].is_right_punct
+            ):
+                # Append to real words if it is a punctuation, space, stop word, digit, currency, quote, bracket, or out of vocabulary so that it is not removed
+                real_words.append(word)
+            else:
+                printer.print_custom(f"Word not found: {word}")
+                not_words.append(word)
 
-    # Return a new string with the real words in the original order, minus the non-words
-    results = " ".join(real_words)
-    return results
+        # Return a new string with the real words in the original order, minus the non-words
+        results = " ".join(real_words)
+        return results
+    except LookupError:
+        # Optional NLTK datasets are installed explicitly, never downloaded here.
+        # Preserve input when the available lexical evidence is incomplete.
+        return text
 
 
 def count_tokens(text, model_name):
@@ -1689,7 +1672,8 @@ def test_classify_remaining_text_structured():
 
 
 # Call the test function
-test_classify_remaining_text_structured()
+if __name__ == "__main__":
+    test_classify_remaining_text_structured()
 
 
 def normalize_whitespace(text):
@@ -3145,6 +3129,9 @@ def is_complex_llm(
     Returns:
         float: Score between 0 and 1 indicating complexity.
     """
+    nlp = get_nlp_spacy()
+    if nlp is None:
+        return 0.0
     plan_str = generate_plan_legacy(input_query)
     if not plan_str:
         return 0.0
@@ -3171,9 +3158,9 @@ def is_complex_llm(
     total_length = 0
 
     for step in steps:
-        total_length += len(nlp_spacy(step.step_full_text))
+        total_length += len(nlp(step.step_full_text))
         for subtask in step.subtasks:
-            total_length += len(nlp_spacy(subtask.subtask_full_text))
+            total_length += len(nlp(subtask.subtask_full_text))
     avg_step_length = total_length / substeps if substeps > 0 else 0
 
     # Collect all subtasks and count unique names
@@ -3345,7 +3332,10 @@ def is_complex_graph(
     Returns:
         float: Score between 0 and 1 indicating complexity.
     """
-    doc = nlp_spacy(input_query)
+    nlp = get_nlp_spacy()
+    if nlp is None:
+        return 0.0
+    doc = nlp(input_query)
 
     G = nx.DiGraph()
 
@@ -3404,7 +3394,10 @@ def is_complex_recursive(
     Returns:
         float: Score between 0 and 1 indicating complexity.
     """
-    doc = nlp_spacy(input_query)
+    nlp = get_nlp_spacy()
+    if nlp is None:
+        return 0.0
+    doc = nlp(input_query)
 
     G = nx.DiGraph()
 
@@ -3563,7 +3556,10 @@ def is_complex_ast(
     Returns:
         float: Score between 0 and 1 indicating complexity.
     """
-    doc = nlp_spacy(input_query)
+    nlp = get_nlp_spacy()
+    if nlp is None:
+        return 0.0
+    doc = nlp(input_query)
 
     G = nx.DiGraph()
 

@@ -9,6 +9,7 @@ Fast, reliable checks with zero external network or OpenAI calls:
 6. GraphQL runConversation returns the schema shape expected by the frontend.
 """
 
+import pytest
 import unittest
 from unittest.mock import patch, mock_open, MagicMock
 import py_compile
@@ -46,6 +47,7 @@ class TestSmokeSuite(unittest.TestCase):
             with self.assertRaises(OSError):
                 generate_text_file_output("Some text", "fake_output.txt")
 
+    @pytest.mark.usefixtures("conversation_case")
     def test_4_run_conversation_contract_mock_shape(self):
         """4. Verify run_conversation contract shape is a 3-tuple when executed with mocked LLM boundaries."""
         import conversation_manager
