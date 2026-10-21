@@ -2121,11 +2121,14 @@ class AdvancedPromptEngineer:
 
     def count_tokens(self, text: list[str]) -> int:
         """Count the number of tokens in the input text using the tiktoken library."""
-        encoding = tiktoken.encoding_for_model("gpt-4o-mini")
-        total_tokens = 0
-        for text_item in text:
-            total_tokens += len(encoding.encode(text_item))
-        return total_tokens
+        try:
+            encoding = tiktoken.encoding_for_model("gpt-4o-mini")
+            total_tokens = 0
+            for text_item in text:
+                total_tokens += len(encoding.encode(text_item))
+            return total_tokens
+        except BaseException:
+            return sum(max(1, len(text_item) // 4) for text_item in text)
 
     def track_progress(self, interaction: Interaction) -> None:
         """Track progress using tqdm progress bar"""
@@ -2204,10 +2207,10 @@ class AdvancedPromptEngineer:
             Plan Step Completed? {plan_step.completed} \n
             Plan Step Output: {output} """: plan_step.step_number
             }
-            for plan_step, output in zip(task.planstep_outputs, planstep_outputs)
+            for plan_step, output in zip(task.plan.steps, planstep_outputs)
         ]
 
-        plan_steps_strs = sorted(plan_steps_strs, key=lambda x: x.values())
+        plan_steps_strs = sorted(plan_steps_strs, key=lambda x: list(x.values())[0])
 
         full_plan = "\n".join(
             [list(plan_step.keys())[0] for plan_step in plan_steps_strs]
@@ -2361,9 +2364,9 @@ class AdvancedPromptEngineer:
             Plan Step Completed? {plan_step.completed} \n
             Plan Step Output: {output} """: plan_step.step_number
             }
-            for plan_step, output in zip(task.planstep_outputs, planstep_outputs)
+            for plan_step, output in zip(task.plan.steps, planstep_outputs)
         ]
-        plan_steps_strs = sorted(plan_steps_strs, key=lambda x: x.values())
+        plan_steps_strs = sorted(plan_steps_strs, key=lambda x: list(x.values())[0])
 
         full_plan = "\n".join(
             [list(plan_step.keys())[0] for plan_step in plan_steps_strs]
@@ -2545,9 +2548,9 @@ class AdvancedPromptEngineer:
             Plan Step Completed? {plan_step.completed} \n
             Plan Step Output: {output} """: plan_step.step_number
             }
-            for plan_step, output in zip(task.planstep_outputs, planstep_outputs)
+            for plan_step, output in zip(task.plan.steps, planstep_outputs)
         ]
-        plan_steps_strs = sorted(plan_steps_strs, key=lambda x: x.values())
+        plan_steps_strs = sorted(plan_steps_strs, key=lambda x: list(x.values())[0])
 
         prev_step_strs = [
             f"<count>{stp_.remaining_budget +1}</count>\n<thinking>{stp_.thoughts}</thinking>\n<step>{stp_.description}</step>\n<reflection>{stp_.reflection}</reflection>\n"
@@ -3503,12 +3506,13 @@ class AdvancedPromptEngineer:
             assert isinstance(
                 output, CompletionStatus | bool
             ), "Invalid response type. Please provide a boolean value (True/False)."
+            completed_bool = output.completion if isinstance(output, CompletionStatus) else bool(output)
             next_step_number = (
                 plan_step.step_number + 1
-                if (output and plan_step.step_number < max_plan_steps)
+                if (completed_bool and plan_step.step_number < max_plan_steps)
                 else plan_step.step_number
             )
-            return (output, next_step_number)
+            return (completed_bool, next_step_number)
         except Exception as e:
             print_saver.print_and_store(
                 f"Error: {e}, Plan Step Number: {plan_step.step_number}"
@@ -5024,10 +5028,15 @@ Task: {task}
             if i >= len(steps_objs):
                 break
             step_obj = steps_objs[i]
-            similarity = cosine_similarity_custom(
-                get_embedding(step_obj.description.strip()),
-                get_embedding(step_desc.strip()),
-            )
+            desc_a = step_obj.description.strip() if step_obj.description else ""
+            desc_b = step_desc.strip() if step_desc else ""
+            if not desc_a or not desc_b:
+                similarity = 1.0 if desc_a == desc_b else 0.0
+            else:
+                similarity = cosine_similarity_custom(
+                    get_embedding(desc_a),
+                    get_embedding(desc_b),
+                )
             if similarity < 0.9:
                 print_saver.print_and_store(
                     f"Step content mismatch at step {i+1}, {step_obj.description.strip()} should be {step_desc.strip()}."
@@ -5455,7 +5464,11 @@ Task: {task}
                     if next_match:
                         insert_idx = steps.index(next_match)
                     else:
-                        insert_idx = len(steps)
+                        insert_idx = (
+                            obj.step_number - 1
+                            if obj.step_number and 0 <= obj.step_number - 1 <= len(steps)
+                            else len(steps)
+                        )
                     steps_temp.insert(insert_idx, obj.description)
                 repair_log.append(
                     f"Missing objects added to steps: {missing_objs}. Steps: {steps_temp}."
@@ -5541,7 +5554,11 @@ Task: {task}
                     if next_match:
                         insert_idx = steps.index(next_match)
                     else:
-                        insert_idx = len(steps)
+                        insert_idx = (
+                            obj.step_number - 1
+                            if obj.step_number and 0 <= obj.step_number - 1 <= len(steps)
+                            else len(steps)
+                        )
                     steps_temp.insert(insert_idx, obj.description)
                 repair_log.append(
                     f"Missing objects added to steps: {missing_objs}. Steps: {steps_temp}."
@@ -5621,7 +5638,11 @@ Task: {task}
                     if next_match:
                         insert_idx = steps.index(next_match)
                     else:
-                        insert_idx = len(steps)
+                        insert_idx = (
+                            obj.step_number - 1
+                            if obj.step_number and 0 <= obj.step_number - 1 <= len(steps)
+                            else len(steps)
+                        )
                     steps_temp.insert(insert_idx, obj.description)
                 repair_log.append(
                     f"Missing objects added to steps: {missing_objs}. Steps: {steps_temp}."
@@ -5710,7 +5731,11 @@ Task: {task}
                         if next_match:
                             insert_idx = steps.index(next_match)
                         else:
-                            insert_idx = len(steps)
+                            insert_idx = (
+                                obj.step_number - 1
+                                if obj.step_number and 0 <= obj.step_number - 1 <= len(steps)
+                                else len(steps)
+                            )
                         steps_temp.insert(insert_idx, obj.description)
                     repair_log.append(
                         f"Missing objects added to steps: {missing_objs}. Steps: {steps_temp}."
@@ -5754,7 +5779,7 @@ Task: {task}
                                     if insert_idx < len(counts)
                                     else 0
                                 ),
-                                reflection,
+                                (reflections[insert_idx] if insert_idx < len(reflections) else None),
                             ),
                         )
                     repair_log.append(
@@ -5789,7 +5814,11 @@ Task: {task}
                         if next_match:
                             insert_idx = steps.index(next_match)
                         else:
-                            insert_idx = calc_step_number
+                            insert_idx = (
+                                obj.step_number - 1
+                                if obj.step_number and 0 <= obj.step_number - 1 <= len(steps)
+                                else len(steps)
+                            )
                         steps_temp.insert(insert_idx, obj.description)
 
                     missing_steps = [
@@ -5823,7 +5852,7 @@ Task: {task}
                                     if insert_idx < len(counts)
                                     else 0
                                 ),
-                                reflection,
+                                (reflections[insert_idx] if insert_idx < len(reflections) else None),
                             ),
                         )
                     repair_log.append(
@@ -5923,7 +5952,11 @@ Task: {task}
                     if next_match:
                         insert_idx = steps.index(next_match)
                     else:
-                        insert_idx = len(steps)
+                        insert_idx = (
+                            obj.step_number - 1
+                            if obj.step_number and 0 <= obj.step_number - 1 <= len(steps)
+                            else len(steps)
+                        )
                     steps_temp.insert(insert_idx, obj.description)
                 repair_log.append(
                     f"Missing objects added to steps: {missing_objs}. Steps: {steps_temp}."
@@ -5960,7 +5993,7 @@ Task: {task}
                                 if insert_idx < len(counts)
                                 else 0
                             ),
-                            reflection,
+                            (reflections[insert_idx] if insert_idx < len(reflections) else None),
                         ),
                     )
                 repair_log.append(
@@ -5988,7 +6021,11 @@ Task: {task}
                     if next_match:
                         insert_idx = steps.index(next_match)
                     else:
-                        insert_idx = len(steps)
+                        insert_idx = (
+                            obj.step_number - 1
+                            if obj.step_number and 0 <= obj.step_number - 1 <= len(steps)
+                            else len(steps)
+                        )
                     steps_temp.insert(insert_idx, obj.description)
                 repair_log.append(
                     f"Missing objects added to steps: {missing_objs}. Steps: {steps_temp}."
@@ -6026,7 +6063,7 @@ Task: {task}
                                 if insert_idx < len(counts)
                                 else 0
                             ),
-                            reflection,
+                            (reflections[insert_idx] if insert_idx < len(reflections) else None),
                         ),
                     )
                 repair_log.append(
@@ -6064,19 +6101,14 @@ Task: {task}
                     description = steps_objs[j].description
                     break
             if description is None:
-                try:
-                    count_index = int(counts_ints.index(count_of_i))
-                    description = (
-                        steps[count_index] if count_index < len(steps) else "ERROR"
-                    )
-                except Exception as e:
-                    description = "ERROR " + str(e)
-                    print_saver.print_and_store(
-                        f"Index {i}: Error finding description for step {step_number}: error {e}"
-                    )
-                if "ERROR" in description:
+                if i < len(steps):
+                    description = steps[i]
+                else:
                     try:
-                        description = steps[i]
+                        count_index = int(counts_ints.index(count_of_i))
+                        description = (
+                            steps[count_index] if count_index < len(steps) else "ERROR"
+                        )
                     except Exception as e:
                         description = "ERROR " + str(e)
                         print_saver.print_and_store(
@@ -6229,42 +6261,44 @@ Task: {task}
                 for j in range(1, len(steps_objs)):
                     if steps_objs[j].step_number != step_obj.step_number + 1:
                         steps_objs[j].step_number = step_obj.step_number + 1
-            if (
+            new_reflection = next(
+                (r for r in reflections if r.step_number == step_obj.step_number),
+                None
+            )
+            if new_reflection is not None:
+                if isinstance(new_reflection, Reflection):
+                    new_reflection.step_number = step_obj.step_number
+                    step_obj.reflection = new_reflection
+                    interaction.reflections.append(new_reflection)
+                elif isinstance(new_reflection, str):
+                    judged_reward = float(rewards[i]) if i < len(rewards) else getattr(self.judge_step(step_obj, task), 'reward', 0.7)
+                    step_obj.reflection = Reflection(
+                        content=str(new_reflection),
+                        reward=judged_reward,
+                        step_number=step_obj.step_number,
+                    )
+                    interaction.reflections.append(step_obj.reflection)
+            elif (
                 step_obj.reflection is None
                 or not isinstance(step_obj.reflection, Reflection)
                 or step_obj.reflection.content.strip() == ""
-            ) and step_obj.step_number in [r.step_number for r in reflections]:
-                reflection = (
-                    reflections[
-                        reflections.index(
-                            [
-                                r
-                                for r in reflections
-                                if r.step_number == step_obj.step_number
-                            ][0]
-                        )
-                    ]
-                    if step_obj.step_number in [r.step_number for r in reflections]
-                    else self.judge_step(step_obj, task)
-                )
+            ):
+                reflection = self.judge_step(step_obj, task)
                 if reflection is not None and isinstance(reflection, Reflection):
                     reflection.step_number = step_obj.step_number
                     step_obj.reflection = reflection
                     interaction.reflections.append(reflection)
                 elif isinstance(reflection, str):
-                    step_obj.reflection = (
-                        reflection
-                        if isinstance(reflection, Reflection)
-                        else Reflection(
-                            content=str(reflection),
-                            reward=(
-                                float(rewards[i])
-                                if i < len(rewards)
-                                else self.judge_step(step_obj, task)
-                            ),
-                            step_number=step_obj.step_number,
-                        )
+                    step_obj.reflection = Reflection(
+                        content=str(reflection),
+                        reward=(
+                            float(rewards[i])
+                            if i < len(rewards)
+                            else 0.0
+                        ),
+                        step_number=step_obj.step_number,
                     )
+                    interaction.reflections.append(step_obj.reflection)
             if step_obj.reflection is None or not isinstance(
                 step_obj.reflection, Reflection
             ):
@@ -6323,7 +6357,8 @@ Task: {task}
                 and step_obj.reflection.reward == 0.0
                 and i < len(rewards)
             ):
-                step_obj.reflection.reward = self.judge_step(step_obj, task)
+                judged = self.judge_step(step_obj, task)
+                step_obj.reflection.reward = judged.reward if isinstance(judged, Reflection) else float(judged)
 
         # ===========================
         # Step 6: Extract Answer from Response
@@ -6411,6 +6446,7 @@ Task: {task}
             response,
             re.DOTALL | re.IGNORECASE,
         )
+        steps = [s.strip() for s in steps]
 
         print_saver.print_and_store(f"Steps: {steps}")
         if not re.search(r"<count>", response, re.DOTALL | re.IGNORECASE):
@@ -6519,7 +6555,7 @@ Task: {task}
         )
         # Use the modified pattern for rewards
         rewards = re.findall(
-            r"</reflection>\s*.*?<reward>(0\.\d+?|1\.0)<(?:/reward|thinking|step|reflection|count|reward?)>",
+            r"<reward>(0\.\d+?|1\.0)<(?:/reward|thinking|step|reflection|count|reward?)>",
             response,
             re.DOTALL | re.IGNORECASE,
         )
@@ -6532,22 +6568,50 @@ Task: {task}
         for iii in range(len(rewards)):
             print_saver.print_and_store(f"Step {iii + 1} reward: {rewards[iii]}")
         reflections = [
-            reflection for reflection in reflections if reflection.strip() != ""
+            reflection.strip() for reflection in reflections
         ]
+        # If a step is being updated in the current response, remove its old reflection from reflections_objs so the updated reflection wins
+        updated_step_descriptions = set(steps)
+        reflections_objs = [
+            r for r in reflections_objs
+            if not any(
+                sobj.reflection == r and sobj.description in updated_step_descriptions
+                for sobj in steps_objs
+            )
+        ]
+        for sobj in steps_objs:
+            if sobj.description in updated_step_descriptions:
+                sobj.reflection = None
+
         if reflections_objs is not None and reflections_objs != []:
             reflections_objs = [
                 r for r in reflections_objs if r.content.strip() != "" and r.content
             ]
             for sobj in steps_objs:
-                if isinstance(sobj.reflection, Reflection):
-                    reflections_objs.append(sobj.reflection)
+                if isinstance(sobj.reflection, Reflection) and sobj.description not in updated_step_descriptions:
+                    if sobj.reflection not in reflections_objs:
+                        reflections_objs.append(sobj.reflection)
+            seen_ids = set()
+            deduped = []
+            for r in reflections_objs:
+                if id(r) not in seen_ids:
+                    seen_ids.add(id(r))
+                    deduped.append(r)
+            reflections_objs = deduped
             reflections_objs.sort(key=lambda r: r.step_number)
         else:
             reflections_objs = [
                 sobj.reflection
                 for sobj in steps_objs
-                if isinstance(sobj.reflection, Reflection)
+                if isinstance(sobj.reflection, Reflection) and sobj.description not in updated_step_descriptions
             ]
+            seen_ids = set()
+            deduped = []
+            for r in reflections_objs:
+                if id(r) not in seen_ids:
+                    seen_ids.add(id(r))
+                    deduped.append(r)
+            reflections_objs = deduped
             reflections_objs.sort(key=lambda r: r.step_number)
 
         counts = [c.strip() for c in counts if c.isnumeric()]
@@ -6591,7 +6655,18 @@ Task: {task}
                             (
                                 reflections_objs[0]
                                 if reflections_objs
-                                else self.judge_step(steps[0], task)
+                                else self.judge_step(
+                                    (
+                                        steps[0]
+                                        if isinstance(steps[0], Step)
+                                        else Step(
+                                            description=str(steps[0]),
+                                            step_number=current_step_number,
+                                            remaining_budget=current_remaining_budget,
+                                        )
+                                    ),
+                                    task,
+                                )
                             ),
                             thoughts[0] if thoughts else None,
                             plan_step_number,
@@ -6602,62 +6677,42 @@ Task: {task}
                     return interaction
 
         # Combine existing and new reflections, avoiding duplicates
-        existing_contents = {r.content.strip() for r in reflections_objs}
-        new_reflections = [
-            Reflection(
-                content=r,
-                step_number=(
-                    first_count - int(counts[ii]) + 1
-                    if ii < len(counts)
-                    else (
-                        reflections_objs[-1].step_number + 1 if reflections_objs else 1
-                    )
-                ),
-                reward=(
+        existing_contents = {r.content.strip() for r in reflections_objs if r.content}
+        new_reflections = []
+        base_step_num = len(reflections_objs)
+        for ii, r in enumerate(reflections):
+            if isinstance(r, Reflection):
+                new_reflections.append(r)
+            else:
+                r_content = str(r).strip()
+                if r_content and r_content in existing_contents:
+                    continue
+                rew = (
                     float(rewards[ii])
                     if ii < len(rewards)
-                    else self.judge_step(
-                        Step(
-                            steps[ii],
-                            (
-                                first_count - int(counts[ii]) + 1
-                                if ii < len(counts)
-                                else ii + 1
+                    else getattr(
+                        self.judge_step(
+                            Step(
+                                steps[ii] if ii < len(steps) else "",
+                                base_step_num + len(new_reflections) + 1,
+                                initial_budget - (base_step_num + len(new_reflections) + 1),
                             ),
-                            initial_budget - (ii + 1),
+                            task,
                         ),
-                        task,
-                    ).reward
-                ),
-            )
-            for ii, r in enumerate(reflections)
-            if r not in existing_contents
-        ]
-        for refobj in reflections_objs:
-            if (
-                refobj not in new_reflections
-                and refobj.content not in existing_contents
-            ):
-                if refobj.step_number is None:
-                    refobj.step_number = (
-                        first_count - int(counts[reflections_objs.index(refobj)]) + 1
-                        if reflections_objs.index(refobj) < len(counts)
-                        else (
-                            reflections_objs[-1].step_number + 1
-                            if reflections_objs
-                            else 1
-                        )
+                        "reward",
+                        0.7,
                     )
-                elif refobj.step_number in [
-                    r.step_number for r in new_reflections + reflections
-                ]:
-                    for r in new_reflections + reflections:
-                        if r.step_number == refobj.step_number:
-                            r.step_number += 1
-                new_reflections.append(refobj)
-        all_reflections = reflections_objs + new_reflections
+                )
+                new_reflections.append(
+                    Reflection(
+                        content=str(r),
+                        step_number=base_step_num + len(new_reflections) + 1,
+                        reward=rew,
+                    )
+                )
+
+        all_reflections = list(reflections_objs) + new_reflections
         # Assign sequential step numbers
-        all_reflections.sort(key=lambda r: r.step_number)
         for idx, reflection in enumerate(all_reflections, start=1):
             reflection.step_number = idx
         final_reflections = all_reflections
@@ -7520,26 +7575,11 @@ Task: {task}
         try:
 
             # Merge steps
-            if len(interaction_a.steps) < len(interaction_b.steps):
-                interaction_a.steps.extend(
-                    stp
-                    for stp in interaction_b.steps
-                    if stp not in interaction_a.steps
-                    and stp.step_number
-                    not in [s.step_number for s in interaction_a.steps]
-                )
-                merged_interaction.steps = interaction_a.steps
-            elif len(interaction_a.steps) > len(interaction_b.steps):
-                interaction_b.steps.extend(
-                    stp
-                    for stp in interaction_a.steps
-                    if stp not in interaction_b.steps
-                    and stp.step_number
-                    not in [s.step_number for s in interaction_b.steps]
-                )
-                merged_interaction.steps = interaction_b.steps
-            else:
-                merged_interaction.steps = interaction_a.steps
+            steps_dict = {s.step_number: s for s in interaction_a.steps}
+            for s in interaction_b.steps:
+                if s.step_number not in steps_dict:
+                    steps_dict[s.step_number] = s
+            merged_interaction.steps = sorted(steps_dict.values(), key=lambda s: s.step_number)
 
             # Merge reflections
             merged_interaction.reflections = [
@@ -7616,7 +7656,7 @@ Task: {task}
         print_saver.print_and_store("Adjusted Step Budget:" + str(adjusted_budget))
 
         # Step 4: Generate Initial Prompt
-        initial_prompt, system_prompt = self.generate_initial_prompt(
+        system_prompt, initial_prompt = self.generate_initial_prompt(
             refined_task,
             retrieved_info,
             adjusted_budget,

@@ -334,7 +334,10 @@ def remove_non_sentences(text: str) -> str:
     Returns:
         str: The cleaned text containing only full sentences.
     """
-    sentences = sent_tokenize(text)
+    try:
+        sentences = sent_tokenize(text)
+    except LookupError:
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()] or [text]
     cleaned_sentences = []
     for sentence in sentences:
         # Check if the sentence ends with a punctuation mark and begins with a capital letter
@@ -424,7 +427,10 @@ def generate_ngrams(text, n):
     :param n: Number of words in each n-gram.
     :return: List of n-grams as tuples.
     """
-    tokens = word_tokenize(text.lower())  # Tokenize and convert to lowercase
+    try:
+        tokens = word_tokenize(text.lower())  # Tokenize and convert to lowercase
+    except LookupError:
+        tokens = re.findall(r"\b\w+\b", text.lower())
     return list(ngrams(tokens, n))
 
 
@@ -669,8 +675,11 @@ def finetune_ml_model(df: pd.DataFrame, model_path: str):
     y_finetune = [1 if score >= 0.5 else 0 for score in df_finetune["complex"]]
 
     # Load the existing pipeline model
-    with open(model_path, "rb") as f:
-        pipeline_finetuned = pickle.load(f)
+    if os.path.exists(model_path):
+        with open(model_path, "rb") as f:
+            pipeline_finetuned = pickle.load(f)
+    else:
+        pipeline_finetuned = pipeline_ml
 
         # Add cross-validation
 
@@ -3455,18 +3464,20 @@ def is_complex_ontology(input_query: str, max_depth_threshold: int = 3) -> float
     Returns:
         float: Score between 0 and 1 indicating complexity.
     """
-    tokens = nltk.word_tokenize(input_query)
-    nouns = [word for word, pos in nltk.pos_tag(tokens) if pos.startswith("NN")]
-
-    max_depth = 0
-    for noun in nouns:
-        synsets = wn.synsets(noun, pos=wn.NOUN)
-        if not synsets:
-            continue
-        synset = synsets[0]
-        depth = synset.max_depth()
-        if depth > max_depth:
-            max_depth = depth
+    try:
+        tokens = nltk.word_tokenize(input_query)
+        nouns = [word for word, pos in nltk.pos_tag(tokens) if pos.startswith("NN")]
+        max_depth = 0
+        for noun in nouns:
+            synsets = wn.synsets(noun, pos=wn.NOUN)
+            if not synsets:
+                continue
+            synset = synsets[0]
+            depth = synset.max_depth()
+            if depth > max_depth:
+                max_depth = depth
+    except LookupError:
+        max_depth = 0
 
     # Normalize score using sigmoid function and threshold
     score = (
@@ -3748,20 +3759,25 @@ def flesch_kincaid_grade(text: str) -> float:
     Returns:
         float: Flesch-Kincaid Grade Level.
     """
-    sentences = sent_tokenize(text)
-    words = word_tokenize(text)
-    syllables = 0
-    d = cmudict.dict()
+    try:
+        sentences = sent_tokenize(text)
+        words = word_tokenize(text)
+        syllables = 0
+        d = cmudict.dict()
 
-    for word in words:
-        word_lower = word.lower()
-        if word_lower in d:
-            syllables += [
-                len(list(y for y in x if y[-1].isdigit())) for x in d[word_lower]
-            ][0]
-        else:
-            # Fallback: count vowels as syllables
-            syllables += len(re.findall(r"[aeiouy]+", word_lower))
+        for word in words:
+            word_lower = word.lower()
+            if word_lower in d:
+                syllables += [
+                    len(list(y for y in x if y[-1].isdigit())) for x in d[word_lower]
+                ][0]
+            else:
+                # Fallback: count vowels as syllables
+                syllables += len(re.findall(r"[aeiouy]+", word_lower))
+    except LookupError:
+        sentences = [s.strip() for s in text.split('.') if s.strip()] or [text]
+        words = text.split()
+        syllables = sum(len(re.findall(r"[aeiouy]+", w.lower())) for w in words)
 
     if len(words) == 0 or len(sentences) == 0:
         return 0.0
@@ -3919,8 +3935,13 @@ def calculate_entropy(text: str) -> float:
     Returns:
         float: Entropy value.
     """
-    tokens = word_tokenize(text.lower())
+    try:
+        tokens = word_tokenize(text.lower())
+    except LookupError:
+        tokens = text.lower().split()
     total_tokens = len(tokens)
+    if total_tokens == 0:
+        return 0.0
     counts = Counter(tokens)
     probabilities = [count / total_tokens for count in counts.values()]
     entropy = -sum(p * math.log2(p) for p in probabilities if p > 0)
@@ -4029,7 +4050,8 @@ def is_complex_final(
         f.write(f"[Machine Learning Classification] Score: {score_ml}\n\n")
 
     # Method 4: Language Model-Based Analysis
-    score_llm, plan = is_complex_llm(input_query)
+    res_llm = is_complex_llm(input_query)
+    score_llm, plan = res_llm if isinstance(res_llm, tuple) else (res_llm, Plan(steps=[]))
     with open(save_path, "a") as f:
         f.write(f"[Language Model] Score: {score_llm}\n\n")
 
