@@ -1,5 +1,5 @@
 /// <reference types="vitest/globals" />
-import { render, screen, act } from '@testing-library/react';
+import { render, screen, act, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ConversationPage from './ConversationPage';
 import { useRunConversation } from '../hooks/useRunConversation';
@@ -11,8 +11,11 @@ import toast from 'react-hot-toast';
 vi.mock('../hooks/useRunConversation');
 
 // Mock react-hot-toast
-const mockToastError = vi.fn();
-const mockToastSuccess = vi.fn();
+const { mockToastError, mockToastSuccess } = vi.hoisted(() => ({
+  mockToastError: vi.fn(),
+  mockToastSuccess: vi.fn(),
+}));
+
 vi.mock('react-hot-toast', () => ({
   __esModule: true,
   default: {
@@ -411,9 +414,8 @@ describe('ConversationPage Integration Test', () => {
 
     // Simulate changing number of rounds (example of config change)
     // AssistantConfigPanel has a label "Number of Rounds" associated with its input
-    const roundsInput = screen.getByLabelText('Number of Rounds') as HTMLInputElement;
-    await userEvent.clear(roundsInput);
-    await userEvent.type(roundsInput, '5');
+    const roundsInput = screen.getByLabelText(/Number of Rounds/i) as HTMLInputElement;
+    fireEvent.change(roundsInput, { target: { value: '5' } });
     expect(roundsInput.value).toBe('5');
 
     // For personalities and lead, direct selection might be complex if they use custom select components.
@@ -452,9 +454,8 @@ describe('ConversationPage Integration Test', () => {
     // Initial system message is at index 0. User message at 1. Assistant at 2. Length = 3.
     // So, conversation.length (3) >= numRounds (1) * selectedPersonalities.length (1) * 2 (2) -> 3 >= 2 is true.
 
-    const roundsInput = screen.getByLabelText('Number of Rounds') as HTMLInputElement;
-    await userEvent.clear(roundsInput);
-    await userEvent.type(roundsInput, '1');
+    const roundsInput = screen.getByLabelText(/Number of Rounds/i) as HTMLInputElement;
+    fireEvent.change(roundsInput, { target: { value: '1' } });
 
     // Start conversation
     const startButton = screen.getByRole('button', { name: /Start New Conversation/i });
@@ -511,14 +512,12 @@ describe('ConversationPage Integration Test', () => {
 
     // Try to send another message
     await userEvent.type(textarea, 'Attempting another message');
-    expect(textarea.value).toBe(''); // Textarea should clear if send fails
+    expect(textarea.value).toBe('Attempting another message');
 
     // Click send button again
-    // Need to ensure the button is re-enabled after the first send if textarea is not empty.
-    // The ChatInput enables button if !isLoading && inputValue.trim().
-    // Since loading should be false now, and input is not empty, it should be enabled.
     expect(sendButton).toBeEnabled();
     await userEvent.click(sendButton);
+    expect(textarea.value).toBe(''); // Textarea clears after send
 
     // Assert that runConversation was NOT called again
     expect(mockRunConversationFn).toHaveBeenCalledTimes(1);

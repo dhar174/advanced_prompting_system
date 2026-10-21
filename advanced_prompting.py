@@ -6,6 +6,8 @@ import difflib
 
 from Levenshtein import ratio
 import openai
+from provider_client import LazyClient
+client = LazyClient()
 import os
 import re
 import time
@@ -15,7 +17,7 @@ import random
 from tqdm import tqdm
 from conversation_manager import output_type_determination, OutputType
 from pydantic import BaseModel, Field, ValidationError, field_validator
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Union
 import tiktoken
 import os
 import json # Added for JSON parsing
@@ -1505,23 +1507,40 @@ class Step(BaseModel):
     #     final_step_output (str): The final output generated at this step.
     # """
 
-    # def __init__(
-    #     self,
-    #     description: str,
-    #     step_number: int,
-    #     remaining_budget: int,
-    #     reflection: Reflection | None = None,
-    #     thoughts: str = None,
-    #     plan_step_number: int = None,
-    #     final_step_output: FinalStepOutput | None = None,
-    # ):
-    #     self.description = description
-    #     self.step_number = step_number
-    #     self.remaining_budget = remaining_budget
-    #     self.reflection = reflection
-    #     self.thoughts = thoughts
-    #     self.plan_step_number = plan_step_number
-    #     self.final_step_output = final_step_output
+    def __init__(
+        self,
+        description: str = "",
+        step_number: int = 1,
+        remaining_budget: int = 0,
+        reflection: Optional[Reflection] = None,
+        thoughts: Optional[str] = None,
+        plan_step_number: Optional[int] = None,
+        final_step_output: Optional[FinalStepOutput] = None,
+        **kwargs,
+    ):
+        super().__init__(
+            description=kwargs.get("description", description),
+            step_number=kwargs.get("step_number", step_number),
+            remaining_budget=kwargs.get("remaining_budget", remaining_budget),
+            reflection=kwargs.get("reflection", reflection),
+            thoughts=kwargs.get("thoughts", thoughts),
+            plan_step_number=kwargs.get("plan_step_number", plan_step_number),
+            final_step_output=kwargs.get("final_step_output", final_step_output),
+            **{
+                k: v
+                for k, v in kwargs.items()
+                if k
+                not in {
+                    "description",
+                    "step_number",
+                    "remaining_budget",
+                    "reflection",
+                    "thoughts",
+                    "plan_step_number",
+                    "final_step_output",
+                }
+            },
+        )
 
     def __repr__(self):
         return f"Step(description={self.description}, step_number={self.step_number}, remaining_budget={self.remaining_budget}, reflection={self.reflection})"
@@ -1897,6 +1916,8 @@ class AdvancedPromptEngineer:
         self.config = config
         self.knowledge_base = {}  # For Retrieval-Augmented Generation
         self.task_object = None
+        self.last_conversation_history = None
+        self.last_questions_asked = None
 
     def determine_output_type_from_content(self, content: str, file_path: str, task: Task) -> OutputType:
         """
@@ -1952,8 +1973,8 @@ class AdvancedPromptEngineer:
         """
         from conversation_manager import run_conversation # Import here to avoid circular dependencies at module level
 
-        # Ensure plan_step.description is a string, even if None
-        problem_description = plan_step.description if plan_step.description is not None else ""
+        # Ensure problem_description is a string, even if None
+        problem_description = getattr(plan_step, 'description', None) or getattr(plan_step, 'step_description', '') or ""
         problem_statement_for_conversation = [{"content": f"Step {plan_step.step_number}: {problem_description}"}]
         
         selected_personalities = self.select_personalities_for_planstep(plan_step, task)
@@ -1966,12 +1987,29 @@ class AdvancedPromptEngineer:
 
         # Call the conversation manager to run the multi-agent discussion
         # num_rounds is set to 2 as a default for this collaborative step.
-        final_output_path = run_conversation(
+        result = run_conversation(
             problem_statement=problem_statement_for_conversation,
             selected_personalities=selected_personalities,
             lead_personality=lead_personality,
             num_rounds=2 
         )
+        
+        if (
+            not isinstance(result, tuple)
+            or len(result) != 3
+            or not isinstance(result[0], list)
+            or not isinstance(result[1], list)
+            or not (result[2] is None or isinstance(result[2], str))
+        ):
+            raise ValueError(
+                f"Expected run_conversation to return a 3-tuple (List[dict], List[dict], Optional[str]), got {type(result)} with values {result}"
+            )
+            
+        conversation_history, questions_asked, final_output_path = result
+        
+        # Retain conversation metadata for auditing / introspection (Issue #29 & #20)
+        self.last_conversation_history = conversation_history
+        self.last_questions_asked = questions_asked
         
         # Convert the path/result of the conversation into a standard FinalStepOutput
         return self.convert_conversation_output_to_final_step_output(
@@ -1986,11 +2024,12 @@ class AdvancedPromptEngineer:
         """
         base_personalities = ["Strategist", "Educator"]
         
-        if plan_step.description is None:
+        desc = getattr(plan_step, 'description', None) or getattr(plan_step, 'step_description', None)
+        if desc is None:
             # If description is None, no keyword analysis can be done, return base (capped)
             return base_personalities[:min(len(base_personalities), 3)]
 
-        description_lower = plan_step.description.lower()
+        description_lower = desc.lower()
 
         if "code" in description_lower or "script" in description_lower or "python" in description_lower:
             if "Software Engineer" not in base_personalities:
@@ -2065,7 +2104,7 @@ class AdvancedPromptEngineer:
         # The 'Step' created here is a synthetic step representing the conversion process itself.
         # Its remaining_budget is set to 0 as it's an artifact, not a budgeted reasoning step.
         created_step = Step(
-            description=f"Converted output from conversation for plan step: {plan_step.description or 'N/A'}",
+            description=f"Converted output from conversation for: {plan_step.description}",
             step_number=step_number_for_conversion_step,
             remaining_budget=0, 
             plan_step_number=plan_step.step_number
@@ -2112,7 +2151,7 @@ class AdvancedPromptEngineer:
             {"role": "user", "content": system_prompt},
         ]
         try:
-            prompt_response = openai.chat.completions.create(
+            prompt_response = client.chat.completions.create(
                 model=self.config.model,
                 messages=messages,
                 temperature=0.2,
@@ -2133,7 +2172,7 @@ class AdvancedPromptEngineer:
             {"role": "user", "content": system_prompt},
         ]
         try:
-            prompt_response = openai.chat.completions.create(
+            prompt_response = client.chat.completions.create(
                 model=self.config.model,
                 messages=messages,
                 temperature=0.2,
@@ -2286,7 +2325,7 @@ class AdvancedPromptEngineer:
             {"role": "user", "content": this_step},
         ]
         try:
-            prompt_response = openai.chat.completions.create(
+            prompt_response = client.chat.completions.create(
                 model=self.config.model,
                 messages=messages,
                 temperature=0.2,
@@ -2451,7 +2490,7 @@ class AdvancedPromptEngineer:
         """
         messages.append({"role": "user", "content": user_prompt})
         try:
-            decision_response = openai.chat.completions.create(
+            decision_response = client.chat.completions.create(
                 model=self.config.model,
                 messages=messages,
                 temperature=0.2,
@@ -2705,7 +2744,7 @@ class AdvancedPromptEngineer:
         ]
 
         try:
-            response = openai.chat.completions.create(
+            response = client.chat.completions.create(
                 model=self.config.model,
                 messages=messages,
                 temperature=0.2,
@@ -3329,7 +3368,7 @@ class AdvancedPromptEngineer:
         ]
         final_output = None
         try:
-            response = openai.chat.completions.create(
+            response = client.chat.completions.create(
                 model=self.config.model,
                 messages=messages,
                 temperature=0.2,
@@ -3454,7 +3493,7 @@ class AdvancedPromptEngineer:
         }
         messages = [system_message, {"role": "user", "content": prompt}]
         try:
-            response = openai.beta.chat.completions.parse(
+            response = client.beta.chat.completions.parse(
                 model="gpt-4o-mini",  # Specify the model
                 messages=messages,  # Pass the messages directly as a list of dicts
                 response_format=CompletionStatus,  # Define the response format
@@ -3523,7 +3562,7 @@ class AdvancedPromptEngineer:
             assert isinstance(
                 subtask, Subtask
             ), f"Invalid subtask type. Please provide a valid Subtask object. Type: {type(subtask)}"
-            response = openai.beta.chat.completions.parse(
+            response = client.beta.chat.completions.parse(
                 model="gpt-4o-mini",  # Specify the model
                 messages=messages,  # Pass the messages directly as a list of dicts
                 response_format=CompletionStatus,  # Define the response format
@@ -3628,7 +3667,7 @@ class AdvancedPromptEngineer:
             {"role": "user", "content": prompt},
         ]
 
-        response = openai.beta.chat.completions.parse(
+        response = client.beta.chat.completions.parse(
             model=self.config.model,
             messages=messages,
             response_format=FinalReviewScore,
@@ -3673,14 +3712,15 @@ class AdvancedPromptEngineer:
         ]
 
     def retrieve_information(self, task: str) -> str:
-        """
-        Combines internal knowledge base and external information.
-        """
-        # TODO: Implement actual retrieval of internal information
-        # internal_info = self.knowledge_base.get(task, "")
-        # external_info = self.retrieve_external_info(task)
-        # return f"{internal_info}\n{external_info}"
-        return ""
+        """Retrieve information from internal knowledge base and external sources."""
+        internal_info = self.knowledge_base.get(task, "")
+        try:
+            external_info = self.retrieve_external_info(task)
+        except Exception:
+            external_info = ""
+        # Combine available sources, filtering out empty strings
+        parts = [p for p in [internal_info, external_info] if p]
+        return "\n".join(parts)
 
     # -------------------------------
     # Chain-of-Thought (CoT) Prompting
@@ -4197,19 +4237,37 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
         restart_limit: int = 3,
         max_plan_steps: int = 0,
         **kwargs # To capture other potential arguments for self_consistency
-    ) -> Interaction | FinalStepOutput: # Return type can be Interaction or FinalStepOutput
+    ) -> Interaction:
         """
         Decides whether to use multi-agent or single-agent (self-consistency) reasoning.
+        Returns an Interaction object consistent with the main loop and self_consistency.
         """
         plan_step_num = plan_step.step_number
 
         if self.should_use_multi_agent_reasoning(plan_step, task):
             print_saver.print_and_store(f"Using multi-agent reasoning for plan step: {plan_step.step_name} (ID: {plan_step_num})")
-            # Note: invoke_collaborative_reasoning returns FinalStepOutput,
-            # but this method is expected to return Interaction if it follows the self_consistency path.
-            # This might require further refactoring or adjustment of return types/logic upstream.
-            # For now, returning as is, but this is a potential type mismatch.
-            return self.invoke_collaborative_reasoning(task, plan_step)
+            final_step_output = self.invoke_collaborative_reasoning(task, plan_step)
+            step = getattr(final_step_output, 'step', None) or Step(
+                description=plan_step.step_description or "",
+                step_number=step_number,
+                plan_step_number=plan_step_num,
+                thoughts="",
+                reflection=None,
+                remaining_budget=0,
+            )
+            reflection = Reflection(
+                content="Multi-agent collaborative reasoning completed.",
+                reward=1.0,
+                step_number=step.step_number,
+            )
+            return Interaction(
+                task=task,
+                steps=[step],
+                reflections=[reflection],
+                answer=getattr(final_step_output, 'final_output', "") or "",
+                final_reward=1.0,
+                step_outputs=[final_step_output] if final_step_output else [],
+            )
         else:
             print_saver.print_and_store(f"Using single-agent reasoning (self-consistency) for plan step: {plan_step.step_name} (ID: {plan_step_num})")
             
@@ -4220,8 +4278,8 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
             # TODO: Ensure system_prompt and initial_user_prompt are correctly sourced or constructed
             # For now, using placeholders or simplified versions.
             _system_prompt, initial_user_prompt = self.generate_initial_prompt(
-                task_description=task.refined_description, 
-                retrieved_info="", # Placeholder
+                task=task.refined_description, 
+                retrieved_info=self.retrieve_information(task.description),
                 step_budget=step_budget, 
                 complexity=task.complexity, 
                 output_type=output_type
@@ -4236,12 +4294,12 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
             backtrack_limit = kwargs.get('backtrack_limit', 3)
             consistency_multiplier = kwargs.get('consistency_multiplier', 3)
             
-            return self.self_consistency(
+            interaction = self.self_consistency(
                 task=task,
                 prompt=prompt_for_self_consistency, # Or potentially the combined prompt used in messages
                 existing_interaction=existing_interaction,
                 messages=messages_for_self_consistency, # Pass constructed messages
-                output_type=output_type.output_type, # Pass string representation
+                output_type=output_type,  # Pass full OutputType object
                 step_budget=step_budget,
                 step_number=step_number,
                 plan_step_number=plan_step_num,
@@ -4250,6 +4308,7 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
                 consistency_multiplier=consistency_multiplier,
                 max_plan_steps=max_plan_steps
             )
+            return interaction
 
     def refine_prompt_via_meta_prompt(
         self, performance_data: str
@@ -4267,7 +4326,7 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
             {"role": "user", "content": meta_prompt},
         ]
         try:
-            response = openai.beta.chat.completions.parse(
+            response = client.beta.chat.completions.parse(
                 model="gpt-4o-mini",  # Specify the model
                 messages=messages,  # Pass the messages directly as a list of dicts
                 response_format=PromptSuggestions,  # Parse the response into the PromptSuggestions class
@@ -4538,7 +4597,7 @@ Task: {task}
             max_delay = 16
             try:
 
-                response = openai.beta.chat.completions.parse(
+                response = client.beta.chat.completions.parse(
                     model=self.config.model,
                     messages=messages,
                     response_format=StepNumber,
@@ -4587,7 +4646,7 @@ Task: {task}
 
         for attempt in range(self.config.max_retries):
             try:
-                response = openai.chat.completions.create(
+                response = client.chat.completions.create(
                     model=self.config.model,
                     messages=messages,
                     temperature=temperature if temperature > 0.0 else None,
@@ -6923,7 +6982,7 @@ Task: {task}
         max_delay = 16
         for attempt in range(self.config.max_retries):
             try:
-                decision_response = openai.beta.chat.completions.parse(
+                decision_response = client.beta.chat.completions.parse(
                     model=self.config.model,
                     messages=messages,
                     response_format=response_choices,
@@ -6968,7 +7027,7 @@ Task: {task}
         prompt: str,
         existing_interaction: Interaction,
         messages: List[dict],
-        output_type: str,
+        output_type: Union[str, "OutputType"],  # Accept both string and OutputType object
         step_budget: int,
         step_number: int,
         plan_step_number: int,
@@ -7342,7 +7401,7 @@ Task: {task}
         ]
 
         # Call the OpenAI API to generate the modified prompt
-        response = openai.chat.completions.create(
+        response = client.chat.completions.create(
             model=self.config.model,
             messages=messages,
         )
@@ -7358,7 +7417,7 @@ Task: {task}
         first_prompt = self.automatic_prompt_engineering(task)
 
         # Call the OpenAI API to generate the refined prompt
-        response = openai.chat.completions.create(
+        response = client.chat.completions.create(
             model=self.config.model,
             messages=[
                 {
@@ -7428,7 +7487,7 @@ Task: {task}
     #     Determines the expected output for the given task.
     #     """
     #     # Call the OpenAI API to generate the expected output
-    #     response = openai.chat.completions.create(
+    #     response = client.chat.completions.create(
     #         model=self.config.model,
     #         messages=[
     #             {
@@ -7707,7 +7766,7 @@ Task: {task}
             agent_prompt = current_planstep_prompt.replace(initial_prompt, "")
             if self.config.agents > 0:
                 agent_interaction = self.collaborative_reasoning_main(
-                    Task(
+                    task=Task(
                         curr_desc,
                         self.task_into_prompt(curr_desc),
                         complexity,
@@ -7718,14 +7777,13 @@ Task: {task}
                         plan,
                         _output_type,
                     ),
-                    agent_prompt,
-                    main_interaction,
-                    task_object.output_type,
-                    max(count / len([p for p in plan.steps if not p.completed]), 1),
-                    step,
-                    curr_num,
-                    3,
-                    max_step,
+                    plan_step=current_plan_step,
+                    existing_interaction=main_interaction,
+                    output_type=task_object.output_type,
+                    step_budget=max(count // len([p for p in plan.steps if not p.completed]), 1),
+                    step_number=step,
+                    restart_limit=3,
+                    max_plan_steps=max_step,
                 )
             # Step 6: Self-Consistency Check
             self_consistent_interaction = self.self_consistency(

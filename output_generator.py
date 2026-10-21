@@ -52,7 +52,7 @@ def generate_json_output(
             json.dump(final_decision, f, indent=4)
         return os.path.abspath(filename)
     except (IOError, OSError, PermissionError) as e:
-        print(f"❌ Error writing JSON file '{filename}': {e}")
+        print(f"[Error] Error writing JSON file '{filename}': {e}")
         raise
 
 
@@ -73,7 +73,7 @@ def generate_pdf_output(final_decision: str, filename: str = "final_output.pdf")
             f.write(f"PDF Content: {final_decision}")
         return os.path.abspath(filename)
     except (IOError, OSError, PermissionError) as e:
-        print(f"❌ Error writing PDF file '{filename}': {e}")
+        print(f"[Error] Error writing PDF file '{filename}': {e}")
         raise
 
 
@@ -95,7 +95,7 @@ def generate_text_file_output(
             f.write(final_decision)
         return os.path.abspath(filename)
     except (IOError, OSError, PermissionError) as e:
-        print(f"❌ Error writing text file '{filename}': {e}")
+        print(f"[Error] Error writing text file '{filename}': {e}")
         raise
 
 
@@ -122,7 +122,7 @@ def generate_html_output(
             f.write(html_content)
         return os.path.abspath(filename)
     except (IOError, OSError, PermissionError) as e:
-        print(f"❌ Error writing HTML file '{filename}': {e}")
+        print(f"[Error] Error writing HTML file '{filename}': {e}")
         raise
 
 
@@ -150,7 +150,7 @@ def generate_python_script(
             f.write(final_decision)
         return os.path.abspath(filename)
     except (IOError, OSError, PermissionError) as e:
-        print(f"❌ Error writing Python script file '{filename}': {e}")
+        print(f"[Error] Error writing Python script file '{filename}': {e}")
         raise
 
 
@@ -172,7 +172,7 @@ def generate_code_snippet(
             f.write(final_decision)
         return os.path.abspath(filename)
     except (IOError, OSError, PermissionError) as e:
-        print(f"❌ Error writing code snippet file '{filename}': {e}")
+        print(f"[Error] Error writing code snippet file '{filename}': {e}")
         raise
 
 
@@ -193,5 +193,5 @@ def generate_csv_output(final_decision: str, filename: str = "final_output.csv")
                 f.write(f"{key},{value}\n")
         return os.path.abspath(filename)
     except (IOError, OSError, PermissionError) as e:
-        print(f"❌ Error writing CSV file '{filename}': {e}")
+        print(f"[Error] Error writing CSV file '{filename}': {e}")
         raise
