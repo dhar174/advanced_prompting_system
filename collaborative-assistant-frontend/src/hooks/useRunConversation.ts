@@ -18,7 +18,7 @@ export const useRunConversation = (): UseRunConversationResult => {
   const runConversation: RunConversationMutateFunction = async (variables) => {
     try {
       await mutateFunction({ variables });
-    } catch (e) {
+    } catch {
       // Error is already handled by the error object from useMutation
       // console.error("Error in runConversation mutation:", e);
     }

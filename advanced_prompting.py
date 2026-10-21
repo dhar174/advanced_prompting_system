@@ -4459,7 +4459,7 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
 
 By adhering to these guidelines, you will provide structured, transparent, and high-quality solutions that are easy to follow and evaluate. Note that the prompt you are given may represent a single step in the overall task, and you should continue from the most recent step provided to directly solve the given problem.
 """
-        prompt = f"""Begin by enclosing all thoughts within <thinking> tags, exploring multiple angles and approaches. You will use these as your mental scratchpad to brainstorm and consider various strategies, as well as to step through the problem-solving process.
+        prompt = fr"""Begin by enclosing all thoughts within <thinking> tags, exploring multiple angles and approaches. You will use these as your mental scratchpad to brainstorm and consider various strategies, as well as to step through the problem-solving process.
 Break down the solution into clear steps within <step> tags. Start with a {adjusted_budget}-step budget, requesting more for complex problems if needed.
 There will be <count> tags before each step to show the remaining budget before the current step is complete. You will be stopped after the value reaches 0 (ie, 1 indicates the last step)
 Continuously adjust your reasoning based on intermediate results and reflections, adapting your strategy as you progress.

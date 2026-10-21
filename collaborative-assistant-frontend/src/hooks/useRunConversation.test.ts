@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock @apollo/client
 vi.mock('@apollo/client', async (importOriginal) => {
-  const original = await importOriginal() as any;
+  const original = await importOriginal<Record<string, unknown>>();
   return {
     ...original,
     useMutation: vi.fn(),
@@ -74,7 +74,7 @@ describe('useRunConversation hook', () => {
     const mockError = new Error('Test error');
     (useMutation as vi.Mock).mockReturnValue([
       mockMutateFunction,
-      { data: null, loading: false, error: mockError as any }, // Cast to any if ApolloError is complex
+      { data: null, loading: false, error: mockError as unknown as import('@apollo/client').ApolloError },
     ]);
     const { result } = renderHook(() => useRunConversation());
     expect(result.current.error).toEqual(mockError);
@@ -102,7 +102,7 @@ describe('useRunConversation hook', () => {
                 leadPersonality: '',
                 numRounds: 0
             });
-        } catch (e) {
+        } catch {
             // Errors from the mutateFunction itself, if not handled by Apollo Client's error state,
             // might be caught here. However, useMutation typically updates its own error state.
         }

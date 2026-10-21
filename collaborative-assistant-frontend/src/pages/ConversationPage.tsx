@@ -100,7 +100,7 @@ const ConversationPage: React.FC = () => {
         leadPersonality,
         numRounds,
       });
-    } catch (error) {
+    } catch {
         // Error is handled by the useEffect for runConversationError
     }
   };

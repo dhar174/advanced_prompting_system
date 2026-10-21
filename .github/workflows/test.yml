@@ -1,0 +1,76 @@
+name: Test Suite (Offline Qualification)
+
+on:
+  push:
+    branches: [main, "feat/**", "fix/**", "chore/**"]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-test:
+    name: Backend Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run offline test suite
+        run: |
+          chmod +x tools/run-offline.sh
+          ./tools/run-offline.sh -q
+
+  frontend-test:
+    name: Frontend Tests & Lint (Node 22)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: collaborative-assistant-frontend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "npm"
+          cache-dependency-path: collaborative-assistant-frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify network denial guard
+        run: |
+          chmod +x ../tools/run-frontend-offline.sh
+          ../tools/run-frontend-offline.sh guard
+
+      - name: Run ESLint
+        run: ../tools/run-frontend-offline.sh lint
+
+      - name: Run Vitest Suite
+        run: ../tools/run-frontend-offline.sh test
+
+      - name: Run TypeScript & Vite Build
+        run: ../tools/run-frontend-offline.sh build

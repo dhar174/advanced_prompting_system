@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import React from 'react';
 import { cva, type VariantProps } from 'class-variance-authority';
 
@@ -41,5 +42,6 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   }
 );
 Button.displayName = 'Button';
+
 
 export { Button, buttonVariants };
