@@ -2,8 +2,8 @@
 
 ## Verified Offline Baselines
 - **Backend Offline Test Suite (`./tools/run-offline.ps1 -PytestArgs '-q'`)**:
-  - **206 passed, 0 failed, 0 skipped**
-  - Includes 48 tests in `test_advanced_prompting.py`, 41 tests in `test_execution_modes.py`, 13 tests in `test_empirical_challenger_2.py`, 6 tests in `test_graphql_contract.py`, 6 tests in `test_smoke.py`, and full regression suites in `test_pr34_regressions.py`, `test_voting_semantics.py`, `test_memory_management.py`, `test_message_handling.py`, `test_offline_runtime.py`, `test_import_integrity.py`, `test_retrieval.py`, and `test_finalize_step_output.py`.
+  - **210 passed, 0 failed, 0 skipped**
+  - Includes 49 tests in `test_advanced_prompting.py`, 44 tests in `test_execution_modes.py`, 13 tests in `test_empirical_challenger_2.py`, 6 tests in `test_graphql_contract.py`, 6 tests in `test_smoke.py`, and full regression suites in `test_pr34_regressions.py`, `test_voting_semantics.py`, `test_memory_management.py`, `test_message_handling.py`, `test_offline_runtime.py`, `test_import_integrity.py`, `test_retrieval.py`, and `test_finalize_step_output.py`.
 - **Frontend Offline Test Suite (`./tools/run-frontend-offline.ps1 -Action test`)**:
   - **124 passed, 0 failed** across 13 test files (including new suites `StructuredOutputRenderer.test.tsx`, `ReasoningDiagnosticsPanel.test.tsx`, and `useRunExecution.test.ts`).
   - Production TypeScript & Vite bundle build (`-Action build`): **PASS**.
@@ -21,6 +21,7 @@
   - Phase 4: Extended `schema.py` with `Query.execution_modes`, `Mutation.run_execution`, `Mutation.run_advanced_pipeline`, and Strawberry diagnostic/event/output types.
   - Phase 5: Created `StructuredOutputRenderer.tsx`, `ReasoningDiagnosticsPanel.tsx`, `AssistantConfigPanel.tsx` mode selection, and `useRunExecution.ts`.
   - Frontend Lint: Cleaned all ESLint errors/warnings (`-Action lint` passes cleanly).
+  - PR #38 Review Hardening: Addressed all 3 Codex findings (constrained artifact reads, pipeline step caps, zero-agent solo runs; 210 backend + 124 frontend tests passed).
 
 ## Open Work Items
 - [ ] Issue #36 (Tree of Thoughts): Implement genuine Tree-of-Thoughts search after shared provider/search contracts are finalized.
