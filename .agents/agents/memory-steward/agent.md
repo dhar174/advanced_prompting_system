@@ -15,9 +15,8 @@ tools:
   - call_mcp_tool
 mainAgent: false
 subagent: true
-model: inherit
+model: flash
 commandExecutionPolicy: sandbox
-inheritMcp: true
 skills:
   - recursive-context-pruning-token-budgeting
 ---

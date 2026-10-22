@@ -13,9 +13,8 @@ tools:
   - run_command
 mainAgent: false
 subagent: true
-model: pro
+model: flash
 commandExecutionPolicy: sandbox
-inheritMcp: true
 skills:
   - ai-agents-architect
   - llm-structured-output
