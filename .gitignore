@@ -415,6 +415,8 @@ __pycache__/
 .pytest_cache/
 node_modules/
 dist/
+*.egg-info/
+build/
 
 # Local offline qualification environment, logs and caches
 .qualification/
