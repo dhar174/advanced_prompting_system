@@ -32,6 +32,7 @@ from conversation_manager import OutputType, ErrorResult
 from complexity_measures import Plan, PlanStep, Subtask
 from advanced_prompting import Task, Step, Reflection, Interaction, PromptEngineeringConfig
 from schema import ConversationInput
+from output_generator import clear_tracked_artifacts, track_generated_artifact, is_tracked_artifact
 
 
 # ============================================================================
@@ -877,3 +878,119 @@ print('execution_modes_import_purity_verified')
         )
         assert result.returncode == 0, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         assert "execution_modes_import_purity_verified" in result.stdout
+
+    def test_collaborative_artifact_reads_constrained_to_tracked_artifacts(self, monkeypatch, tmp_path):
+        """
+        Security verification (PR #38 review finding 1):
+        Arbitrary file reads are strictly constrained. If the model outputs an existing server
+        file path (e.g. pyproject.toml or a path outside the workspace) without it having been
+        explicitly generated and tracked by output_generator, the server NEVER reads that file.
+        """
+        import conversation_manager
+        clear_tracked_artifacts()
+
+        # Existing file on disk that was NOT produced by output_generator
+        sensitive_file = tmp_path / "sensitive_config.json"
+        sensitive_file.write_text('{"api_secret": "super_secret_token"}', encoding="utf-8")
+
+        # Mock run_conversation returning the path to this existing file
+        monkeypatch.setattr(
+            conversation_manager,
+            "run_conversation",
+            Mock(return_value=([{"role": "assistant", "content": "Done"}], [], str(sensitive_file))),
+        )
+
+        req = RunRequest(mode="collaborative", task_prompt="What is in the config?")
+        res = execute_run(req)
+
+        assert res.status == "completed"
+        # Since sensitive_file was NOT explicitly tracked by output_generator,
+        # its content must NOT be read into final_output! The raw string remains intact.
+        assert res.final_output == str(sensitive_file)
+        assert "super_secret_token" not in res.final_output
+
+        # Now test a genuinely tracked artifact created via track_generated_artifact
+        artifact_file = tmp_path / "final_output.json"
+        artifact_file.write_text('{"summary": "safe generated analysis"}', encoding="utf-8")
+        track_generated_artifact(str(artifact_file))
+
+        monkeypatch.setattr(
+            conversation_manager,
+            "run_conversation",
+            Mock(return_value=([{"role": "assistant", "content": "Done"}], [], str(artifact_file))),
+        )
+
+        res2 = execute_run(req)
+        assert res2.status == "completed"
+        # Tracked artifact content IS safely read
+        assert '{"summary": "safe generated analysis"}' in res2.final_output
+        clear_tracked_artifacts()
+
+    def test_pipeline_step_limit_enforcement(self, monkeypatch, mock_pipeline_interaction):
+        """
+        Enforce advertised step limits (PR #38 review finding 2):
+        When callers specify lower max_steps or initial_budget, the execution loop
+        and reported diagnostics strictly cap the adjusted budget to max_steps.
+        """
+        from advanced_prompting import AdvancedPromptEngineer, PromptEngineeringConfig
+
+        created_configs = []
+        original_init = PromptEngineeringConfig.__init__
+
+        def capturing_init(self, *args, **kwargs):
+            original_init(self, *args, **kwargs)
+            created_configs.append(self)
+
+        monkeypatch.setattr(PromptEngineeringConfig, "__init__", capturing_init)
+
+        # Mock AdvancedPromptEngineer.main
+        def fake_main(task_str):
+            engineer = capturing_init.__self__ if hasattr(capturing_init, "__self__") else None
+            return mock_pipeline_interaction
+
+        monkeypatch.setattr(AdvancedPromptEngineer, "main", Mock(return_value=mock_pipeline_interaction))
+
+        req = RunRequest(
+            mode="advanced_pipeline",
+            task_prompt="Constrained step task",
+            max_steps=2,
+            initial_budget=2,
+            agents=1,
+        )
+        res = execute_run(req)
+
+        assert res.status == "completed"
+        assert res.diagnostics is not None
+        # Diagnostics step budget must be capped at max_steps (2)
+        assert res.diagnostics.adjusted_budget <= 2
+        # Mode selected and complexity assessed events reflect the cap
+        comp_event = next(e for e in res.events if e.event_type == "complexity_assessed")
+        assert comp_event.details["max_steps"] == 2
+        assert comp_event.details["adjusted_budget"] <= 2
+
+    def test_pipeline_zero_agents_solo_run(self, monkeypatch, mock_pipeline_interaction):
+        """
+        Support zero-agent solo reasoning (PR #38 review finding 3):
+        When agents=0 is configured, AdvancedPromptEngineer.main and execution_modes
+        execute the solo run cleanly without raising UnboundLocalError.
+        """
+        from advanced_prompting import AdvancedPromptEngineer
+
+        monkeypatch.setattr(AdvancedPromptEngineer, "main", Mock(return_value=mock_pipeline_interaction))
+
+        req = RunRequest(
+            mode="advanced_pipeline",
+            task_prompt="Solo reasoning task",
+            agents=0,
+            max_steps=5,
+        )
+        res = execute_run(req)
+
+        assert res.status == "completed"
+        assert res.error is None
+        assert res.diagnostics is not None
+        # Must have solo attribution recorded
+        assert any(
+            attr.agent_name == "Advanced Prompt Engineer" and attr.role == "Solo Reasoning Engine"
+            for attr in res.diagnostics.agent_attributions
+        )

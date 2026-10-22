@@ -5,18 +5,33 @@ import os
 import re
 
 # from fpdf import FPDF  # Commented out to avoid import error in testing
-from typing import Any, Dict
+from typing import Any, Dict, Set
 
-# output_type_mapping = {
-#     "simple concise text answer": "generate_text_answer",
-#     "detailed report": "generate_detailed_report",
-#     "code snippet": "generate_code_snippet",
-#     "script file": "generate_code_snippet",
-#     "structured data": "generate_structured_data",
-#     "JSON format": "generate_structured_data",
-#     "CSV format": "generate_structured_data",
-#     "detailed technical document": "generate_technical_document"
-# }
+# Registry of explicitly created artifact file paths for the active process/run.
+_TRACKED_ARTIFACT_PATHS: Set[str] = set()
+
+
+def track_generated_artifact(filepath: str) -> str:
+    """Register an explicitly created artifact file path for runtime verification."""
+    abs_path = os.path.abspath(filepath)
+    _TRACKED_ARTIFACT_PATHS.add(abs_path)
+    return abs_path
+
+
+def is_tracked_artifact(filepath: str) -> bool:
+    """Check whether a filepath was explicitly generated and tracked as an artifact."""
+    if not filepath or not isinstance(filepath, str):
+        return False
+    try:
+        abs_path = os.path.abspath(filepath)
+        return abs_path in _TRACKED_ARTIFACT_PATHS
+    except Exception:
+        return False
+
+
+def clear_tracked_artifacts() -> None:
+    """Clear all registered artifact paths (useful for test resets)."""
+    _TRACKED_ARTIFACT_PATHS.clear()
 
 
 def generate_simple_concise_answer_message(
@@ -50,7 +65,7 @@ def generate_json_output(
     try:
         with open(filename, "w") as f:
             json.dump(final_decision, f, indent=4)
-        return os.path.abspath(filename)
+        return track_generated_artifact(filename)
     except (IOError, OSError, PermissionError) as e:
         print(f"[Error] Error writing JSON file '{filename}': {e}")
         raise
@@ -71,7 +86,7 @@ def generate_pdf_output(final_decision: str, filename: str = "final_output.pdf")
     try:
         with open(filename, "w") as f:
             f.write(f"PDF Content: {final_decision}")
-        return os.path.abspath(filename)
+        return track_generated_artifact(filename)
     except (IOError, OSError, PermissionError) as e:
         print(f"[Error] Error writing PDF file '{filename}': {e}")
         raise
@@ -93,7 +108,7 @@ def generate_text_file_output(
     try:
         with open(filename, "w") as f:
             f.write(final_decision)
-        return os.path.abspath(filename)
+        return track_generated_artifact(filename)
     except (IOError, OSError, PermissionError) as e:
         print(f"[Error] Error writing text file '{filename}': {e}")
         raise
@@ -120,7 +135,7 @@ def generate_html_output(
     try:
         with open(filename, "w") as f:
             f.write(html_content)
-        return os.path.abspath(filename)
+        return track_generated_artifact(filename)
     except (IOError, OSError, PermissionError) as e:
         print(f"[Error] Error writing HTML file '{filename}': {e}")
         raise
@@ -148,7 +163,7 @@ def generate_python_script(
             # If the word "python" is at the beginning of the code snippet, remove it
             final_decision = re.sub(r"^python", "", final_decision)
             f.write(final_decision)
-        return os.path.abspath(filename)
+        return track_generated_artifact(filename)
     except (IOError, OSError, PermissionError) as e:
         print(f"[Error] Error writing Python script file '{filename}': {e}")
         raise
@@ -170,7 +185,7 @@ def generate_code_snippet(
     try:
         with open(filename, "w") as f:
             f.write(final_decision)
-        return os.path.abspath(filename)
+        return track_generated_artifact(filename)
     except (IOError, OSError, PermissionError) as e:
         print(f"[Error] Error writing code snippet file '{filename}': {e}")
         raise
@@ -191,7 +206,7 @@ def generate_csv_output(final_decision: str, filename: str = "final_output.csv")
         with open(filename, "w") as f:
             for key, value in final_decision.items():
                 f.write(f"{key},{value}\n")
-        return os.path.abspath(filename)
+        return track_generated_artifact(filename)
     except (IOError, OSError, PermissionError) as e:
         print(f"[Error] Error writing CSV file '{filename}': {e}")
         raise

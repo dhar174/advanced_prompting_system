@@ -752,15 +752,35 @@ def _execute_collaborative(
                 "question": str(q.get("question") or q.get("reply") or ""),
             })
 
-    # 7. Output Type resolution and file content check
+    # 7. Output Type resolution and safe artifact content reading
+    # Constrain file reads strictly to explicitly generated and tracked artifacts
+    # located within the current working directory or safe application temporary directory.
+    # Model-controlled responses or arbitrary server paths (e.g. /etc/passwd) must NEVER be read from disk.
     final_output_str = str(raw_final_output or "")
-    file_path = final_output_str if os.path.exists(final_output_str) else ""
-    if file_path and os.path.isfile(file_path):
+    file_path = ""
+    candidate_path = final_output_str.strip()
+
+    from output_generator import is_tracked_artifact
+
+    if candidate_path and is_tracked_artifact(candidate_path):
         try:
-            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                disk_content = f.read()
-            if disk_content.strip():
-                final_output_str = disk_content
+            abs_candidate = os.path.abspath(candidate_path)
+            cwd = os.path.abspath(os.getcwd())
+            is_safe_subpath = os.path.commonpath([abs_candidate, cwd]) == cwd
+            if not is_safe_subpath:
+                try:
+                    import tempfile
+                    td = os.path.abspath(tempfile.gettempdir())
+                    is_safe_subpath = os.path.commonpath([abs_candidate, td]) == td
+                except Exception:
+                    is_safe_subpath = False
+
+            if is_safe_subpath and os.path.isfile(abs_candidate):
+                file_path = abs_candidate
+                with open(abs_candidate, "r", encoding="utf-8", errors="replace") as f:
+                    disk_content = f.read()
+                if disk_content.strip():
+                    final_output_str = disk_content
         except Exception:
             pass
 
@@ -843,17 +863,19 @@ def _execute_advanced_pipeline(
     complexity_score = float(getattr(task_obj, "complexity", 0.0) or 0.0) if task_obj else 0.0
     initial_budget = int(config.initial_budget)
     complexity_factor = getattr(config, "complexity_factor", 5)
-    adjusted_budget = int(initial_budget + complexity_score * complexity_factor)
+    raw_adjusted_budget = int(initial_budget + complexity_score * complexity_factor)
+    adjusted_budget = min(raw_adjusted_budget, request.max_steps) if request.max_steps > 0 else raw_adjusted_budget
     final_reward = float(getattr(interaction, "final_reward", 0.0) if getattr(interaction, "final_reward", None) is not None else 0.0)
 
     events.append(_create_run_event(
         event_type="complexity_assessed",
         mode="advanced_pipeline",
-        summary=f"Task complexity assessed at {complexity_score:.2f}.",
+        summary=f"Task complexity assessed at {complexity_score:.2f} (budget: {adjusted_budget}).",
         details={
             "complexity_score": complexity_score,
             "initial_budget": initial_budget,
             "adjusted_budget": adjusted_budget,
+            "max_steps": request.max_steps,
         },
     ))
 
@@ -949,6 +971,14 @@ def _execute_advanced_pipeline(
                 round_or_step=rnd,
                 contribution_summary=cnt[:120] + "..." if len(cnt) > 120 else cnt,
             ))
+
+    if config.agents == 0 and not agent_attributions:
+        agent_attributions.append(AgentAttribution(
+            agent_name="Advanced Prompt Engineer",
+            role="Solo Reasoning Engine",
+            round_or_step=1,
+            contribution_summary="Executed solo prompt reasoning pipeline without collaborative agent delegation.",
+        ))
 
     # 6. Extract reflections with rewards
     raw_reflections = getattr(interaction, "reflections", []) or []

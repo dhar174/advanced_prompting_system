@@ -3785,6 +3785,8 @@ class AdvancedPromptEngineer:
         adjusted_budget = int(
             self.config.initial_budget + complexity * self.config.complexity_factor
         )
+        if getattr(self.config, "max_steps", None) is not None and self.config.max_steps > 0:
+            adjusted_budget = min(adjusted_budget, self.config.max_steps)
         return adjusted_budget if plan is None else (adjusted_budget, plan)
 
     # -------------------------------
@@ -7635,14 +7637,22 @@ Task: {task}
         assert complexity > 0.0, "Complexity assessment failed."
         assert isinstance(plan, Plan), "Complexity plan generation failed."
         task_object.project_name = self.name_project(task_object, plan)
-        initial_step_budget = len(plan.steps)
+        plan_step_budget = len(plan.steps)
         subtasks = []
         for pstep in plan.steps:
             subtasks.append(pstep.subtasks)
 
         # flatten the subtasks into a single list
         subtasks = [item for sublist in subtasks for item in sublist]
-        initial_step_budget += len(subtasks)
+        plan_step_budget += len(subtasks)
+
+        # Respect configured initial_budget if explicitly set or bounded by caller;
+        # otherwise derive from plan steps + subtasks.
+        configured_budget = getattr(self.config, "initial_budget", None)
+        if configured_budget is not None and configured_budget > 0:
+            initial_step_budget = min(configured_budget, plan_step_budget)
+        else:
+            initial_step_budget = plan_step_budget
         self.config.initial_budget = initial_step_budget
 
         task_object.complexity = complexity
@@ -7653,6 +7663,12 @@ Task: {task}
 
         # Step 3: Adjust Step Budget
         adjusted_budget = self.adjust_step_budget(refined_task, task_object.complexity)
+        if isinstance(adjusted_budget, tuple):
+            adjusted_budget = adjusted_budget[0]
+        # Strictly enforce max_steps cap on execution budget
+        if getattr(self.config, "max_steps", None) is not None and self.config.max_steps > 0:
+            adjusted_budget = min(adjusted_budget, self.config.max_steps)
+        adjusted_budget = max(1, adjusted_budget)
         print_saver.print_and_store("Adjusted Step Budget:" + str(adjusted_budget))
 
         # Step 4: Generate Initial Prompt
@@ -7804,7 +7820,8 @@ Task: {task}
             # Step 5: Collaborative Multi-Agent Reasoning
             # for collaborative_reasoning, input only the current prompt minus the initial prompt
             agent_prompt = current_planstep_prompt.replace(initial_prompt, "")
-            if self.config.agents > 0:
+            agent_interaction = None
+            if getattr(self.config, "agents", 0) > 0:
                 agent_interaction = self.collaborative_reasoning_main(
                     task=Task(
                         curr_desc,
@@ -7855,13 +7872,15 @@ Task: {task}
             for stp in self_consistent_interaction.steps:
                 if stp.plan_step_number is None or stp.plan_step_number == 0:
                     stp.plan_step_number = curr_num
-            for stp in agent_interaction.steps:
-                if stp.plan_step_number is None or stp.plan_step_number == 0:
-                    stp.plan_step_number = curr_num
+            if agent_interaction is not None:
+                for stp in agent_interaction.steps:
+                    if stp.plan_step_number is None or stp.plan_step_number == 0:
+                        stp.plan_step_number = curr_num
 
             # Step 7: Aggregate and Select Best Interaction
             all_interactions = []
-            all_interactions.append(agent_interaction)
+            if agent_interaction is not None:
+                all_interactions.append(agent_interaction)
             all_interactions.append(self_consistent_interaction)
             if any(
                 [

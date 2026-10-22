@@ -829,6 +829,14 @@ class TestAdvancedPromptEngineer(unittest.TestCase):
             self.assertIsInstance(result, int)
             self.assertGreater(result, 0)
 
+    def test_adjust_step_budget_respects_max_steps(self):
+        task_desc = "Write a factorial calculator"
+        complexity = 5
+        self.engineer.config.max_steps = 3
+        result = self.engineer.adjust_step_budget(task_desc, complexity)
+        budget = result[0] if isinstance(result, tuple) else result
+        self.assertLessEqual(budget, 3)
+
 
     def test_dynamic_confidence_exploration(self):
         interaction = Interaction(
