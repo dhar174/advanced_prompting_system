@@ -32,4 +32,8 @@ if [ ! -x "$python_exe" ]; then
     fi
 fi
 
-exec "$python_exe" -m pytest "${@:- -q}"
+if [ "$#" -eq 0 ]; then
+    set -- "-q"
+fi
+
+exec "$python_exe" -m pytest "$@"

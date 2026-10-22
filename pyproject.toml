@@ -25,6 +25,8 @@ dependencies = [
     "pandas>=2.0.0",
     "jarowinkler>=2.0.0",
     "Levenshtein>=0.21.0",
+    "networkx>=3.0.0",
+    "sympy>=1.12",
 ]
 
 [project.optional-dependencies]
@@ -42,6 +44,21 @@ nlp = [
 dev = [
     "advanced-prompting-system[test]",
     "advanced-prompting-system[nlp]",
+    "matplotlib>=3.7.0",
+]
+
+[tool.setuptools]
+py-modules = [
+    "advanced_prompting",
+    "app",
+    "assistant_personalities",
+    "complexity_measures",
+    "conversation_manager",
+    "feedback_manager",
+    "function_definitions",
+    "output_generator",
+    "provider_client",
+    "schema",
 ]
 
 [tool.pytest.ini_options]

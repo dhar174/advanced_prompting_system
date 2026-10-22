@@ -3,7 +3,6 @@ import unittest
 from unittest.mock import MagicMock, patch, mock_open # Ensure mock_open is imported
 import os # Ensure os is imported
 
-from matplotlib.pyplot import step # This import seems unused, might be from old code
 from advanced_prompting import (
     AdvancedPromptEngineer,
     CompletionStatus,
