@@ -20,9 +20,8 @@ tools:
   - define_subagent
 mainAgent: true
 subagent: false
-model: pro
+model: flash
 commandExecutionPolicy: sandbox
-inheritMcp: true
 skills:
   - ai-agents-architect
   - agent-orchestration-multi-agent-optimize
