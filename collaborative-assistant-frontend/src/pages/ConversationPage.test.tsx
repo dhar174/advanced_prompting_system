@@ -6,7 +6,6 @@ import { useRunConversation } from '../hooks/useRunConversation';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { ApolloProvider } from '@apollo/client';
 import { client } from '../graphql/apolloClient';
-import toast from 'react-hot-toast';
 
 vi.mock('../hooks/useRunConversation');
 

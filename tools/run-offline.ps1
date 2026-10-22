@@ -22,5 +22,14 @@ $env:MPLCONFIGDIR = Join-Path $localRoot 'cache\matplotlib'
 $env:XDG_CACHE_HOME = Join-Path $localRoot 'cache'
 $env:PYTHONUTF8 = '1'
 Get-ChildItem Env: | Where-Object { $_.Name -match '(API_KEY|ACCESS_TOKEN|AUTH_TOKEN)$|^(OPENAI_ADMIN_KEY|HF_TOKEN)$' } | Remove-Item
-& (Join-Path $localRoot 'venv\Scripts\python.exe') -m pytest @PytestArgs
+$pythonExe = Join-Path $localRoot 'venv\Scripts\python.exe'
+if (-not (Test-Path $pythonExe)) {
+    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCmd) {
+        $pythonExe = $pythonCmd.Source
+    } else {
+        $pythonExe = 'python'
+    }
+}
+& $pythonExe -m pytest @PytestArgs
 exit $LASTEXITCODE

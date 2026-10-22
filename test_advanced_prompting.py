@@ -3,9 +3,9 @@ import unittest
 from unittest.mock import MagicMock, patch, mock_open # Ensure mock_open is imported
 import os # Ensure os is imported
 
-from matplotlib.pyplot import step # This import seems unused, might be from old code
 from advanced_prompting import (
     AdvancedPromptEngineer,
+    CompletionStatus,
     FinalPlanStepOutput,
     FinalStepOutput,
     PromptEngineeringConfig,
@@ -14,7 +14,8 @@ from advanced_prompting import (
     Reflection,
     Interaction,
     OutputType,
-    ComponentType # Ensure ComponentType is imported
+    ComponentType, # Ensure ComponentType is imported
+    response_choices,
 )
 import re
 from complexity_measures import Plan, PlanStep
@@ -60,6 +61,15 @@ class TestParseResponse(unittest.TestCase):
 
     def setUp(self):
         """Initialize test environment with config, engineer and sample task."""
+        self._mock_create = patch("advanced_prompting.client.chat.completions.create")
+        self.mock_create = self._mock_create.start()
+        fake_response = MagicMock()
+        fake_message = MagicMock()
+        fake_message.content = "<reflection>Generated test reflection</reflection><reward>0.7</reward>"
+        fake_response.choices = [SimpleNamespace(message=fake_message)]
+        self.mock_create.return_value = fake_response
+        self.addCleanup(self._mock_create.stop)
+
         self.parser_arg = "default"
         self.config = TEST_CONFIG
         self.parser_arg = TEST_CONFIG.parser_arg
@@ -144,7 +154,6 @@ class TestParseResponse(unittest.TestCase):
         self.assertEqual(interaction.final_reward, 0.0)
 
     # ... (rest of TestParseResponse methods remain unchanged) ...
-    @unittest.skip('Quarantine #35 Phase 2: parser reaches embedding/judging providers without scripted fixtures; remove after an offline production-path regression passes.')
     def test_reflection_missing_reward(self):
         response = """
         <count>5</count>
@@ -179,7 +188,6 @@ class TestParseResponse(unittest.TestCase):
         )
         self.assertEqual(interaction.reflections[0].reward, 0.8)
 
-    @unittest.skip('Quarantine #35 Phase 2: parser reaches embedding/judging providers without scripted fixtures; remove after an offline production-path regression passes.')
     def test_non_numeric_count_and_reward(self):
         response = """
         <count>abc</count>
@@ -195,7 +203,6 @@ class TestParseResponse(unittest.TestCase):
         self.assertEqual(interaction.steps[0].remaining_budget, 11) # Default initial budget - 1 if count fails
         self.assertEqual(interaction.reflections[0].reward, 0.7) # Default reward if parsing fails
 
-    @unittest.skip('Quarantine #35 Phase 2: parser reaches embedding/judging providers without scripted fixtures; remove after an offline production-path regression passes.')
     def test_steps_and_reflections_objs_provided(self):
         existing_steps = [
             Step(
@@ -240,7 +247,6 @@ class TestParseResponse(unittest.TestCase):
         self.assertEqual(interaction.steps[0].reflection.reward, 0.5)
 
 
-    @unittest.skip('Quarantine #35 Phase 2: existing reflection wins over the expected updated reflection; remove after revision-state repair passes offline.')
     def test_overlapping_steps_and_reflections(self):
         existing_steps = [
             Step(
@@ -292,7 +298,6 @@ class TestParseResponse(unittest.TestCase):
         self.assertEqual(interaction.steps[0].reflection.content, "Test reflection")
         self.assertEqual(interaction.steps[0].reflection.reward, 0.9)
 
-    @unittest.skip('Quarantine #35 Phase 2: parser reaches embedding/judging providers without scripted fixtures; remove after an offline production-path regression passes.')
     def test_multiple_answers_and_rewards(self):
         response = """
         <count>5</count>
@@ -344,7 +349,6 @@ class TestParseResponse(unittest.TestCase):
         self.assertEqual(len(interaction.steps), 0) # No step tag, so no step object created
         self.assertEqual(len(interaction.reflections), 0) # Reflections are tied to steps
 
-    @unittest.skip('Quarantine #35 Phase 2: empty parsed step reaches embedding input validation; remove after an offline production-path regression passes.')
     def test_empty_step_and_reflection_tags(self):
         response = """
         <count>5</count>
@@ -403,7 +407,6 @@ class TestParseResponse(unittest.TestCase):
         self.assertEqual(interaction.steps[1].description, "Second step")
         self.assertEqual(len(interaction.reflections), 2) # Each step should have a reflection
 
-    @unittest.skip('Quarantine #35 Phase 2: parser reaches embedding/judging providers without scripted fixtures; remove after an offline production-path regression passes.')
     def test_missing_reflection_handling(self):
         response = """
         <count>5</count>
@@ -417,7 +420,6 @@ class TestParseResponse(unittest.TestCase):
         self.assertIsNotNone(interaction.steps[0].reflection) # judge_step should be called
         self.assertEqual(interaction.steps[0].reflection.reward, 0.7) # Default from judge_step if no reward tag
 
-    @unittest.skip('Quarantine #35 Phase 2: parser reaches embedding/judging providers without scripted fixtures; remove after an offline production-path regression passes.')
     def test_budget_counting(self):
         response = """
         <count>5</count>
@@ -470,7 +472,6 @@ class TestParseResponse(unittest.TestCase):
         self.assertEqual(interaction.steps[1].description, "New step")
         self.assertEqual(interaction.steps[1].remaining_budget, 4) # 5 - 1
 
-    @unittest.skip('Quarantine #35 Phase 2: parser reaches embedding/judging providers without scripted fixtures; remove after an offline production-path regression passes.')
     def test_reward_score_validation(self):
         response = """
         <count>5</count>
@@ -495,7 +496,6 @@ class TestParseResponse(unittest.TestCase):
         self.assertEqual(interaction.answer, "")
         self.assertEqual(interaction.final_reward, 0.0)
 
-    @unittest.skip('Quarantine #35 Phase 2: parser reaches embedding/judging providers without scripted fixtures; remove after an offline production-path regression passes.')
     def test_malformed_tags_handling(self):
         response = """
         <count>5</count>
@@ -514,7 +514,6 @@ class TestParseResponse(unittest.TestCase):
         self.assertEqual(interaction.steps[0].reflection.reward, 0.8)
 
 
-    @unittest.skip('Quarantine #35 Phase 2: parser reaches embedding/judging providers without scripted fixtures; remove after an offline production-path regression passes.')
     def test_initial_budget_handling(self):
         response = """
         <count>10</count>
@@ -527,7 +526,6 @@ class TestParseResponse(unittest.TestCase):
 
         self.assertEqual(interaction.steps[0].remaining_budget, 9) # 10 - 1
 
-    @unittest.skip('Quarantine #35 Phase 2: parser reaches embedding/judging providers without scripted fixtures; remove after an offline production-path regression passes.')
     def test_existing_steps_integration(self):
         # Arrange
         existing_steps = [
@@ -562,7 +560,6 @@ class TestParseResponse(unittest.TestCase):
         )
         self.assertEqual(interaction.steps[1].remaining_budget, 8) # 9-1
 
-    @unittest.skip('Quarantine #35 Phase 2: parser reaches embedding/judging providers without scripted fixtures; remove after an offline production-path regression passes.')
     def test_reflection_objects_integration(self):
         # Arrange
         existing_reflections = [
@@ -620,7 +617,6 @@ class TestParseResponse(unittest.TestCase):
         self.assertEqual(interaction.steps[1].reflection.content, "Ref2")
 
 
-    @unittest.skip('Quarantine #35 Phase 2: parser reaches embedding/judging providers without scripted fixtures; remove after an offline production-path regression passes.')
     def test_reward_range_validation(self):
         response = """
         <count>5</count>
@@ -651,6 +647,24 @@ class TestParseResponse(unittest.TestCase):
 class TestAdvancedPromptEngineer(unittest.TestCase):
     def setUp(self):
         """Initialize test environment with config, engineer and sample task."""
+        self._mock_create = patch("advanced_prompting.client.chat.completions.create")
+        self.mock_create = self._mock_create.start()
+        fake_create_response = MagicMock()
+        fake_create_message = MagicMock()
+        fake_create_message.content = "<count>5</count><thinking>Test thoughts</thinking><step>def factorial(n): return 1 if n == 0 else n * factorial(n-1)</step><reflection>Valid factorial implementation</reflection><reward>0.85</reward><answer>def factorial(n): return 1</answer><final_reward>0.85</final_reward>"
+        fake_create_response.choices = [SimpleNamespace(message=fake_create_message)]
+        self.mock_create.return_value = fake_create_response
+        self.addCleanup(self._mock_create.stop)
+
+        self._mock_parse = patch("advanced_prompting.client.beta.chat.completions.parse")
+        self.mock_parse = self._mock_parse.start()
+        fake_parse_response = MagicMock()
+        fake_parse_message = MagicMock()
+        fake_parse_message.parsed = CompletionStatus(completion=True)
+        fake_parse_response.choices = [SimpleNamespace(message=fake_parse_message)]
+        self.mock_parse.return_value = fake_parse_response
+        self.addCleanup(self._mock_parse.stop)
+
         self.config_container = config_for_test(parser_arg="default") # Use the container
         self.engineer = self.config_container.get_engineer() # Get engineer via container
 
@@ -683,21 +697,19 @@ class TestAdvancedPromptEngineer(unittest.TestCase):
             output_type=self.output_type,
         )
 
-    @unittest.skip('Quarantine #35 Phase 2: tokenizer asset is absent; token counting tries a download; remove after an offline production-path regression passes.')
     def test_count_tokens(self):
         text = ["Hello world", "Testing tokens"]
         token_count = self.engineer.count_tokens(text)
         self.assertIsInstance(token_count, int)
         self.assertTrue(token_count > 0)
 
-    @unittest.skip('Quarantine #35 Phase 2: legacy test expects the opposite prompt tuple order; settle caller contract; remove after an offline production-path regression passes.')
     def test_generate_initial_prompt(self):
         task_desc = "Write a function to calculate factorial" # Use task_desc for clarity
         retrieved_info = "Factorial is the product of all positive integers up to n"
         step_budget = 5
         complexity = 2
 
-        initial_prompt, system_prompt = self.engineer.generate_initial_prompt(
+        system_prompt, initial_prompt = self.engineer.generate_initial_prompt(
             task_desc, retrieved_info, step_budget, complexity, self.output_type
         )
 
@@ -707,7 +719,6 @@ class TestAdvancedPromptEngineer(unittest.TestCase):
         self.assertIn("<thinking>", system_prompt) # system_prompt contains the rules with tags
         self.assertIn("<step>", system_prompt)
 
-    @unittest.skip('Quarantine #35 Phase 2: advanced workflow has no scripted provider fixture or bounded-call assertion; remove after an offline production-path regression passes.')
     def test_judge_step(self):
         step = Step(
             description="Define factorial function with parameter n",
@@ -722,7 +733,6 @@ class TestAdvancedPromptEngineer(unittest.TestCase):
         self.assertIsInstance(reflection.content, str)
         self.assertEqual(reflection.step_number, 1)
 
-    @unittest.skip('Quarantine #35 Phase 2: advanced workflow has no scripted provider fixture or bounded-call assertion; remove after an offline production-path regression passes.')
     def test_component_decision(self):
         # from advanced_prompting import ComponentType # Already imported at top
 
@@ -734,7 +744,6 @@ class TestAdvancedPromptEngineer(unittest.TestCase):
         self.assertIn(decision, ComponentType.values())
 
 
-    @unittest.skip('Quarantine #35 Phase 2: advanced workflow has no scripted provider fixture or bounded-call assertion; remove after an offline production-path regression passes.')
     def test_judge_step_completion(self):
         step_list = [ # judge_step_completion expects a List[Step]
             Step(
@@ -752,7 +761,6 @@ class TestAdvancedPromptEngineer(unittest.TestCase):
         self.assertIsInstance(next_step, int)
 
 
-    @unittest.skip('Quarantine #35 Phase 2: advanced workflow has no scripted provider fixture or bounded-call assertion; remove after an offline production-path regression passes.')
     def test_finalize_step_output(self):
         # from advanced_prompting import FinalStepOutput # Already imported
 
@@ -799,7 +807,6 @@ class TestAdvancedPromptEngineer(unittest.TestCase):
         self.assertTrue(len(hints) > 0)
         self.assertTrue(all(isinstance(hint, str) for hint in hints))
 
-    @unittest.skip('Quarantine #35 Phase 2: offline complexity fallback returns float instead of score/Plan tuple; remove after an offline production-path regression passes.')
     def test_assess_complexity(self):
         task_desc = "Write a recursive factorial function with error handling"
         complexity, plan = self.engineer.assess_complexity(task_desc)
@@ -823,7 +830,6 @@ class TestAdvancedPromptEngineer(unittest.TestCase):
             self.assertGreater(result, 0)
 
 
-    @unittest.skip('Quarantine #35 Phase 2: advanced workflow has no scripted provider fixture or bounded-call assertion; remove after an offline production-path regression passes.')
     def test_dynamic_confidence_exploration(self):
         interaction = Interaction(
             task=self.sample_task,
@@ -842,7 +848,6 @@ class TestAdvancedPromptEngineer(unittest.TestCase):
         self.assertTrue(hasattr(result, "final_reward"))
 
 
-    @unittest.skip('Quarantine #35 Phase 2: production merge loses one expected step; remove after an offline production-path regression passes.')
     def test_merge_interactions(self):
         interaction_a = Interaction(
             task=self.sample_task,
@@ -866,9 +871,14 @@ class TestAdvancedPromptEngineer(unittest.TestCase):
         self.assertEqual(len(merged.steps), 2) # 1 from A, 1 from B
         self.assertEqual(merged.final_reward, 0.8) # Takes A's then B's if A is 0
 
-    @unittest.skip('Quarantine #35 Phase 2: advanced workflow has no scripted provider fixture or bounded-call assertion; remove after an offline production-path regression passes.')
-    def test_choose_best_response(self):
+    @patch("advanced_prompting.client.beta.chat.completions.parse")
+    def test_choose_best_response(self, mock_parse):
         """Test the choose_best_response method"""
+        fake_response = MagicMock()
+        fake_message = MagicMock()
+        fake_message.parsed = response_choices(number_of_selected_response=1)
+        fake_response.choices = [SimpleNamespace(message=fake_message)]
+        mock_parse.return_value = fake_response
 
         # Create test data
         mock_responses = [
