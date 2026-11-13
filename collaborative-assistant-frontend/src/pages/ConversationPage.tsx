@@ -1,11 +1,18 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import ApiAuthPanel from '../components/ApiAuthPanel';
 import AssistantConfigPanel from '../components/AssistantConfigPanel';
 import ChatInput from '../components/ChatInput';
 import ConversationDisplay from '../components/ConversationDisplay';
 import FeedbackDisplay from '../components/FeedbackDisplay';
 import { Card, CardContent, CardHeader } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
-import { useRunExecution } from '../hooks/useRunExecution';
+import {
+  DEFAULT_MAX_AGENTS,
+  DEFAULT_MAX_NUM_ROUNDS,
+  DEFAULT_MAX_STEPS,
+  DEFAULT_MIN_NUM_ROUNDS,
+  useRunExecution,
+} from '../hooks/useRunExecution';
 import type {
   ArtifactRefType,
   ConversationInputType,
@@ -48,6 +55,9 @@ const ConversationPage: React.FC = () => {
     runExecution,
     cancelActiveRun,
     resetExecutionState,
+    retryDiscovery,
+    applyApiToken,
+    clearStoredApiToken,
     data: runExecutionData,
     loading: runExecutionLoading,
     error: runExecutionError,
@@ -56,7 +66,10 @@ const ConversationPage: React.FC = () => {
     executionModes,
     personalities,
     providerPolicy,
-    modesError,
+    discoveryStatus,
+    discoveryErrorMessage,
+    authRequired,
+    hasApiToken,
   } = useRunExecution();
 
   const availablePersonalities = useMemo(
@@ -109,6 +122,30 @@ const ConversationPage: React.FC = () => {
     () => executionModes.find((m) => m.id === executionMode),
     [executionModes, executionMode]
   );
+
+  const activeMinRounds =
+    typeof activeModeCapability?.minNumRounds === 'number' &&
+    activeModeCapability.minNumRounds >= 1
+      ? activeModeCapability.minNumRounds
+      : DEFAULT_MIN_NUM_ROUNDS;
+
+  const activeMaxRounds =
+    typeof activeModeCapability?.maxNumRounds === 'number' &&
+    activeModeCapability.maxNumRounds >= activeMinRounds
+      ? activeModeCapability.maxNumRounds
+      : DEFAULT_MAX_NUM_ROUNDS;
+
+  const activeMaxSteps =
+    typeof activeModeCapability?.maxSteps === 'number' &&
+    activeModeCapability.maxSteps >= 1
+      ? activeModeCapability.maxSteps
+      : DEFAULT_MAX_STEPS;
+
+  const activeMaxAgents =
+    typeof activeModeCapability?.maxAgents === 'number' &&
+    activeModeCapability.maxAgents >= 0
+      ? activeModeCapability.maxAgents
+      : DEFAULT_MAX_AGENTS;
 
   const isLoading = runExecutionLoading;
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -187,8 +224,61 @@ const ConversationPage: React.FC = () => {
     }
   }, [runExecutionError, hookErrorMessage, wasCancelled]);
 
+  const validateExecutionReadiness = (): string | null => {
+    if (discoveryStatus !== 'available') {
+      return (
+        discoveryErrorMessage ||
+        'Server capabilities are not ready. Please retry discovery.'
+      );
+    }
+    if (!activeModeCapability || !activeModeCapability.enabled) {
+      return (
+        activeModeCapability?.unavailableReason ||
+        'Selected execution mode is currently disabled.'
+      );
+    }
+    if (activeModeCapability.ready !== true) {
+      return (
+        activeModeCapability.unavailableReason ||
+        'Selected execution mode is not ready on the server.'
+      );
+    }
+    if (executionMode === 'collaborative') {
+      if (selectedPersonalities.length === 0 || !leadPersonality) {
+        return 'Please select personalities and a lead personality.';
+      }
+      if (
+        !Number.isInteger(numRounds) ||
+        numRounds < activeMinRounds ||
+        numRounds > activeMaxRounds
+      ) {
+        return `Number of rounds must be between ${activeMinRounds} and ${activeMaxRounds}.`;
+      }
+    } else if (executionMode === 'advanced_pipeline') {
+      if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > activeMaxSteps) {
+        return `Max reasoning steps must be between 1 and ${activeMaxSteps}.`;
+      }
+      if (
+        !Number.isInteger(agentCount) ||
+        agentCount < 0 ||
+        agentCount > activeMaxAgents
+      ) {
+        return `Collaborative agents must be between 0 and ${activeMaxAgents}.`;
+      }
+    } else {
+      return 'Selected execution mode is currently disabled.';
+    }
+    return null;
+  };
+
   const handleStartConversation = () => {
     if (isLoading || inFlightLockRef.current) {
+      return;
+    }
+
+    const readinessError = validateExecutionReadiness();
+    if (readinessError) {
+      toast.error(readinessError);
       return;
     }
 
@@ -197,10 +287,6 @@ const ConversationPage: React.FC = () => {
     resetExecutionState?.();
 
     if (executionMode === 'collaborative') {
-      if (selectedPersonalities.length === 0 || !leadPersonality || numRounds <= 0) {
-        toast.error('Please select personalities, a lead, and set rounds.');
-        return;
-      }
       setIsConversationActive(true);
       setConversationHistory([
         {
@@ -220,9 +306,6 @@ const ConversationPage: React.FC = () => {
           content: `Advanced Prompt Pipeline initialized (Max Steps: ${maxSteps}, Collaborative Agents: ${agentCount}). Enter your task prompt below.`,
         },
       ]);
-    } else {
-      toast.error('Selected execution mode is currently disabled.');
-      return;
     }
 
     setCurrentQuestions([]);
@@ -255,6 +338,13 @@ const ConversationPage: React.FC = () => {
     }
     if (!isConversationActive) {
       toast.error('Please start a new conversation first.');
+      return;
+    }
+
+    const readinessError = validateExecutionReadiness();
+    if (readinessError) {
+      toast.error(readinessError);
+      setRestoreDraft({ text: messageContent, key: Date.now() });
       return;
     }
 
@@ -308,7 +398,7 @@ const ConversationPage: React.FC = () => {
       } else if (!inFlightLockRef.current) {
         // Cancelled in flight
       } else {
-        // Transport/hook error without GraphQL RunExecutionResponse
+        // Transport/hook error (including 401) without GraphQL RunExecutionResponse
         setConversationHistory(conversationHistory);
         if (lastSubmittedDraftRef.current) {
           setRestoreDraft({ text: lastSubmittedDraftRef.current, key: Date.now() });
@@ -317,6 +407,9 @@ const ConversationPage: React.FC = () => {
     } catch {
       if (activeRunSeqRef.current === callSeq) {
         setConversationHistory(conversationHistory);
+        if (lastSubmittedDraftRef.current) {
+          setRestoreDraft({ text: lastSubmittedDraftRef.current, key: Date.now() });
+        }
       }
     } finally {
       if (activeRunSeqRef.current === callSeq) {
@@ -336,11 +429,50 @@ const ConversationPage: React.FC = () => {
         aria-label="Assistant Configuration"
         className="w-1/3 min-w-[320px] max-w-[400px] p-4 border-r border-slate-300 overflow-y-auto bg-slate-50 scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-slate-100"
       >
-        {modesError && (
-          <div role="status" className="mb-3 p-2.5 rounded border border-amber-300 bg-amber-50 text-xs text-amber-900">
-            Unable to refresh server capabilities; using safe defaults.
+        <ApiAuthPanel
+          authRequired={authRequired}
+          hasToken={hasApiToken}
+          isBusy={isLoading}
+          errorMessage={authRequired ? discoveryErrorMessage : null}
+          onApplyToken={applyApiToken}
+          onClearToken={clearStoredApiToken}
+        />
+
+        {discoveryStatus === 'loading' && (
+          <div
+            role="status"
+            className="mb-3 p-2.5 rounded border border-slate-300 bg-slate-100 text-xs text-slate-800"
+          >
+            Loading server capabilities...
           </div>
         )}
+
+        {(discoveryStatus === 'failed' || discoveryStatus === 'empty') && (
+          <div
+            role="alert"
+            className="mb-3 p-3 rounded border border-rose-300 bg-rose-50 text-xs text-rose-900 space-y-2"
+          >
+            <p className="font-semibold">
+              {discoveryStatus === 'failed'
+                ? 'Unable to load server capabilities.'
+                : 'No execution modes available from server.'}
+            </p>
+            <p>
+              {discoveryErrorMessage ||
+                'Execution is disabled until server readiness is confirmed.'}
+            </p>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => void retryDiscovery()}
+              data-testid="retry-discovery-button"
+            >
+              Retry Discovery
+            </Button>
+          </div>
+        )}
+
         <AssistantConfigPanel
           availablePersonalities={availablePersonalities}
           selectedPersonalities={selectedPersonalities}
@@ -354,6 +486,7 @@ const ConversationPage: React.FC = () => {
           executionMode={executionMode}
           onExecutionModeChange={setExecutionMode}
           executionModes={executionModes}
+          discoveryStatus={discoveryStatus}
           maxSteps={maxSteps}
           onMaxStepsChange={setMaxSteps}
           agentCount={agentCount}

@@ -157,52 +157,173 @@ describe('AssistantConfigPanel', () => {
       });
   });
 
-  describe('Number of Rounds Change', () => {
-    it('calls onNumRoundsChange with the new number', async () => {
-      renderPanel({ numRounds: 1 });
-      const numRoundsInput = screen.getByRole('spinbutton', { name: 'Number of Rounds (per turn):' }) as HTMLInputElement;
-      // Using fireEvent.change to directly set the value to '3'
-      // This avoids complexities with userEvent.clear followed by userEvent.type on number inputs,
-      // which can lead to unexpected intermediate states or values like '13' if not handled carefully.
-      fireEvent.change(numRoundsInput, { target: { value: '3' } });
-      expect(mockOnNumRoundsChange).toHaveBeenCalledWith(3);
-    });
-
-    it('calls onNumRoundsChange with 1 if input is cleared (empty string)', async () => {
+  describe('Number of Rounds Change & Validation', () => {
+    it('sets default min=1 and max=10 (never 20)', () => {
       renderPanel({ numRounds: 3 });
       const numRoundsInput = screen.getByRole('spinbutton', { name: 'Number of Rounds (per turn):' });
-      // userEvent.clear doesn't trigger onChange for type="number" in the same way as actual empty input sometimes
-      // const numRoundsInput = screen.getByRole('spinbutton', { name: 'Number of Rounds (per turn):' }); // This line was duplicated
-      // fireEvent.change is more direct for this specific case of empty value
-      fireEvent.change(numRoundsInput, { target: { value: '' } });
-      expect(mockOnNumRoundsChange).toHaveBeenCalledWith(1);
+      expect(numRoundsInput).toHaveAttribute('min', '1');
+      expect(numRoundsInput).toHaveAttribute('max', '10');
     });
 
-    it('does not call onNumRoundsChange for invalid input "0"', async () => {
-      renderPanel({ numRounds: 1 });
-      const numRoundsInput = screen.getByRole('spinbutton', { name: 'Number of Rounds (per turn):' });
-      fireEvent.change(numRoundsInput, { target: { value: '0' } });
-      // The component's logic: parseInt("0") is 0, which is < 1, so onNumRoundsChange is NOT called with 0.
-      // The mock should not have been called with 0.
-      // Depending on previous calls in other tests, we might need to clear mocks or check for specific non-call.
-      // For this test, we assume mockOnNumRoundsChange was not called with 0 from this specific interaction.
-      expect(mockOnNumRoundsChange).not.toHaveBeenCalledWith(0);
-    });
-
-    it('does not call onNumRoundsChange for non-numeric input "abc"', async () => {
-      renderPanel({ numRounds: 1 });
-      const numRoundsInput = screen.getByRole('spinbutton', { name: 'Number of Rounds (per turn):' });
-      fireEvent.change(numRoundsInput, { target: { value: 'abc' } });
-      expect(mockOnNumRoundsChange).not.toHaveBeenCalledWith('abc'); // Ensure it's not called with NaN or string
-    });
-
-    it('does not call onNumRoundsChange for negative input "-5"', async () => {
-        renderPanel({ numRounds: 1 });
-        const numRoundsInput = screen.getByRole('spinbutton', { name: 'Number of Rounds (per turn):' });
-        fireEvent.change(numRoundsInput, { target: { value: '-5' } });
-        // The component's handleNumRoundsChange will not call onNumRoundsChange if parseInt(value) < 1
-        expect(mockOnNumRoundsChange).not.toHaveBeenCalledWith(-5);
+    it('accepts boundary values 1 and 10 as valid', () => {
+      renderPanel({
+        selectedPersonalities: ['Alice'],
+        leadPersonality: 'Alice',
+        numRounds: 3,
       });
+      const numRoundsInput = screen.getByRole('spinbutton', { name: 'Number of Rounds (per turn):' });
+
+      fireEvent.change(numRoundsInput, { target: { value: '1' } });
+      expect(mockOnNumRoundsChange).toHaveBeenCalledWith(1);
+      expect(numRoundsInput).toHaveAttribute('aria-invalid', 'false');
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+      fireEvent.change(numRoundsInput, { target: { value: '10' } });
+      expect(mockOnNumRoundsChange).toHaveBeenCalledWith(10);
+      expect(numRoundsInput).toHaveAttribute('aria-invalid', 'false');
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it('shows inline validation error and disables Start if input is cleared (empty string)', () => {
+      renderPanel({
+        selectedPersonalities: ['Alice'],
+        leadPersonality: 'Alice',
+        numRounds: 3,
+      });
+      const numRoundsInput = screen.getByRole('spinbutton', { name: 'Number of Rounds (per turn):' });
+      fireEvent.change(numRoundsInput, { target: { value: '' } });
+
+      expect(mockOnNumRoundsChange).not.toHaveBeenCalled();
+      expect(numRoundsInput).toHaveAttribute('aria-invalid', 'true');
+      expect(screen.getByRole('alert')).toHaveTextContent(/between 1 and 10/i);
+      expect(screen.getByRole('button', { name: 'Start New Conversation' })).toBeDisabled();
+    });
+
+    it('rejects 0 and 11 with inline validation error and disables Start', () => {
+      renderPanel({
+        selectedPersonalities: ['Alice'],
+        leadPersonality: 'Alice',
+        numRounds: 3,
+      });
+      const numRoundsInput = screen.getByRole('spinbutton', { name: 'Number of Rounds (per turn):' });
+
+      fireEvent.change(numRoundsInput, { target: { value: '0' } });
+      expect(mockOnNumRoundsChange).not.toHaveBeenCalledWith(0);
+      expect(numRoundsInput).toHaveAttribute('aria-invalid', 'true');
+      expect(screen.getByRole('alert')).toHaveTextContent(/between 1 and 10/i);
+      expect(screen.getByRole('button', { name: 'Start New Conversation' })).toBeDisabled();
+
+      fireEvent.change(numRoundsInput, { target: { value: '11' } });
+      expect(mockOnNumRoundsChange).not.toHaveBeenCalledWith(11);
+      expect(numRoundsInput).toHaveAttribute('aria-invalid', 'true');
+      expect(screen.getByRole('alert')).toHaveTextContent(/between 1 and 10/i);
+      expect(screen.getByRole('button', { name: 'Start New Conversation' })).toBeDisabled();
+    });
+
+    it('rejects non-numeric and negative inputs with inline error', () => {
+      renderPanel({
+        selectedPersonalities: ['Alice'],
+        leadPersonality: 'Alice',
+        numRounds: 1,
+      });
+      const numRoundsInput = screen.getByRole('spinbutton', { name: 'Number of Rounds (per turn):' });
+
+      fireEvent.change(numRoundsInput, { target: { value: 'abc' } });
+      expect(mockOnNumRoundsChange).not.toHaveBeenCalled();
+      expect(numRoundsInput).toHaveAttribute('aria-invalid', 'true');
+      expect(screen.getByRole('button', { name: 'Start New Conversation' })).toBeDisabled();
+
+      fireEvent.change(numRoundsInput, { target: { value: '-5' } });
+      expect(mockOnNumRoundsChange).not.toHaveBeenCalledWith(-5);
+      expect(numRoundsInput).toHaveAttribute('aria-invalid', 'true');
+      expect(screen.getByRole('button', { name: 'Start New Conversation' })).toBeDisabled();
+    });
+
+    it('enforces capability-driven maxNumRounds and flags existing out-of-range value when server limit lowers', () => {
+      const makeMode = (maxNumRounds: number) => [
+        {
+          id: 'collaborative' as const,
+          label: 'Collaborative Debate',
+          description: 'Debate',
+          enabled: true,
+          ready: true,
+          supportsMultiAgent: true,
+          supportsStepPlanning: false,
+          minNumRounds: 1,
+          maxNumRounds,
+        },
+      ];
+
+      const { rerender } = render(
+        <AssistantConfigPanel
+          {...defaultProps}
+          selectedPersonalities={['Alice']}
+          leadPersonality="Alice"
+          numRounds={8}
+          executionModes={makeMode(10)}
+          discoveryStatus="available"
+        />
+      );
+      const numRoundsInput = screen.getByRole('spinbutton', { name: 'Number of Rounds (per turn):' });
+      expect(numRoundsInput).toHaveAttribute('max', '10');
+      expect(screen.getByRole('button', { name: 'Start New Conversation' })).toBeEnabled();
+
+      // Server lowers capability upper bound to 5 after user already configured 8
+      rerender(
+        <AssistantConfigPanel
+          {...defaultProps}
+          selectedPersonalities={['Alice']}
+          leadPersonality="Alice"
+          numRounds={8}
+          executionModes={makeMode(5)}
+          discoveryStatus="available"
+        />
+      );
+      expect(numRoundsInput).toHaveAttribute('max', '5');
+      expect(numRoundsInput).toHaveAttribute('aria-invalid', 'true');
+      expect(screen.getByRole('alert')).toHaveTextContent(/between 1 and 5/i);
+      expect(screen.getByRole('button', { name: 'Start New Conversation' })).toBeDisabled();
+    });
+  });
+
+  describe('Fail-Closed Capability Discovery & Readiness', () => {
+    it.each(['loading', 'empty', 'failed', 'auth_required'] as const)(
+      'disables Start and mode selector when discoveryStatus is %s',
+      (status) => {
+        renderPanel({
+          selectedPersonalities: ['Alice'],
+          leadPersonality: 'Alice',
+          numRounds: 3,
+          executionModes: [],
+          discoveryStatus: status,
+        });
+        expect(screen.getByRole('button', { name: 'Start New Conversation' })).toBeDisabled();
+        expect(screen.getByLabelText('Execution Mode:')).toBeDisabled();
+      }
+    );
+
+    it('disables Start and displays unavailableReason when active mode is ready=false', () => {
+      renderPanel({
+        selectedPersonalities: ['Alice'],
+        leadPersonality: 'Alice',
+        numRounds: 3,
+        discoveryStatus: 'available',
+        executionModes: [
+          {
+            id: 'collaborative',
+            label: 'Collaborative Debate',
+            description: 'Debate',
+            enabled: true,
+            ready: false,
+            unavailableReason: 'Server missing OPENAI_API_KEY.',
+            supportsMultiAgent: true,
+            supportsStepPlanning: false,
+          },
+        ],
+      });
+      expect(screen.getByRole('status')).toHaveTextContent('Server missing OPENAI_API_KEY.');
+      expect(screen.getByRole('button', { name: 'Start New Conversation' })).toBeDisabled();
+    });
   });
 
   describe('Start Conversation Button', () => {
