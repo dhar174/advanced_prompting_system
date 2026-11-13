@@ -21,6 +21,10 @@ export const GET_EXECUTION_MODES = gql`
       unavailableReason
       supportsCancellation
       supportsResume
+      minNumRounds
+      maxNumRounds
+      maxSteps
+      maxAgents
     }
   }
 `;
