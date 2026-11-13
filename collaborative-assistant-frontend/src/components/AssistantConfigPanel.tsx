@@ -4,6 +4,13 @@ import { Button } from './ui/Button';
 import { Input } from './ui/Input';
 import { Label } from './ui/Label';
 import type { ExecutionModeCapabilityType, ExecutionModeId } from '../graphql/graphqlTypes';
+import {
+  DEFAULT_MAX_AGENTS,
+  DEFAULT_MAX_NUM_ROUNDS,
+  DEFAULT_MAX_STEPS,
+  DEFAULT_MIN_NUM_ROUNDS,
+  type CapabilityDiscoveryStatus,
+} from '../hooks/useRunExecution';
 
 export interface AssistantConfigPanelProps {
   availablePersonalities: string[];
@@ -19,6 +26,7 @@ export interface AssistantConfigPanelProps {
   executionMode?: ExecutionModeId;
   onExecutionModeChange?: (mode: ExecutionModeId) => void;
   executionModes?: ExecutionModeCapabilityType[];
+  discoveryStatus?: CapabilityDiscoveryStatus;
   maxSteps?: number;
   onMaxStepsChange?: (steps: number) => void;
   agentCount?: number;
@@ -28,45 +36,13 @@ export interface AssistantConfigPanelProps {
   onSelectedModelChange?: (model: string) => void;
 }
 
-const FALLBACK_MODES: ExecutionModeCapabilityType[] = [
-  {
-    id: 'collaborative',
-    label: 'Collaborative Debate (Multi-Agent Deliberation)',
-    description: 'Multi-agent round deliberation & consensus voting.',
-    enabled: true,
-    ready: true,
-    gatedIssue: null,
-    supportsMultiAgent: true,
-    supportsStepPlanning: false,
-    supportsCancellation: false,
-    supportsResume: false,
-  },
-  {
-    id: 'advanced_pipeline',
-    label: 'Standalone Pipeline (Complexity & Step Planning)',
-    description: 'Complexity-driven step planning, reflections & reward judging.',
-    enabled: true,
-    ready: true,
-    gatedIssue: null,
-    supportsMultiAgent: true,
-    supportsStepPlanning: true,
-    supportsCancellation: false,
-    supportsResume: false,
-  },
-  {
-    id: 'tree_of_thought',
-    label: 'Tree of Thoughts',
-    description: 'Deliberate search over reasoning trees.',
-    enabled: false,
-    ready: false,
-    gatedIssue: 'Issue #36',
-    unavailableReason: 'Gated pending Issue #36.',
-    supportsMultiAgent: false,
-    supportsStepPlanning: true,
-    supportsCancellation: false,
-    supportsResume: false,
-  },
-];
+const DISCOVERY_PLACEHOLDER_LABELS: Record<CapabilityDiscoveryStatus, string> = {
+  loading: 'Loading server capabilities...',
+  auth_required: 'Authentication required to load modes',
+  failed: 'Unable to load execution modes',
+  empty: 'No execution modes available',
+  available: 'No execution modes available',
+};
 
 const AssistantConfigPanel: React.FC<AssistantConfigPanelProps> = ({
   availablePersonalities,
@@ -81,6 +57,7 @@ const AssistantConfigPanel: React.FC<AssistantConfigPanelProps> = ({
   executionMode = 'collaborative',
   onExecutionModeChange,
   executionModes,
+  discoveryStatus,
   maxSteps = 20,
   onMaxStepsChange,
   agentCount = 3,
@@ -89,11 +66,46 @@ const AssistantConfigPanel: React.FC<AssistantConfigPanelProps> = ({
   selectedModel,
   onSelectedModelChange,
 }) => {
-  const modeOptions = executionModes && executionModes.length > 0 ? executionModes : FALLBACK_MODES;
+  const hasDiscoveryContract =
+    discoveryStatus !== undefined || executionModes !== undefined;
+  const modeOptions = executionModes ?? [];
   const activeModeCapability = modeOptions.find((m) => m.id === executionMode);
 
+  const minRounds =
+    typeof activeModeCapability?.minNumRounds === 'number' &&
+    Number.isInteger(activeModeCapability.minNumRounds) &&
+    activeModeCapability.minNumRounds >= 1
+      ? activeModeCapability.minNumRounds
+      : DEFAULT_MIN_NUM_ROUNDS;
+
+  const maxRounds =
+    typeof activeModeCapability?.maxNumRounds === 'number' &&
+    Number.isInteger(activeModeCapability.maxNumRounds) &&
+    activeModeCapability.maxNumRounds >= minRounds
+      ? activeModeCapability.maxNumRounds
+      : DEFAULT_MAX_NUM_ROUNDS;
+
+  const maxAllowedSteps =
+    typeof activeModeCapability?.maxSteps === 'number' &&
+    Number.isInteger(activeModeCapability.maxSteps) &&
+    activeModeCapability.maxSteps >= 1
+      ? activeModeCapability.maxSteps
+      : DEFAULT_MAX_STEPS;
+
+  const maxAllowedAgents =
+    typeof activeModeCapability?.maxAgents === 'number' &&
+    Number.isInteger(activeModeCapability.maxAgents) &&
+    activeModeCapability.maxAgents >= 0
+      ? activeModeCapability.maxAgents
+      : DEFAULT_MAX_AGENTS;
+
+  const [roundsDraft, setRoundsDraft] = useState<string>(String(numRounds));
   const [stepsDraft, setStepsDraft] = useState<string>(String(maxSteps));
   const [agentsDraft, setAgentsDraft] = useState<string>(String(agentCount));
+
+  useEffect(() => {
+    setRoundsDraft(String(numRounds));
+  }, [numRounds]);
 
   useEffect(() => {
     setStepsDraft(String(maxSteps));
@@ -119,18 +131,20 @@ const AssistantConfigPanel: React.FC<AssistantConfigPanelProps> = ({
   };
 
   const handleNumRoundsChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    if (event.target.value === '') {
-      onNumRoundsChange(1);
+    const raw = event.target.value;
+    setRoundsDraft(raw);
+    const trimmed = raw.trim();
+    if (!/^\d+$/.test(trimmed)) {
       return;
     }
-    const rounds = parseInt(event.target.value, 10);
-    if (!isNaN(rounds) && rounds >= 1 && rounds <= 20) {
+    const rounds = Number.parseInt(trimmed, 10);
+    if (rounds >= minRounds && rounds <= maxRounds) {
       onNumRoundsChange(rounds);
     }
   };
 
   const handleModeChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
-    if (onExecutionModeChange) {
+    if (onExecutionModeChange && event.target.value) {
       onExecutionModeChange(event.target.value as ExecutionModeId);
     }
   };
@@ -138,36 +152,26 @@ const AssistantConfigPanel: React.FC<AssistantConfigPanelProps> = ({
   const handleMaxStepsChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const raw = event.target.value;
     setStepsDraft(raw);
-    const steps = parseInt(raw, 10);
-    if (!isNaN(steps) && steps >= 1 && steps <= 50 && onMaxStepsChange) {
-      onMaxStepsChange(steps);
+    const trimmed = raw.trim();
+    if (!/^\d+$/.test(trimmed)) {
+      return;
     }
-  };
-
-  const handleMaxStepsBlur = () => {
-    const steps = parseInt(stepsDraft, 10);
-    const clamped = isNaN(steps) ? 1 : Math.min(Math.max(steps, 1), 50);
-    setStepsDraft(String(clamped));
-    if (onMaxStepsChange) {
-      onMaxStepsChange(clamped);
+    const steps = Number.parseInt(trimmed, 10);
+    if (steps >= 1 && steps <= maxAllowedSteps && onMaxStepsChange) {
+      onMaxStepsChange(steps);
     }
   };
 
   const handleAgentCountChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const raw = event.target.value;
     setAgentsDraft(raw);
-    const count = parseInt(raw, 10);
-    if (!isNaN(count) && count >= 0 && count <= 10 && onAgentCountChange) {
-      onAgentCountChange(count);
+    const trimmed = raw.trim();
+    if (!/^\d+$/.test(trimmed)) {
+      return;
     }
-  };
-
-  const handleAgentCountBlur = () => {
-    const count = parseInt(agentsDraft, 10);
-    const clamped = isNaN(count) ? 0 : Math.min(Math.max(count, 0), 10);
-    setAgentsDraft(String(clamped));
-    if (onAgentCountChange) {
-      onAgentCountChange(clamped);
+    const count = Number.parseInt(trimmed, 10);
+    if (count >= 0 && count <= maxAllowedAgents && onAgentCountChange) {
+      onAgentCountChange(count);
     }
   };
 
@@ -178,16 +182,77 @@ const AssistantConfigPanel: React.FC<AssistantConfigPanelProps> = ({
     ? activeModeCapability.supportsMultiAgent && !activeModeCapability.supportsStepPlanning
     : executionMode === 'collaborative';
 
+  const getNumRoundsError = (): string | null => {
+    const trimmed = roundsDraft.trim();
+    if (!trimmed || !/^\d+$/.test(trimmed)) {
+      return `Enter a whole number between ${minRounds} and ${maxRounds}.`;
+    }
+    const parsed = Number.parseInt(trimmed, 10);
+    if (parsed < minRounds || parsed > maxRounds) {
+      return `Number of rounds must be between ${minRounds} and ${maxRounds}.`;
+    }
+    if (!Number.isInteger(numRounds) || numRounds < minRounds || numRounds > maxRounds) {
+      return `Number of rounds must be between ${minRounds} and ${maxRounds}.`;
+    }
+    return null;
+  };
+
+  const getMaxStepsError = (): string | null => {
+    const trimmed = stepsDraft.trim();
+    if (!trimmed || !/^\d+$/.test(trimmed)) {
+      return `Enter a whole number between 1 and ${maxAllowedSteps}.`;
+    }
+    const parsed = Number.parseInt(trimmed, 10);
+    if (parsed < 1 || parsed > maxAllowedSteps) {
+      return `Max reasoning steps must be between 1 and ${maxAllowedSteps}.`;
+    }
+    if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > maxAllowedSteps) {
+      return `Max reasoning steps must be between 1 and ${maxAllowedSteps}.`;
+    }
+    return null;
+  };
+
+  const getAgentCountError = (): string | null => {
+    const trimmed = agentsDraft.trim();
+    if (!trimmed || !/^\d+$/.test(trimmed)) {
+      return `Enter a whole number between 0 and ${maxAllowedAgents}.`;
+    }
+    const parsed = Number.parseInt(trimmed, 10);
+    if (parsed < 0 || parsed > maxAllowedAgents) {
+      return `Collaborative agents must be between 0 and ${maxAllowedAgents}.`;
+    }
+    if (!Number.isInteger(agentCount) || agentCount < 0 || agentCount > maxAllowedAgents) {
+      return `Collaborative agents must be between 0 and ${maxAllowedAgents}.`;
+    }
+    return null;
+  };
+
+  const numRoundsError = isCollaborative ? getNumRoundsError() : null;
+  const maxStepsError = isPipeline ? getMaxStepsError() : null;
+  const agentCountError = isPipeline ? getAgentCountError() : null;
+
+  const isDiscoveryReady =
+    discoveryStatus !== undefined
+      ? discoveryStatus === 'available'
+      : executionModes !== undefined
+      ? modeOptions.length > 0
+      : true;
+
+  const isModeMissing = hasDiscoveryContract && !activeModeCapability;
   const isModeDisabled = activeModeCapability ? !activeModeCapability.enabled : false;
-  const isModeNotReady = activeModeCapability ? activeModeCapability.ready === false : false;
+  const isModeNotReady = activeModeCapability ? activeModeCapability.ready !== true : false;
 
   const isStartDisabled =
     isConversationActive ||
+    !isDiscoveryReady ||
+    isModeMissing ||
     isModeDisabled ||
     isModeNotReady ||
     (isCollaborative
-      ? selectedPersonalities.length === 0 || !leadPersonality || numRounds <= 0
-      : maxSteps <= 0);
+      ? selectedPersonalities.length === 0 ||
+        !leadPersonality ||
+        Boolean(numRoundsError)
+      : Boolean(maxStepsError) || Boolean(agentCountError));
 
   const buttonText = isConversationActive
     ? isPipeline
@@ -196,6 +261,9 @@ const AssistantConfigPanel: React.FC<AssistantConfigPanelProps> = ({
     : isPipeline
     ? 'Start Pipeline Session'
     : 'Start New Conversation';
+
+  const modeSelectDisabled =
+    isConversationActive || (hasDiscoveryContract && modeOptions.length === 0);
 
   return (
     <Card className="w-full max-w-md bg-surface-card">
@@ -210,30 +278,40 @@ const AssistantConfigPanel: React.FC<AssistantConfigPanelProps> = ({
           </Label>
           <select
             id="execution-mode"
-            value={executionMode}
+            value={modeOptions.length > 0 ? executionMode : hasDiscoveryContract ? '' : executionMode}
             onChange={handleModeChange}
-            disabled={isConversationActive}
+            disabled={modeSelectDisabled}
             className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-slate-300 bg-surface-card text-text-primary focus:outline-none focus:ring-ring-brand focus:border-ring-brand sm:text-sm rounded-md disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed"
           >
-            {modeOptions.map((mode) => {
-              const suffix = !mode.enabled
-                ? ` (Disabled${mode.gatedIssue ? ` - ${mode.gatedIssue}` : ''})`
-                : mode.ready === false
-                ? ' (Provider not configured)'
-                : '';
-              return (
-                <option key={mode.id} value={mode.id} disabled={!mode.enabled}>
-                  {mode.label}
-                  {suffix}
-                </option>
-              );
-            })}
+            {modeOptions.length > 0 ? (
+              modeOptions.map((mode) => {
+                const suffix = !mode.enabled
+                  ? ` (Disabled${mode.gatedIssue ? ` - ${mode.gatedIssue}` : ''})`
+                  : mode.ready !== true
+                  ? ' (Provider not configured)'
+                  : '';
+                return (
+                  <option key={mode.id} value={mode.id} disabled={!mode.enabled}>
+                    {mode.label}
+                    {suffix}
+                  </option>
+                );
+              })
+            ) : hasDiscoveryContract ? (
+              <option value="" disabled>
+                {DISCOVERY_PLACEHOLDER_LABELS[discoveryStatus ?? 'empty']}
+              </option>
+            ) : (
+              <option value="collaborative">Collaborative Debate</option>
+            )}
           </select>
-          {activeModeCapability && !activeModeCapability.ready && activeModeCapability.unavailableReason && (
-            <p role="status" className="mt-1.5 text-xs text-amber-700">
-              {activeModeCapability.unavailableReason}
-            </p>
-          )}
+          {activeModeCapability &&
+            (!activeModeCapability.enabled || activeModeCapability.ready !== true) &&
+            activeModeCapability.unavailableReason && (
+              <p role="status" className="mt-1.5 text-xs text-amber-700">
+                {activeModeCapability.unavailableReason}
+              </p>
+            )}
         </div>
 
         {/* Optional Server-Owned Model Selector */}
@@ -317,13 +395,24 @@ const AssistantConfigPanel: React.FC<AssistantConfigPanelProps> = ({
               <Input
                 type="number"
                 id="num-rounds"
-                value={numRounds}
+                value={roundsDraft}
                 onChange={handleNumRoundsChange}
-                min="1"
-                max="20"
+                min={minRounds}
+                max={maxRounds}
+                step={1}
                 disabled={isConversationActive}
+                aria-invalid={Boolean(numRoundsError)}
+                aria-describedby={numRoundsError ? 'num-rounds-error' : 'num-rounds-hint'}
                 className="mt-1 block w-full"
               />
+              <p id="num-rounds-hint" className="mt-1 text-xs text-text-secondary">
+                Allowed range: {minRounds}–{maxRounds} rounds.
+              </p>
+              {numRoundsError && (
+                <p id="num-rounds-error" role="alert" className="mt-1 text-xs text-rose-700">
+                  {numRoundsError}
+                </p>
+              )}
             </div>
           </>
         )}
@@ -339,12 +428,19 @@ const AssistantConfigPanel: React.FC<AssistantConfigPanelProps> = ({
                 id="max-steps"
                 value={stepsDraft}
                 onChange={handleMaxStepsChange}
-                onBlur={handleMaxStepsBlur}
-                min="1"
-                max="50"
+                min={1}
+                max={maxAllowedSteps}
+                step={1}
                 disabled={isConversationActive}
+                aria-invalid={Boolean(maxStepsError)}
+                aria-describedby={maxStepsError ? 'max-steps-error' : undefined}
                 className="mt-1 block w-full"
               />
+              {maxStepsError && (
+                <p id="max-steps-error" role="alert" className="mt-1 text-xs text-rose-700">
+                  {maxStepsError}
+                </p>
+              )}
             </div>
 
             <div>
@@ -356,12 +452,19 @@ const AssistantConfigPanel: React.FC<AssistantConfigPanelProps> = ({
                 id="agent-count"
                 value={agentsDraft}
                 onChange={handleAgentCountChange}
-                onBlur={handleAgentCountBlur}
-                min="0"
-                max="10"
+                min={0}
+                max={maxAllowedAgents}
+                step={1}
                 disabled={isConversationActive}
+                aria-invalid={Boolean(agentCountError)}
+                aria-describedby={agentCountError ? 'agent-count-error' : undefined}
                 className="mt-1 block w-full"
               />
+              {agentCountError && (
+                <p id="agent-count-error" role="alert" className="mt-1 text-xs text-rose-700">
+                  {agentCountError}
+                </p>
+              )}
             </div>
           </div>
         )}

@@ -53,6 +53,10 @@ export interface ExecutionModeCapabilityType {
   unavailableReason?: string | null;
   supportsCancellation?: boolean;
   supportsResume?: boolean;
+  minNumRounds?: number | null;
+  maxNumRounds?: number | null;
+  maxSteps?: number | null;
+  maxAgents?: number | null;
 }
 
 export interface PersonalityCapabilityType {
