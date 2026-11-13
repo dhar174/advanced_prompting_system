@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, type ApolloError } from '@apollo/client';
 import {
   RUN_EXECUTION,
@@ -17,6 +17,19 @@ import type {
   ProviderPolicyType,
   RunExecutionResponseType,
 } from '../graphql/graphqlTypes';
+import {
+  clearApiToken,
+  getApiToken,
+  isAuthError,
+  setApiToken,
+  subscribeApiToken,
+  subscribeAuthRequired,
+} from '../auth/apiToken';
+
+export const DEFAULT_MIN_NUM_ROUNDS = 1;
+export const DEFAULT_MAX_NUM_ROUNDS = 10;
+export const DEFAULT_MAX_STEPS = 50;
+export const DEFAULT_MAX_AGENTS = 10;
 
 export const DEFAULT_PERSONALITY_IDS: string[] = [
   'Analytical Thinker',
@@ -47,54 +60,26 @@ export const DEFAULT_PERSONALITY_IDS: string[] = [
   'Code Debugger',
 ];
 
-export const DEFAULT_EXECUTION_MODES: ExecutionModeCapabilityType[] = [
-  {
-    id: 'collaborative',
-    label: 'Collaborative Multi-Agent',
-    description: 'Multi-agent round deliberation & consensus voting.',
-    enabled: true,
-    ready: true,
-    unavailableReason: null,
-    gatedIssue: null,
-    supportsMultiAgent: true,
-    supportsStepPlanning: false,
-    supportsCancellation: false,
-    supportsResume: false,
-  },
-  {
-    id: 'advanced_pipeline',
-    label: 'Standalone Pipeline',
-    description: 'Complexity-driven step planning, reflections & reward judging.',
-    enabled: true,
-    ready: true,
-    unavailableReason: null,
-    gatedIssue: null,
-    supportsMultiAgent: true,
-    supportsStepPlanning: true,
-    supportsCancellation: false,
-    supportsResume: false,
-  },
-  {
-    id: 'tree_of_thought',
-    label: 'Tree of Thoughts',
-    description: 'Deliberate search over reasoning trees.',
-    enabled: false,
-    ready: false,
-    unavailableReason: 'Gated pending Issue #36.',
-    gatedIssue: 'Issue #36',
-    supportsMultiAgent: false,
-    supportsStepPlanning: true,
-    supportsCancellation: false,
-    supportsResume: false,
-  },
-];
+export type CapabilityDiscoveryStatus =
+  | 'loading'
+  | 'available'
+  | 'empty'
+  | 'failed'
+  | 'auth_required';
 
 export function formatExecutionError(err: unknown): string {
   if (!err) return '';
   if (typeof err === 'string') return err;
-  const apolloErr = err as ApolloError & { networkError?: { statusCode?: number } };
-  const statusCode = apolloErr?.networkError?.statusCode;
-  if (statusCode === 401) {
+  const apolloErr = err as ApolloError & {
+    statusCode?: number;
+    networkError?: { statusCode?: number; status?: number; response?: { status?: number } };
+  };
+  const statusCode =
+    apolloErr?.networkError?.statusCode ??
+    apolloErr?.networkError?.status ??
+    apolloErr?.networkError?.response?.status ??
+    apolloErr?.statusCode;
+  if (statusCode === 401 || isAuthError(err)) {
     return 'Authentication required to execute GraphQL requests.';
   }
   if (statusCode === 403) {
@@ -123,6 +108,9 @@ export interface UseRunExecutionResult {
   runExecution: RunExecutionMutateFunction;
   cancelActiveRun: () => void;
   resetExecutionState: () => void;
+  retryDiscovery: () => Promise<void>;
+  applyApiToken: (token: string) => Promise<void>;
+  clearStoredApiToken: () => Promise<void>;
   data: RunExecutionData | undefined | null;
   lastResult: RunExecutionResponseType | null;
   loading: boolean;
@@ -134,6 +122,11 @@ export interface UseRunExecutionResult {
   providerPolicy: ProviderPolicyType | null;
   modesLoading: boolean;
   modesError: ApolloError | undefined;
+  discoveryStatus: CapabilityDiscoveryStatus;
+  discoveryErrorMessage: string | null;
+  capabilitiesReady: boolean;
+  authRequired: boolean;
+  hasApiToken: boolean;
 }
 
 export const useRunExecution = (): UseRunExecutionResult => {
@@ -144,19 +137,36 @@ export const useRunExecution = (): UseRunExecutionResult => {
   const { data, loading, error } = mutationState;
   const resetMutation = (mutationState as { reset?: () => void }).reset;
 
+  const [apiToken, setApiTokenState] = useState<string>(() => getApiToken());
+  const [authRequiredOverride, setAuthRequiredOverride] = useState<boolean>(false);
+  const [authErrorMessage, setAuthErrorMessage] = useState<string | null>(null);
+  const [isRetryingDiscovery, setIsRetryingDiscovery] = useState<boolean>(false);
+
   const {
     data: modesData,
     loading: modesLoading,
     error: modesError,
+    refetch: refetchModes,
   } = useQuery<GetExecutionModesData>(GET_EXECUTION_MODES, {
     fetchPolicy: 'cache-first',
+    notifyOnNetworkStatusChange: true,
   });
 
-  const { data: personalitiesData } = useQuery<GetPersonalitiesData>(GET_PERSONALITIES, {
+  const {
+    data: personalitiesData,
+    loading: personalitiesLoading,
+    error: personalitiesError,
+    refetch: refetchPersonalities,
+  } = useQuery<GetPersonalitiesData>(GET_PERSONALITIES, {
     fetchPolicy: 'cache-first',
   });
 
-  const { data: policyData } = useQuery<GetProviderPolicyData>(GET_PROVIDER_POLICY, {
+  const {
+    data: policyData,
+    loading: policyLoading,
+    error: policyError,
+    refetch: refetchPolicy,
+  } = useQuery<GetProviderPolicyData>(GET_PROVIDER_POLICY, {
     fetchPolicy: 'cache-first',
   });
 
@@ -168,6 +178,189 @@ export const useRunExecution = (): UseRunExecutionResult => {
   const inFlightRef = useRef(false);
   const requestSeqRef = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    const unsubToken = subscribeApiToken((nextToken) => {
+      setApiTokenState(nextToken);
+    });
+    const unsubAuth = subscribeAuthRequired((msg) => {
+      setAuthRequiredOverride(true);
+      setAuthErrorMessage(msg || 'Authentication required to execute GraphQL requests.');
+    });
+    return () => {
+      unsubToken();
+      unsubAuth();
+    };
+  }, []);
+
+  useEffect(() => {
+    const capAuthErr = [modesError, personalitiesError, policyError].find((e) =>
+      isAuthError(e)
+    );
+    if (capAuthErr) {
+      clearApiToken();
+      setAuthRequiredOverride(true);
+      setAuthErrorMessage(formatExecutionError(capAuthErr));
+    }
+  }, [modesError, personalitiesError, policyError]);
+
+  const validServerModes = useMemo(() => {
+    const rawModes = modesData?.executionModes;
+    if (!Array.isArray(rawModes)) {
+      return [];
+    }
+    return rawModes.filter(
+      (mode): mode is ExecutionModeCapabilityType =>
+        Boolean(mode && typeof mode.id === 'string' && typeof mode.enabled === 'boolean')
+    );
+  }, [modesData]);
+
+  const anyAuthQueryError =
+    isAuthError(modesError) ||
+    isAuthError(personalitiesError) ||
+    isAuthError(policyError);
+
+  const anyCapabilityQueryError = Boolean(
+    modesError || personalitiesError || policyError
+  );
+
+  const discoveryStatus: CapabilityDiscoveryStatus = useMemo(() => {
+    if (
+      isRetryingDiscovery ||
+      modesLoading ||
+      (!modesData && (personalitiesLoading || policyLoading))
+    ) {
+      return 'loading';
+    }
+    if (authRequiredOverride || anyAuthQueryError) {
+      return 'auth_required';
+    }
+    if (anyCapabilityQueryError) {
+      return 'failed';
+    }
+    if (!modesData || validServerModes.length === 0) {
+      return 'empty';
+    }
+    return 'available';
+  }, [
+    isRetryingDiscovery,
+    modesLoading,
+    modesData,
+    personalitiesLoading,
+    policyLoading,
+    authRequiredOverride,
+    anyAuthQueryError,
+    anyCapabilityQueryError,
+    validServerModes.length,
+  ]);
+
+  // Fail closed: never expose fabricated enabled/ready modes when discovery is not confirmed.
+  const executionModes: ExecutionModeCapabilityType[] = useMemo(
+    () => (discoveryStatus === 'available' ? validServerModes : []),
+    [discoveryStatus, validServerModes]
+  );
+
+  const personalities: PersonalityCapabilityType[] = useMemo(() => {
+    if (discoveryStatus === 'auth_required' || discoveryStatus === 'failed') {
+      return [];
+    }
+    if (personalitiesData?.personalities && personalitiesData.personalities.length > 0) {
+      return personalitiesData.personalities;
+    }
+    if (discoveryStatus === 'available') {
+      return DEFAULT_PERSONALITY_IDS.map((id) => ({ id, instructions: '' }));
+    }
+    return [];
+  }, [discoveryStatus, personalitiesData]);
+
+  const providerPolicy: ProviderPolicyType | null = useMemo(() => {
+    if (discoveryStatus === 'auth_required' || discoveryStatus === 'failed') {
+      return null;
+    }
+    return policyData?.providerPolicy ?? null;
+  }, [discoveryStatus, policyData]);
+
+  const capabilitiesReady = useMemo(
+    () =>
+      discoveryStatus === 'available' &&
+      executionModes.some((mode) => mode.enabled && mode.ready === true),
+    [discoveryStatus, executionModes]
+  );
+
+  const discoveryErrorMessage = useMemo(() => {
+    if (discoveryStatus === 'auth_required') {
+      return (
+        authErrorMessage ||
+        formatExecutionError(modesError || personalitiesError || policyError) ||
+        'Authentication required to access GraphQL capabilities.'
+      );
+    }
+    if (discoveryStatus === 'failed') {
+      return (
+        formatExecutionError(modesError || personalitiesError || policyError) ||
+        'Unable to verify server execution capabilities.'
+      );
+    }
+    if (discoveryStatus === 'empty') {
+      return 'No execution modes were returned by the server.';
+    }
+    return null;
+  }, [
+    discoveryStatus,
+    authErrorMessage,
+    modesError,
+    personalitiesError,
+    policyError,
+  ]);
+
+  const retryDiscovery = useCallback(async () => {
+    setIsRetryingDiscovery(true);
+    setAuthRequiredOverride(false);
+    setAuthErrorMessage(null);
+    setClientErrorMessage(null);
+    try {
+      const results = await Promise.allSettled([
+        refetchModes?.(),
+        refetchPersonalities?.(),
+        refetchPolicy?.(),
+      ]);
+      for (const res of results) {
+        if (res.status === 'rejected' && isAuthError(res.reason)) {
+          clearApiToken();
+          setAuthRequiredOverride(true);
+          setAuthErrorMessage(formatExecutionError(res.reason));
+          break;
+        }
+      }
+    } finally {
+      setIsRetryingDiscovery(false);
+    }
+  }, [refetchModes, refetchPersonalities, refetchPolicy]);
+
+  const applyApiToken = useCallback(
+    async (token: string) => {
+      const trimmed = String(token || '').trim();
+      if (!trimmed) {
+        clearApiToken();
+        setApiTokenState('');
+        setAuthRequiredOverride(false);
+        await retryDiscovery();
+        return;
+      }
+      setApiToken(trimmed);
+      setApiTokenState(trimmed);
+      await retryDiscovery();
+    },
+    [retryDiscovery]
+  );
+
+  const clearStoredApiToken = useCallback(async () => {
+    clearApiToken();
+    setApiTokenState('');
+    setAuthRequiredOverride(false);
+    setAuthErrorMessage(null);
+    await retryDiscovery();
+  }, [retryDiscovery]);
 
   const cancelActiveRun = useCallback(() => {
     requestSeqRef.current += 1;
@@ -202,18 +395,62 @@ export const useRunExecution = (): UseRunExecutionResult => {
         return null;
       }
 
+      if (discoveryStatus !== 'available') {
+        setClientErrorMessage(
+          discoveryErrorMessage || 'Server capabilities are not ready for execution.'
+        );
+        return null;
+      }
+
+      const modeCap = executionModes.find((m) => m.id === variables.input.mode);
+      if (!modeCap || !modeCap.enabled || modeCap.ready !== true) {
+        setClientErrorMessage(
+          modeCap?.unavailableReason ||
+            `Execution mode '${variables.input.mode}' is not available or ready.`
+        );
+        return null;
+      }
+
+      if (
+        variables.input.mode === 'collaborative' &&
+        variables.input.numRounds !== undefined
+      ) {
+        const minRounds = modeCap.minNumRounds ?? DEFAULT_MIN_NUM_ROUNDS;
+        const maxRounds = modeCap.maxNumRounds ?? DEFAULT_MAX_NUM_ROUNDS;
+        if (
+          !Number.isInteger(variables.input.numRounds) ||
+          variables.input.numRounds < minRounds ||
+          variables.input.numRounds > maxRounds
+        ) {
+          setClientErrorMessage(
+            `Number of rounds must be between ${minRounds} and ${maxRounds}.`
+          );
+          return null;
+        }
+      }
+
       const seq = ++requestSeqRef.current;
-      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const controller =
+        typeof AbortController !== 'undefined' ? new AbortController() : null;
       abortControllerRef.current = controller;
       inFlightRef.current = true;
       setInFlight(true);
       setWasCancelled(false);
       setClientErrorMessage(null);
 
+      const currentToken = getApiToken();
+      const mutateContext: Record<string, unknown> = {};
+      if (controller) {
+        mutateContext.fetchOptions = { signal: controller.signal };
+      }
+      if (currentToken) {
+        mutateContext.headers = { Authorization: `Bearer ${currentToken}` };
+      }
+
       try {
         const result = await mutateFunction(
-          controller
-            ? { variables, context: { fetchOptions: { signal: controller.signal } } }
+          Object.keys(mutateContext).length > 0
+            ? { variables, context: mutateContext }
             : { variables }
         );
         // Ignore stale or cancelled responses
@@ -230,6 +467,12 @@ export const useRunExecution = (): UseRunExecutionResult => {
           return null;
         }
         const formatted = formatExecutionError(err);
+        if (isAuthError(err)) {
+          clearApiToken();
+          setApiTokenState('');
+          setAuthRequiredOverride(true);
+          setAuthErrorMessage(formatted);
+        }
         setClientErrorMessage(formatted || 'Execution request failed.');
         return null;
       } finally {
@@ -240,20 +483,9 @@ export const useRunExecution = (): UseRunExecutionResult => {
         }
       }
     },
-    [mutateFunction]
+    [discoveryStatus, discoveryErrorMessage, executionModes, mutateFunction]
   );
 
-  const executionModes: ExecutionModeCapabilityType[] =
-    modesData?.executionModes && modesData.executionModes.length > 0
-      ? modesData.executionModes
-      : DEFAULT_EXECUTION_MODES;
-
-  const personalities: PersonalityCapabilityType[] =
-    personalitiesData?.personalities && personalitiesData.personalities.length > 0
-      ? personalitiesData.personalities
-      : DEFAULT_PERSONALITY_IDS.map((id) => ({ id, instructions: '' }));
-
-  const providerPolicy: ProviderPolicyType | null = policyData?.providerPolicy ?? null;
   const combinedLoading = Boolean(loading || inFlight);
   const derivedError = wasCancelled
     ? null
@@ -263,6 +495,9 @@ export const useRunExecution = (): UseRunExecutionResult => {
     runExecution,
     cancelActiveRun,
     resetExecutionState,
+    retryDiscovery,
+    applyApiToken,
+    clearStoredApiToken,
     data: wasCancelled ? null : data,
     lastResult,
     loading: combinedLoading,
@@ -272,7 +507,12 @@ export const useRunExecution = (): UseRunExecutionResult => {
     executionModes,
     personalities,
     providerPolicy,
-    modesLoading,
+    modesLoading: Boolean(modesLoading || isRetryingDiscovery),
     modesError,
+    discoveryStatus,
+    discoveryErrorMessage,
+    capabilitiesReady,
+    authRequired: discoveryStatus === 'auth_required',
+    hasApiToken: Boolean(apiToken),
   };
 };

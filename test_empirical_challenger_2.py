@@ -242,7 +242,7 @@ class TestPipelineNegativeRewardsAndNoneAttributes:
         req = RunRequest(mode="advanced_pipeline", task_prompt="Optimize complex routing")
         res = execute_run(req)
 
-        assert res.status == "completed"
+        assert res.status == "incomplete"
         assert res.diagnostics.final_reward == -0.25
         assert len(res.diagnostics.reflections) == 2
 
@@ -299,7 +299,7 @@ class TestPipelineNegativeRewardsAndNoneAttributes:
         req = RunRequest(mode="advanced_pipeline", task_prompt="Task with empty step")
         res = execute_run(req)
 
-        assert res.status == "completed"
+        assert res.status == "incomplete"
         assert res.diagnostics.final_reward == 0.0  # None coerced to 0.0
         assert len(res.diagnostics.reflections) == 1
         r = res.diagnostics.reflections[0]
@@ -393,7 +393,7 @@ class TestPipelineNegativeRewardsAndNoneAttributes:
         req = RunRequest(mode="advanced_pipeline", task_prompt="Plan step test")
         res = execute_run(req)
 
-        assert res.status == "completed"
+        assert res.status == "incomplete"
         assert len(res.diagnostics.plan_steps) == 1
         ps = res.diagnostics.plan_steps[0]
         assert ps.step_number == 1

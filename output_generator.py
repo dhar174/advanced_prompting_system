@@ -14,13 +14,26 @@ import os
 import re
 import threading
 import uuid
+import ntpath
+from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, Field
 
 _DEFAULT_RUN_SCOPE = "default"
-_ACTIVE_RUN_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
-    "aps_active_artifact_run_id", default=None
+_SCOPE_ID_PATTERN = re.compile(r"^(?:run|direct)_[0-9a-f]{32}$")
+
+
+@dataclass(frozen=True)
+class _ArtifactScope:
+    """Server-owned opaque artifact scope bound to an optional caller correlation label."""
+
+    owner_id: str
+    correlation_id: str
+
+
+_ACTIVE_SCOPE: contextvars.ContextVar[Optional[_ArtifactScope]] = contextvars.ContextVar(
+    "aps_active_artifact_scope", default=None
 )
 
 
@@ -28,7 +41,11 @@ class ArtifactRef(BaseModel):
     """Metadata descriptor for a tracked generated artifact scoped to a single run."""
 
     artifact_id: str = Field(..., description="Unique identifier for the generated artifact.")
-    run_id: str = Field(..., description="Correlation/run identifier owning this artifact.")
+    run_id: str = Field(..., description="Opaque server-generated run identifier owning this artifact.")
+    correlation_id: Optional[str] = Field(
+        default=None,
+        description="Caller-supplied correlation label for tracing (separate from run ownership).",
+    )
     filename: str = Field(..., description="Basename of the generated artifact.")
     path: str = Field(..., description="Absolute path to the artifact on disk.")
     mime_type: str = Field(default="application/octet-stream", description="Detected MIME type.")
@@ -36,17 +53,101 @@ class ArtifactRef(BaseModel):
     sha256: str = Field(default="", description="SHA-256 hex digest of the artifact bytes.")
 
 
+def _direct_owner_id(raw_id: str) -> str:
+    """Derive a deterministic, collision-resistant owner key for unscoped run_id strings."""
+    digest = hashlib.sha256(raw_id.encode("utf-8")).hexdigest()[:32]
+    return f"direct_{digest}"
+
+
+def _storage_dir_name(owner_id: str) -> str:
+    """Map an owner_id to a collision-resistant, traversal-free single directory segment."""
+    if owner_id == _DEFAULT_RUN_SCOPE:
+        return _DEFAULT_RUN_SCOPE
+    if _SCOPE_ID_PATTERN.fullmatch(owner_id):
+        return owner_id
+    digest = hashlib.sha256(owner_id.encode("utf-8")).hexdigest()[:32]
+    return f"run_{digest}"
+
+
+def _is_within_directory(target_path: str, base_dir: str) -> bool:
+    """Return True iff target_path is inside or equal to base_dir on the same drive."""
+    try:
+        return os.path.commonpath([target_path, base_dir]) == base_dir
+    except ValueError:
+        return False
+
+
 class RunArtifactRegistry:
-    """Thread-safe registry of generated artifacts isolated strictly per run_id."""
+    """Thread-safe registry of generated artifacts isolated strictly per server-owned run scope."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._by_run: Dict[str, Dict[str, ArtifactRef]] = {}
+        self._scopes_by_owner: Dict[str, _ArtifactScope] = {}
+        self._latest_owner_by_label: Dict[str, str] = {}
+
+    def register_scope(self, scope: _ArtifactScope, bind_label: bool = True) -> None:
+        """Record a server-generated scope and optionally bind its exact correlation label."""
+        with self._lock:
+            self._scopes_by_owner[scope.owner_id] = scope
+            if bind_label:
+                self._latest_owner_by_label[scope.correlation_id] = scope.owner_id
+
+    def resolve_owner_id(self, run_id: Optional[str] = None) -> str:
+        """
+        Resolve a caller-supplied run_id or correlation label to its exact server owner_id.
+
+        Active ContextVar scope takes precedence when run_id is None or matches the active
+        scope's opaque owner_id or exact correlation_id. Distinct correlation labels
+        (e.g. 'tenant/a' vs 'tenant:a') never alias, and reused correlation labels resolve
+        to distinct per-run owner_ids.
+        """
+        active = _ACTIVE_SCOPE.get()
+        if run_id is None or (isinstance(run_id, str) and run_id == ""):
+            return active.owner_id if active is not None else _DEFAULT_RUN_SCOPE
+
+        raw = str(run_id)
+        if "\x00" in raw:
+            raise ValueError("Artifact run_id must not contain NUL bytes.")
+
+        if active is not None and (raw == active.owner_id or raw == active.correlation_id):
+            return active.owner_id
+
+        if active is not None:
+            raise PermissionError("Cannot select a foreign artifact owner inside an active run.")
+
+        with self._lock:
+            if raw in self._scopes_by_owner or raw in self._by_run:
+                return raw
+            if raw in self._latest_owner_by_label:
+                return self._latest_owner_by_label[raw]
+
+        if raw == _DEFAULT_RUN_SCOPE:
+            return _DEFAULT_RUN_SCOPE
+        return _direct_owner_id(raw)
+
+    def _resolve_correlation_id(self, owner_id: str, raw_run_id: Optional[str]) -> str:
+        """Return the human correlation label associated with owner_id."""
+        active = _ACTIVE_SCOPE.get()
+        if active is not None and active.owner_id == owner_id:
+            return active.correlation_id
+        with self._lock:
+            scope = self._scopes_by_owner.get(owner_id)
+            if scope is not None:
+                return scope.correlation_id
+        if raw_run_id is not None and str(raw_run_id) != "":
+            return str(raw_run_id)
+        return _DEFAULT_RUN_SCOPE
 
     def register(self, filepath: str, run_id: Optional[str] = None) -> ArtifactRef:
-        """Register an explicitly created artifact path under run_id."""
-        effective_run_id = _sanitize_run_id(run_id or get_active_run_id() or _DEFAULT_RUN_SCOPE)
-        real_path = os.path.realpath(os.path.abspath(filepath))
+        """Register an explicitly created artifact path under its resolved owner scope."""
+        abs_input = os.path.abspath(filepath)
+        if os.path.islink(abs_input):
+            raise PermissionError(f"Cannot register symlink '{filepath}' as a tracked artifact.")
+
+        owner_id = self.resolve_owner_id(run_id)
+        correlation_id = self._resolve_correlation_id(owner_id, run_id)
+        real_path = os.path.realpath(abs_input)
         size_bytes = 0
         sha256_hex = ""
         if os.path.isfile(real_path):
@@ -70,12 +171,16 @@ class RunArtifactRegistry:
             mime_type = "text/plain"
 
         with self._lock:
-            run_map = self._by_run.setdefault(effective_run_id, {})
+            active = _ACTIVE_SCOPE.get()
+            if active is not None and active.owner_id == owner_id:
+                self._scopes_by_owner.setdefault(owner_id, active)
+            run_map = self._by_run.setdefault(owner_id, {})
             existing = run_map.get(real_path)
             artifact_id = existing.artifact_id if existing else f"art_{uuid.uuid4().hex[:12]}"
             ref = ArtifactRef(
                 artifact_id=artifact_id,
-                run_id=effective_run_id,
+                run_id=owner_id,
+                correlation_id=correlation_id,
                 filename=os.path.basename(real_path),
                 path=real_path,
                 mime_type=mime_type or "application/octet-stream",
@@ -89,40 +194,57 @@ class RunArtifactRegistry:
         """Check whether filepath is explicitly registered under the target run scope."""
         if not filepath or not isinstance(filepath, str):
             return False
-        effective_run_id = _sanitize_run_id(run_id or get_active_run_id() or _DEFAULT_RUN_SCOPE)
         try:
-            real_path = os.path.realpath(os.path.abspath(filepath))
+            abs_input = os.path.abspath(filepath)
+            if os.path.islink(filepath) or os.path.islink(abs_input):
+                return False
+            owner_id = self.resolve_owner_id(run_id)
+            real_path = os.path.realpath(abs_input)
         except Exception:
             return False
         with self._lock:
-            run_map = self._by_run.get(effective_run_id, {})
+            run_map = self._by_run.get(owner_id, {})
             return real_path in run_map
 
     def get_ref(self, filepath: str, run_id: Optional[str] = None) -> Optional[ArtifactRef]:
         """Retrieve ArtifactRef for a tracked path within the target run scope."""
         if not filepath or not isinstance(filepath, str):
             return None
-        effective_run_id = _sanitize_run_id(run_id or get_active_run_id() or _DEFAULT_RUN_SCOPE)
         try:
-            real_path = os.path.realpath(os.path.abspath(filepath))
+            abs_input = os.path.abspath(filepath)
+            if os.path.islink(filepath) or os.path.islink(abs_input):
+                return None
+            owner_id = self.resolve_owner_id(run_id)
+            real_path = os.path.realpath(abs_input)
         except Exception:
             return None
         with self._lock:
-            return self._by_run.get(effective_run_id, {}).get(real_path)
+            return self._by_run.get(owner_id, {}).get(real_path)
 
     def list_artifacts(self, run_id: Optional[str] = None) -> List[ArtifactRef]:
         """List all tracked artifacts for a specific run scope."""
-        effective_run_id = _sanitize_run_id(run_id or get_active_run_id() or _DEFAULT_RUN_SCOPE)
+        try:
+            owner_id = self.resolve_owner_id(run_id)
+        except PermissionError:
+            return []
         with self._lock:
-            return list(self._by_run.get(effective_run_id, {}).values())
+            return list(self._by_run.get(owner_id, {}).values())
 
     def clear(self, run_id: Optional[str] = None) -> None:
         """Clear tracked artifacts for a single run_id, or all runs if run_id is None."""
         with self._lock:
             if run_id is None:
                 self._by_run.clear()
+                self._scopes_by_owner.clear()
+                self._latest_owner_by_label.clear()
             else:
-                self._by_run.pop(_sanitize_run_id(run_id), None)
+                owner_id = self.resolve_owner_id(run_id)
+                self._by_run.pop(owner_id, None)
+                scope = self._scopes_by_owner.pop(owner_id, None)
+                if scope is not None and self._latest_owner_by_label.get(scope.correlation_id) == owner_id:
+                    self._latest_owner_by_label.pop(scope.correlation_id, None)
+                if str(run_id) in self._latest_owner_by_label and self._latest_owner_by_label[str(run_id)] == owner_id:
+                    self._latest_owner_by_label.pop(str(run_id), None)
 
 
 _REGISTRY = RunArtifactRegistry()
@@ -133,25 +255,33 @@ def get_artifact_registry() -> RunArtifactRegistry:
     return _REGISTRY
 
 
-def _sanitize_run_id(run_id: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(run_id or _DEFAULT_RUN_SCOPE)).strip("._")
-    return cleaned or _DEFAULT_RUN_SCOPE
-
-
 def get_active_run_id() -> Optional[str]:
-    """Return the active artifact run_id from contextvars, if any."""
-    return _ACTIVE_RUN_ID.get()
+    """Return the active server-owned artifact run_id from contextvars, if any."""
+    active = _ACTIVE_SCOPE.get()
+    return active.owner_id if active is not None else None
 
 
 @contextlib.contextmanager
 def artifact_run_scope(run_id: Optional[str]) -> Iterator[str]:
-    """Bind an active run_id for artifact generation and lookup within this execution context."""
-    scoped_id = _sanitize_run_id(run_id or f"run_{uuid.uuid4().hex[:12]}")
-    token = _ACTIVE_RUN_ID.set(scoped_id)
+    """
+    Bind a fresh opaque server-owned run scope for artifact generation and lookup.
+
+    The caller-supplied run_id is preserved as an exact correlation label separate from
+    the unique server-generated storage/ownership identity so colliding or reused
+    correlation labels never share directories or registry buckets.
+    """
+    if run_id is not None and "\x00" in str(run_id):
+        raise ValueError("Artifact run_id must not contain NUL bytes.")
+    raw_label = str(run_id) if run_id is not None and str(run_id) != "" else None
+    owner_id = f"run_{uuid.uuid4().hex}"
+    correlation_label = raw_label if raw_label is not None else owner_id
+    scope = _ArtifactScope(owner_id=owner_id, correlation_id=correlation_label)
+    token = _ACTIVE_SCOPE.set(scope)
+    _REGISTRY.register_scope(scope, bind_label=(raw_label is not None))
     try:
-        yield scoped_id
+        yield owner_id
     finally:
-        _ACTIVE_RUN_ID.reset(token)
+        _ACTIVE_SCOPE.reset(token)
 
 
 def get_artifacts_base_dir() -> str:
@@ -162,11 +292,12 @@ def get_artifacts_base_dir() -> str:
 
 
 def get_run_artifact_dir(run_id: Optional[str] = None) -> str:
-    """Return (and lazily create) the dedicated artifact directory for a run."""
-    scoped_id = _sanitize_run_id(run_id or get_active_run_id() or _DEFAULT_RUN_SCOPE)
+    """Return (and lazily create) the dedicated collision-resistant artifact directory for a run."""
+    owner_id = _REGISTRY.resolve_owner_id(run_id)
+    dir_name = _storage_dir_name(owner_id)
     base_dir = get_artifacts_base_dir()
-    run_dir = os.path.realpath(os.path.join(base_dir, scoped_id))
-    if os.path.commonpath([run_dir, base_dir]) != base_dir:
+    run_dir = os.path.realpath(os.path.join(base_dir, dir_name))
+    if not _is_within_directory(run_dir, base_dir) or run_dir == base_dir:
         raise PermissionError("Invalid artifact run scope path")
     os.makedirs(run_dir, exist_ok=True)
     return run_dir
@@ -177,28 +308,45 @@ def resolve_output_filepath(filename: str, run_id: Optional[str] = None) -> str:
     Resolve an output filename safely.
 
     - Inside an active run scope (or explicit run_id), relative filenames are confined inside
-      that run's dedicated artifact directory (`APS_ARTIFACTS_DIR/<run_id>/...`), rejecting
-      `..` traversal or symlink escapes.
+      that run's dedicated artifact directory (`APS_ARTIFACTS_DIR/<opaque_run_dir>/...`),
+      rejecting `..` traversal, drive-relative escapes, or symlink escapes.
     - Relative filenames without an active run scope resolve under CWD without escaping CWD.
-    - Explicit absolute paths are permitted only if lexical parent traversal segments (`..`) are absent.
+    - Explicit absolute paths are permitted only if lexical parent traversal segments (`..`) are
+      absent (and when inside an active run scope, must remain confined to the run directory).
     """
     if not filename or not isinstance(filename, str):
         raise ValueError("Artifact filename must be a non-empty string.")
 
     raw_name = filename.strip()
-    active_run = run_id or get_active_run_id()
+    if not raw_name or "\x00" in raw_name:
+        raise ValueError("Artifact filename must be a valid non-empty string.")
+
+    portable_parts = raw_name.replace("\\", "/").split("/")
+    if ".." in portable_parts or (os.name != "nt" and ntpath.splitdrive(raw_name)[0]):
+        raise PermissionError("Artifact path contains traversal or a foreign drive.")
+
+    active_run = run_id if (run_id is not None and str(run_id) != "") else get_active_run_id()
 
     if not os.path.isabs(raw_name):
+        drive, _ = os.path.splitdrive(raw_name)
+        if drive or raw_name.startswith(("/", "\\")):
+            raise PermissionError(
+                f"Artifact path '{filename}' escapes allowed artifact directory."
+            )
         anchor_dir = get_run_artifact_dir(active_run) if active_run else os.path.realpath(os.getcwd())
         candidate = os.path.abspath(os.path.join(anchor_dir, raw_name))
+        if os.path.islink(candidate):
+            raise PermissionError(
+                f"Artifact path '{filename}' escapes allowed artifact directory via symlink."
+            )
         real_parent = os.path.realpath(os.path.dirname(candidate))
         real_anchor = os.path.realpath(anchor_dir)
-        if os.path.commonpath([real_parent, real_anchor]) != real_anchor:
+        if not _is_within_directory(real_parent, real_anchor):
             raise PermissionError(
                 f"Artifact path '{filename}' escapes allowed artifact directory '{anchor_dir}'."
             )
         real_target = os.path.realpath(candidate)
-        if os.path.commonpath([real_target, real_anchor]) != real_anchor:
+        if not _is_within_directory(real_target, real_anchor) or real_target == real_anchor:
             raise PermissionError(
                 f"Artifact path '{filename}' escapes allowed artifact directory via symlink."
             )
@@ -212,10 +360,14 @@ def resolve_output_filepath(filename: str, run_id: Optional[str] = None) -> str:
     if ".." in normalized_parts or ".." in raw_name.replace("\\", "/").split("/"):
         raise PermissionError(f"Path traversal ('..') is not allowed in artifact path '{filename}'.")
     abs_path = os.path.abspath(raw_name)
+    if os.path.islink(abs_path):
+        raise PermissionError(
+            f"Absolute artifact path '{filename}' cannot target a symlink."
+        )
     real_target = os.path.realpath(abs_path)
     if active_run:
         real_anchor = os.path.realpath(get_run_artifact_dir(active_run))
-        if os.path.commonpath([real_target, real_anchor]) != real_anchor:
+        if not _is_within_directory(real_target, real_anchor) or real_target == real_anchor:
             raise PermissionError(
                 f"Absolute artifact path '{filename}' escapes active run sandbox '{real_anchor}'."
             )
@@ -262,12 +414,18 @@ def read_tracked_artifact(
     Safely read a UTF-8 text preview/content from an artifact owned by `run_id`.
     Returns None for untracked paths, symlink escapes, missing files, or binary PDFs.
     """
-    if not is_tracked_artifact(filepath, run_id=run_id):
+    if not filepath or not isinstance(filepath, str):
         return None
-    ref = get_tracked_artifact_ref(filepath, run_id=run_id)
-    if ref is None or not os.path.isfile(ref.path):
-        return None
-    if os.path.islink(filepath):
+    try:
+        abs_input = os.path.abspath(filepath)
+        if os.path.islink(filepath) or os.path.islink(abs_input):
+            return None
+        ref = _REGISTRY.get_ref(filepath, run_id=run_id)
+        if ref is None or not os.path.isfile(ref.path) or os.path.islink(ref.path):
+            return None
+        if os.path.realpath(abs_input) != ref.path:
+            return None
+    except Exception:
         return None
     if ref.mime_type == "application/pdf":
         return None
