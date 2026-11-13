@@ -397,7 +397,8 @@ class _ChatCompletions:
             content = f"Deterministic collaborative contribution aligned with task requirements.{suffix}"
 
         if scenario.startswith("two_step"):
-            marker = "SECOND_STEP_OUTPUT" if "SECOND_STEP_OUTPUT" in prompt_text else "FIRST_STEP_OUTPUT"
+            markers = re.findall(r"(?:FIRST|SECOND)_STEP_OUTPUT", prompt_text)
+            marker = markers[-1] if markers else "FIRST_STEP_OUTPUT"
             content = (content.replace("</answer>", f" {marker}</answer>")
                        if "</answer>" in content else f"{content} {marker}")
         return SimpleNamespace(
