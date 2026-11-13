@@ -337,3 +337,16 @@ class TestTraversalSymlinkAndGeneratorErrors:
                     output_generator.generate_code_snippet("x = 1", "fail_c.py")
                 with pytest.raises(PermissionError):
                     output_generator.generate_csv_output("a,b\n1,2", "fail.csv")
+
+
+def test_active_scope_cannot_select_known_foreign_owner_or_label():
+    with output_generator.artifact_run_scope('owner-a') as owner:
+        path = output_generator.generate_text_file_output('private', 'report.txt')
+        assert output_generator.read_tracked_artifact(path) == 'private'
+    with output_generator.artifact_run_scope('owner-b'):
+        for foreign in (owner, 'owner-a'):
+            assert output_generator.list_run_artifacts(foreign) == []
+            assert output_generator.read_tracked_artifact(path, run_id=foreign) is None
+            with pytest.raises(PermissionError):
+                output_generator.resolve_output_filepath('report.txt', run_id=foreign)
+    assert Path(path).read_text() == 'private'

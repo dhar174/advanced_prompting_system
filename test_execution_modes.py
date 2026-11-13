@@ -97,7 +97,7 @@ def mock_pipeline_interaction():
     )
     plan_step2 = PlanStep(
         step_number=2,
-        completed=False,
+        completed=True,
         step_name="Step 2: Implementation",
         step_description="Implement backend services",
         description="Implement backend services",
@@ -807,7 +807,8 @@ class TestAdversarialAndErrorHandling:
         req = RunRequest(mode="advanced_pipeline", task_prompt="Task with empty plan")
         result = execute_run(req)
 
-        assert result.status == "completed"
+        assert result.status == "incomplete"
+        assert result.stop_reason == "incomplete_plan_steps"
         assert result.diagnostics.plan_steps == []
         assert result.final_output == mock_pipeline_interaction.answer
 
