@@ -356,21 +356,23 @@ class TestWindowsPathNormalizationAndConcurrency:
     """Verify mixed-case containment and race-free concurrent artifact root creation."""
 
     def test_mixed_case_path_containment_and_traversal_denial(self, monkeypatch, tmp_path):
+        import ntpath
+
         mixed_base = tmp_path / "MixedCaseArtifacts"
         mixed_base.mkdir()
-        swapped_base = str(mixed_base).swapcase()
-        monkeypatch.setenv("APS_ARTIFACTS_DIR", swapped_base)
+        effective_base = str(mixed_base).swapcase() if os.name == "nt" else str(mixed_base)
+        monkeypatch.setenv("APS_ARTIFACTS_DIR", effective_base)
 
         with output_generator.artifact_run_scope("tenant/case") as owner_id:
             run_dir = output_generator.get_run_artifact_dir("tenant/case")
-            assert output_generator._is_within_directory(run_dir, swapped_base) is True
-            assert output_generator._is_within_directory(run_dir.swapcase(), run_dir) is True
+            assert output_generator._is_within_directory(run_dir, effective_base) is True
 
             generated = output_generator.generate_text_file_output("case-ok", "nested/note.txt")
             assert Path(generated).read_text(encoding="utf-8") == "case-ok"
             assert output_generator.read_tracked_artifact(generated, run_id=owner_id) == "case-ok"
 
             if os.name == "nt":
+                assert output_generator._is_within_directory(run_dir.swapcase(), run_dir) is True
                 # Swapped-case absolute path inside run_dir resolves cleanly; outside path is still denied.
                 resolved = output_generator.resolve_output_filepath(
                     os.path.join(run_dir.swapcase(), "nested", "second.txt")
@@ -380,13 +382,14 @@ class TestWindowsPathNormalizationAndConcurrency:
                 )
 
             outside = str(tmp_path / "outside_escape.txt")
-            for bad in ("../escape.txt", ".", outside, outside.swapcase()):
+            bad_paths = ["../escape.txt", ".", outside]
+            if os.name == "nt":
+                bad_paths.append(outside.swapcase())
+            for bad in bad_paths:
                 with pytest.raises(PermissionError):
                     output_generator.resolve_output_filepath(bad)
 
-        # Also verify _is_within_directory / _paths_equal honor normcase even under simulated Windows semantics.
-        import ntpath
-
+        # Verify _is_within_directory / _paths_equal honor Windows normcase semantics on all platforms.
         monkeypatch.setattr(output_generator.os.path, "normcase", ntpath.normcase)
         monkeypatch.setattr(output_generator.os.path, "normpath", ntpath.normpath)
         monkeypatch.setattr(output_generator.os.path, "commonpath", ntpath.commonpath)
