@@ -29,6 +29,8 @@ const ApiAuthPanel: React.FC<ApiAuthPanelProps> = ({
     if (!trimmed || isBusy) {
       return;
     }
+    setTokenDraft('');
+    setShowToken(false);
     await onApplyToken(trimmed);
   };
 
