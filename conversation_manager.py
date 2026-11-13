@@ -39,6 +39,20 @@ from output_generator import (
     generate_code_snippet,
     generate_csv_output,
 )
+from provider_client import (
+    DisallowedModelError,
+    LazyClient,
+    ProviderPolicyError,
+    RunBudgetExceededError,
+    RunCancelledError,
+    RunTimeoutError,
+    consume_provider_call,
+    get_active_execution_context,
+    get_effective_model,
+    get_effective_temperature,
+    provider_execution_scope,
+    reserve_call_scope,
+)
 
 
 # Custom Exception Classes for Type-Safe Error Handling
@@ -72,14 +86,6 @@ DEFAULT_FALLBACK_OUTPUT_TYPE = "Simple Concise Answer"
 MINIMUM_SIMILARITY_THRESHOLD = 0.1
 
 
-class RunBudgetExceededError(ConversationManagerError):
-    """Raised when call count or deadline budget is exhausted."""
-
-
-class RunCancelledError(ConversationManagerError):
-    """Raised when an active execution cancellation callback returns True."""
-
-
 _ACTIVE_RUN_OPTIONS: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
     "aps_conversation_run_options", default=None
 )
@@ -93,60 +99,60 @@ def _conversation_run_scope(
     max_calls: Optional[int] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
 ):
-    deadline = (
-        (time.monotonic() + float(timeout_seconds))
-        if timeout_seconds is not None and float(timeout_seconds) > 0
-        else None
+    parent_ctx = get_active_execution_context()
+    if parent_ctx is not None:
+        if model and str(model).strip():
+            get_effective_model(explicit=model)
+        state: Dict[str, Any] = {
+            "model": parent_ctx.default_model,
+            "temperature": temperature if temperature is not None else parent_ctx.temperature,
+            "deadline_monotonic": parent_ctx.deadline_monotonic,
+            "max_calls": parent_ctx.max_calls,
+            "calls_made": parent_ctx.calls_made,
+            "cancel_check": cancel_check or parent_ctx.cancel_check,
+        }
+        token = _ACTIVE_RUN_OPTIONS.set(state)
+        try:
+            yield state
+        finally:
+            _ACTIVE_RUN_OPTIONS.reset(token)
+        return
+
+    normalized_max_calls = (
+        int(max_calls) if max_calls is not None and int(max_calls) > 0 else None
     )
-    state: Dict[str, Any] = {
-        "model": model,
-        "temperature": temperature,
-        "deadline_monotonic": deadline,
-        "max_calls": int(max_calls) if max_calls is not None and int(max_calls) > 0 else None,
-        "calls_made": 0,
-        "cancel_check": cancel_check,
-    }
-    token = _ACTIVE_RUN_OPTIONS.set(state)
-    try:
-        yield state
-    finally:
-        _ACTIVE_RUN_OPTIONS.reset(token)
+    with provider_execution_scope(
+        default_model=model or "gpt-4o-mini",
+        temperature=temperature,
+        timeout_seconds=timeout_seconds,
+        max_calls=normalized_max_calls,
+        cancel_check=cancel_check,
+    ) as ctx:
+        state = {
+            "model": ctx.default_model,
+            "temperature": ctx.temperature,
+            "deadline_monotonic": ctx.deadline_monotonic,
+            "max_calls": ctx.max_calls,
+            "calls_made": ctx.calls_made,
+            "cancel_check": ctx.cancel_check,
+        }
+        token = _ACTIVE_RUN_OPTIONS.set(state)
+        try:
+            yield state
+        finally:
+            _ACTIVE_RUN_OPTIONS.reset(token)
 
 
 def _resolve_model(default: str = "gpt-4o-mini", explicit: Optional[str] = None) -> str:
-    if explicit and str(explicit).strip():
-        return str(explicit).strip()
-    opts = _ACTIVE_RUN_OPTIONS.get()
-    if opts and opts.get("model"):
-        return str(opts["model"])
-    return default
+    return get_effective_model(explicit=explicit, fallback=default)
 
 
 def _resolve_temperature(explicit: Optional[float] = None) -> Optional[float]:
-    if explicit is not None:
-        return float(explicit)
-    opts = _ACTIVE_RUN_OPTIONS.get()
-    if opts and opts.get("temperature") is not None:
-        return float(opts["temperature"])
-    return None
+    return get_effective_temperature(explicit=explicit)
 
 
 def _consume_run_budget() -> None:
-    opts = _ACTIVE_RUN_OPTIONS.get()
-    if not opts:
-        return
-    cancel_cb = opts.get("cancel_check")
-    if cancel_cb and cancel_cb():
-        raise RunCancelledError("Execution cancelled by caller.")
-    deadline = opts.get("deadline_monotonic")
-    if deadline is not None and time.monotonic() >= float(deadline):
-        raise RunBudgetExceededError("Execution timeout exceeded during collaborative run.")
-    max_calls = opts.get("max_calls")
-    if max_calls is not None and int(opts.get("calls_made", 0)) >= int(max_calls):
-        raise RunBudgetExceededError(
-            f"Provider call budget ({max_calls}) exhausted during collaborative run."
-        )
-    opts["calls_made"] = int(opts.get("calls_made", 0)) + 1
+    consume_provider_call()
 
 # Safe dictionary access helpers
 def safe_get_message_field(msg: Dict[str, Any], field: str, default: str = "") -> str:
@@ -324,7 +330,6 @@ output_type_experts = {
 
 # Set your OpenAI API key as an environment variable
 openai.api_key = os.getenv("OPENAI_API_KEY")
-from provider_client import LazyClient
 client = LazyClient()
 
 
@@ -692,25 +697,30 @@ def summarize_conversation(conversation_history: List[Dict[str, str]]) -> str:
 
     # Use the OpenAI client to summarize the conversation
     try:
-        _consume_run_budget()
-        completion = client.chat.completions.create(
-            model=_resolve_model("gpt-4o-mini"),  # Replace with the appropriate model
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a helpful assistant that summarizes conversations. Your summary should be concise and capture the key points of the conversation, and correctly attribute statements to the right speakers.",
-                },
-                {
-                    "role": "user",
-                    "content": f"Please summarize the following conversation:\n\n{conversation_text}",
-                },
-            ],
-            max_completion_tokens=256,
-        )
+        with reserve_call_scope(
+            model=_resolve_model("gpt-4o-mini"),
+            call_type="summarize_conversation",
+        ) as resolved_model:
+            completion = client.chat.completions.create(
+                model=resolved_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a helpful assistant that summarizes conversations. Your summary should be concise and capture the key points of the conversation, and correctly attribute statements to the right speakers.",
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Please summarize the following conversation:\n\n{conversation_text}",
+                    },
+                ],
+                max_completion_tokens=256,
+            )
 
         # Extract the summary from the completion response
         summary = completion.choices[0].message.content.strip()
 
+    except (ProviderPolicyError, DisallowedModelError):
+        raise
     except Exception as e:
         summary = f"Error in summarization: {str(e)}"
 
@@ -800,13 +810,16 @@ Please return the output as a JSON object with the following structure:
 
     try:
         # Make the API call to OpenAI's chat completions
-        _consume_run_budget()
-        completion = client.beta.chat.completions.parse(
-            model=_resolve_model("gpt-4o-mini"),  # Replace with the appropriate model if necessary
-            messages=messages,
-            response_format=ExtractFormat,
-            temperature=0,
-        )
+        with reserve_call_scope(
+            model=_resolve_model("gpt-4o-mini"),
+            call_type="extract_information",
+        ) as resolved_model:
+            completion = client.beta.chat.completions.parse(
+                model=resolved_model,
+                messages=messages,
+                response_format=ExtractFormat,
+                temperature=0,
+            )
 
         # Extract the assistant's response
         extraction = completion.choices[0].message.parsed
@@ -822,6 +835,8 @@ Please return the output as a JSON object with the following structure:
         original_conversation = None
         return conversation_memory
 
+    except (ProviderPolicyError, DisallowedModelError):
+        raise
     except Exception as e:
         print(
             f"Error in extract_information: {str(e)} on line {e.__traceback__.tb_lineno}"
@@ -882,16 +897,19 @@ def cast_binary_vote(assistant_name: str, messages: List[Dict[str, str]], vote_p
     # Ask the assistant to cast a vote based on the messages
     messages.append({"role": "system", "content": vote_prompt})
     try:
-        _consume_run_budget()
-        response = client.beta.chat.completions.parse(
-            model=_resolve_model("gpt-4o-mini"),  # Specify the model
-            messages=messages,  # Pass the messages directly as a list of dicts
-            response_format=BinaryVote,
-        )
+        with reserve_call_scope(
+            model=_resolve_model("gpt-4o-mini"),
+            call_type="cast_binary_vote",
+        ) as resolved_model:
+            response = client.beta.chat.completions.parse(
+                model=resolved_model,
+                messages=messages,  # Pass the messages directly as a list of dicts
+                response_format=BinaryVote,
+            )
         # Extract the vote from the response
         vote = response.choices[0].message.parsed
         return vote
-    except (RunBudgetExceededError, RunCancelledError):
+    except (ProviderPolicyError, DisallowedModelError):
         raise
     except Exception as e:
         return ErrorResult(
@@ -910,16 +928,19 @@ def cast_confidence_vote(
     # Ask the assistant to cast a confidence vote based on the messages
     messages.append({"role": "system", "content": vote_prompt})
     try:
-        _consume_run_budget()
-        response = client.beta.chat.completions.parse(
-            model=_resolve_model("gpt-4o-mini"),  # Specify the model
-            messages=messages,  # Pass the messages directly as a list of dicts
-            response_format=ConfidenceVote,
-        )
+        with reserve_call_scope(
+            model=_resolve_model("gpt-4o-mini"),
+            call_type="cast_confidence_vote",
+        ) as resolved_model:
+            response = client.beta.chat.completions.parse(
+                model=resolved_model,
+                messages=messages,  # Pass the messages directly as a list of dicts
+                response_format=ConfidenceVote,
+            )
         # Extract the vote from the response
         confidence = response.choices[0].message.parsed
         return confidence
-    except (RunBudgetExceededError, RunCancelledError):
+    except (ProviderPolicyError, DisallowedModelError):
         raise
     except Exception as e:
         return ErrorResult(
@@ -947,11 +968,14 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
             },
         ]
         try:
-            _consume_run_budget()
-            response = client.chat.completions.create(
-                model=_resolve_model("gpt-4o-mini"),  # Specify the model
-                messages=messages,  # Pass the messages directly as a list of dicts
-            )
+            with reserve_call_scope(
+                model=_resolve_model("gpt-4o-mini"),
+                call_type="define_problem",
+            ) as resolved_model:
+                response = client.chat.completions.create(
+                    model=resolved_model,
+                    messages=messages,  # Pass the messages directly as a list of dicts
+                )
             # Extract the text from the response
             assistant_reply = response.choices[
                 0
@@ -964,7 +988,7 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
                 }
             )
             print(f"\nDefinition from {assistant_name}: {assistant_reply}\n")
-        except (RunBudgetExceededError, RunCancelledError):
+        except (ProviderPolicyError, DisallowedModelError):
             raise
         except Exception as e:
             # TODO: Handle LLM call failures more gracefully
@@ -1322,17 +1346,20 @@ def output_type_determination(response) -> Union[OutputType, ErrorResult]:
         },
     ]
     try:
-        _consume_run_budget()
-        response = client.beta.chat.completions.parse(
-            model=_resolve_model("gpt-4o-mini"),  # Specify the model
-            messages=messages,  # Pass the messages directly as a list of dicts
-            response_format=OutputType,
-            max_completion_tokens=100,
-        )
+        with reserve_call_scope(
+            model=_resolve_model("gpt-4o-mini"),
+            call_type="output_type_determination",
+        ) as resolved_model:
+            response = client.beta.chat.completions.parse(
+                model=resolved_model,
+                messages=messages,  # Pass the messages directly as a list of dicts
+                response_format=OutputType,
+                max_completion_tokens=100,
+            )
         # Extract the output type from the response
         output_type = response.choices[0].message.parsed
         return output_type
-    except (RunBudgetExceededError, RunCancelledError):
+    except (ProviderPolicyError, DisallowedModelError):
         raise
     except Exception as e:
         return ErrorResult(
@@ -1364,13 +1391,16 @@ def test_finalize_output(final_decision: str, output_type: str):
 
     # Make the API call with function calling
     try:
-        _consume_run_budget()
-        response = client.chat.completions.create(
+        with reserve_call_scope(
             model=_resolve_model("gpt-4o-mini"),
-            messages=messages,
-            tools=tools,
-            tool_choice="auto",
-        )
+            call_type="test_finalize_output",
+        ) as resolved_model:
+            response = client.chat.completions.create(
+                model=resolved_model,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+            )
 
         message = response.choices[0].message
         print(f"\nmessage: {message}\n")
@@ -1412,6 +1442,8 @@ def test_finalize_output(final_decision: str, output_type: str):
                 return f"Error: Function '{tool_function_name}' not found."
         else:
             return message
+    except (ProviderPolicyError, DisallowedModelError):
+        raise
     except Exception as e:
         print(f"Error in finalize_output: {str(e)} on line {e.__traceback__.tb_lineno}")
         return f"Error in finalize_output: {str(e)} on line {e.__traceback__.tb_lineno}"
@@ -1447,13 +1479,16 @@ def finalize_output(final_decision: str, output_type: OutputType):
 
     # Make the API call with function calling
     try:
-        _consume_run_budget()
-        response = client.chat.completions.create(
+        with reserve_call_scope(
             model=_resolve_model("gpt-4o-mini"),
-            messages=messages,
-            tools=tools,
-            tool_choice="auto",
-        )
+            call_type="test_finalize_output",
+        ) as resolved_model:
+            response = client.chat.completions.create(
+                model=resolved_model,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+            )
 
         message = response.choices[0].message
         print(f"\nmessage: {message}\n")
@@ -1498,7 +1533,7 @@ def finalize_output(final_decision: str, output_type: OutputType):
                 return error_result
         else:
             return getattr(message, "content", None) or message
-    except (RunBudgetExceededError, RunCancelledError):
+    except (ProviderPolicyError, DisallowedModelError):
         raise
     except Exception as e:
         print(f"Error in finalize_output: {str(e)} on line {e.__traceback__.tb_lineno}")
@@ -2138,15 +2173,20 @@ def final_output_correction(
 
     # Make the API call to correct the final output using structured outputs with beta.chat.completions.parse
     try:
-        _consume_run_budget()
-        response = client.beta.chat.completions.parse(
+        with reserve_call_scope(
             model=_resolve_model("gpt-4o" if version_counter <= 1 else "gpt-4o-mini"),
-            messages=messages,  # Pass the messages directly as a list of dicts
-            response_format=FinalOutput,
-        )
+            call_type="final_output_correction",
+        ) as resolved_model:
+            response = client.beta.chat.completions.parse(
+                model=resolved_model,
+                messages=messages,  # Pass the messages directly as a list of dicts
+                response_format=FinalOutput,
+            )
         # Extract the corrected final output from the response
         corrected_final_output = response.choices[0].message.parsed
         return corrected_final_output
+    except (ProviderPolicyError, DisallowedModelError):
+        raise
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -2231,19 +2271,21 @@ def analyze_final_output(
         ]
         # Make the API call to analyze the final output using structured outputs with beta.chat.completions.parse
         try:
-            _consume_run_budget()
-            model_ = _resolve_model("gpt-4o" if first_analysis else "gpt-4o-mini")
-            response = client.beta.chat.completions.parse(
-                model=model_,  # Specify the model
-                messages=messages,  # Pass the messages directly as a list of dicts
-                response_format=FinalOutputAnalysis,
-            )
+            with reserve_call_scope(
+                model=_resolve_model("gpt-4o" if first_analysis else "gpt-4o-mini"),
+                call_type="analyze_final_output",
+            ) as resolved_model:
+                response = client.beta.chat.completions.parse(
+                    model=resolved_model,  # Specify the model
+                    messages=messages,  # Pass the messages directly as a list of dicts
+                    response_format=FinalOutputAnalysis,
+                )
             # Extract the final output from the response
             final_output_analysis_object = response.choices[0].message.parsed
             print(
                 f"\nFinal Output: {final_output}\n, version_counter: {version_counter}\n"
             )
-        except (RunBudgetExceededError, RunCancelledError):
+        except (ProviderPolicyError, DisallowedModelError):
             raise
         except Exception as e:
             print(
@@ -2365,12 +2407,15 @@ def analyze_to_do_list(conversation_memory, conversation_history):
     ]
     # Make the API call to analyze the to-do list using structured outputs with beta.chat.completions.parse
     try:
-        _consume_run_budget()
-        response = client.beta.chat.completions.parse(
-            model=_resolve_model("gpt-4o-mini"),  # Specify the model
-            messages=messages,  # Pass the messages directly as a list of dicts
-            response_format=TaskList,
-        )
+        with reserve_call_scope(
+            model=_resolve_model("gpt-4o-mini"),
+            call_type="analyze_to_do_list",
+        ) as resolved_model:
+            response = client.beta.chat.completions.parse(
+                model=resolved_model,  # Specify the model
+                messages=messages,  # Pass the messages directly as a list of dicts
+                response_format=TaskList,
+            )
         # Extract the completion from the response
         completion = response.choices[0].message.parsed
         print(f"\nCompletion: {completion}\n")
@@ -2383,6 +2428,8 @@ def analyze_to_do_list(conversation_memory, conversation_history):
 
         return conversation_memory  # Return the updated conversation memory
 
+    except (ProviderPolicyError, DisallowedModelError):
+        raise
     except Exception as e:
         print(
             f"Error in analyze_to_do_list: {str(e)} on line {e.__traceback__.tb_lineno}"
@@ -2478,22 +2525,25 @@ def get_assistant_response(
     # print(f"\n \n \n \n \n Messages to assistant {assistant_name}: \n", messages, "\n \n \n \n \n")
     # Update the OpenAI call to use the correct method
     try:
-        _consume_run_budget()
-        create_kwargs: Dict[str, Any] = {
-            "model": _resolve_model("gpt-4o-mini"),
-            "messages": messages,
-            "max_completion_tokens": token_limit,
-        }
-        resolved_temp = _resolve_temperature()
-        if resolved_temp is not None:
-            create_kwargs["temperature"] = resolved_temp
-        response = client.chat.completions.create(**create_kwargs)
+        with reserve_call_scope(
+            model=_resolve_model("gpt-4o-mini"),
+            call_type="get_assistant_response",
+        ) as resolved_model:
+            create_kwargs: Dict[str, Any] = {
+                "model": resolved_model,
+                "messages": messages,
+                "max_completion_tokens": token_limit,
+            }
+            resolved_temp = _resolve_temperature()
+            if resolved_temp is not None:
+                create_kwargs["temperature"] = resolved_temp
+            response = client.chat.completions.create(**create_kwargs)
         # Extract the text from the response
         assistant_reply = response.choices[
             0
         ].message.content.strip()  # Use 'message' key, not 'text'
         return {"role": "assistant", "name": assistant_name, "content": assistant_reply}
-    except (RunBudgetExceededError, RunCancelledError):
+    except (ProviderPolicyError, DisallowedModelError):
         raise
     except Exception as e:
         return ErrorResult(
@@ -2731,23 +2781,26 @@ def _run_conversation_impl(
             try:
                 if not valid_output_types:
                     raise OutputTypeError("All output type suggestions returned errors.")
-                _consume_run_budget()
                 # TODO: Make this votable by the assistants
-                response = client.beta.chat.completions.parse(
-                    model=_resolve_model("gpt-4o-mini"),  # Specify the model
-                    messages=[
-                        {"role": "system", "content": mediator_prompt},
-                        {
-                            "role": "user",
-                            "content": f"Please decide on the output type based on the defined problem statement:\n\n{problem_definition}. The suggested output types are: {', '.join(ot.output_type for ot in valid_output_types)}. Possible file extensions are: {', '.join(ot.file_extension for ot in valid_output_types)}. Please provide your recommendation in the provided format, generating both the specific output type and the file extension.",
-                        },
-                    ],
-                    response_format=OutputType,
-                )
+                with reserve_call_scope(
+                    model=_resolve_model("gpt-4o-mini"),
+                    call_type="mediator_output_type",
+                ) as resolved_model:
+                    response = client.beta.chat.completions.parse(
+                        model=resolved_model,
+                        messages=[
+                            {"role": "system", "content": mediator_prompt},
+                            {
+                                "role": "user",
+                                "content": f"Please decide on the output type based on the defined problem statement:\n\n{problem_definition}. The suggested output types are: {', '.join(ot.output_type for ot in valid_output_types)}. Possible file extensions are: {', '.join(ot.file_extension for ot in valid_output_types)}. Please provide your recommendation in the provided format, generating both the specific output type and the file extension.",
+                            },
+                        ],
+                        response_format=OutputType,
+                    )
                 # Extract the output type from the response
                 output_type = response.choices[0].message.parsed
                 print(f"\nMediator Output Type Decision: {output_type}\n")
-            except (RunBudgetExceededError, RunCancelledError):
+            except (ProviderPolicyError, DisallowedModelError):
                 raise
             except Exception as e:
                 # TODO: Implement better fallback strategy for output type determination
@@ -3173,15 +3226,18 @@ def _run_conversation_impl(
                         {"role": "user", "content": f"Problem Statement: {problem_definition}"}
                     ]
                     try:
-                        _consume_run_budget()
-                        mediator_emergency_response = client.beta.chat.completions.parse(
+                        with reserve_call_scope(
                             model=_resolve_model("gpt-4o-mini"),
-                            messages=mediator_fallback_messages,
-                            response_format=MediatorReviseOrDecide,
-                        )
+                            call_type="mediator_emergency",
+                        ) as resolved_model:
+                            mediator_emergency_response = client.beta.chat.completions.parse(
+                                model=resolved_model,
+                                messages=mediator_fallback_messages,
+                                response_format=MediatorReviseOrDecide,
+                            )
                         mediator_decision = mediator_emergency_response.choices[0].message.parsed
                         print(f"🏛️ Emergency Mediator Decision: {mediator_decision}")
-                    except (RunBudgetExceededError, RunCancelledError):
+                    except (ProviderPolicyError, DisallowedModelError):
                         raise
                     except Exception as e:
                         print(f"❌ Emergency mediator decision failed: {e}")
@@ -3210,12 +3266,15 @@ def _run_conversation_impl(
                         {"role": "user", "content": f"Vote was tied: {yes_votes} assistants voted YES, {no_votes} assistants voted NO"}
                     ]
                     try:
-                        _consume_run_budget()
-                        tie_breaker_response = client.beta.chat.completions.parse(
+                        with reserve_call_scope(
                             model=_resolve_model("gpt-4o-mini"),
-                            messages=tie_breaker_messages,
-                            response_format=MediatorReviseOrDecide,
-                        )
+                            call_type="mediator_tie_breaker",
+                        ) as resolved_model:
+                            tie_breaker_response = client.beta.chat.completions.parse(
+                                model=resolved_model,
+                                messages=tie_breaker_messages,
+                                response_format=MediatorReviseOrDecide,
+                            )
                         mediator_decision = tie_breaker_response.choices[0].message.parsed
                         print(f"🏛️ Tie-breaker Decision: {'ACCEPT' if mediator_decision.keep_output else 'REVISE'}")
                         conversation_history.append({
@@ -3224,7 +3283,7 @@ def _run_conversation_impl(
                             "round": rnd,
                             "content": f"Mediator Tie-breaker Decision: {'Accepted' if mediator_decision.keep_output else 'Revised'} - {mediator_decision.final_decision}"
                         })
-                    except (RunBudgetExceededError, RunCancelledError):
+                    except (ProviderPolicyError, DisallowedModelError):
                         raise
                     except Exception as e:
                         print(f"❌ Tie-breaker decision failed: {e}")
@@ -3261,14 +3320,19 @@ def _run_conversation_impl(
                             {"role": "user", "content": f"Proposed Decision: {safe_get_message_field(final_decision_response, 'content', 'No decision content')}"}
                         ]
                         try:
-                            _consume_run_budget()
-                            participation_response = client.beta.chat.completions.parse(
+                            with reserve_call_scope(
                                 model=_resolve_model("gpt-4o-mini"),
-                                messages=participation_messages,
-                                response_format=MediatorReviseOrDecide,
-                            )
+                                call_type="mediator_low_participation",
+                            ) as resolved_model:
+                                participation_response = client.beta.chat.completions.parse(
+                                    model=resolved_model,
+                                    messages=participation_messages,
+                                    response_format=MediatorReviseOrDecide,
+                                )
                             mediator_decision = participation_response.choices[0].message.parsed
                             print(f"🏛️ Low Participation Decision: {'PROCEED' if mediator_decision.keep_output else 'REVISE'}")
+                        except (ProviderPolicyError, DisallowedModelError):
+                            raise
                         except Exception as e:
                             print(f"❌ Low participation decision failed: {e}")
                             mediator_decision = MediatorReviseOrDecide(
@@ -3409,16 +3473,19 @@ def _run_conversation_impl(
                     ]
                     mediator_decision = ""
                     try:
-                        _consume_run_budget()
-                        response = client.beta.chat.completions.parse(
-                            model=_resolve_model("gpt-4o-mini"),  # Specify the model
-                            messages=mediator_messages,  # Pass the messages directly as a list of dicts
-                            response_format=MediatorReviseOrDecide,
-                        )
+                        with reserve_call_scope(
+                            model=_resolve_model("gpt-4o-mini"),
+                            call_type="mediator_feedback",
+                        ) as resolved_model:
+                            response = client.beta.chat.completions.parse(
+                                model=resolved_model,
+                                messages=mediator_messages,  # Pass the messages directly as a list of dicts
+                                response_format=MediatorReviseOrDecide,
+                            )
                         # Extract the decision from the response
                         mediator_decision = response.choices[0].message.parsed
                         print(f"\nMediator Decision: {mediator_decision}\n")
-                    except (RunBudgetExceededError, RunCancelledError):
+                    except (ProviderPolicyError, DisallowedModelError):
                         raise
                     except Exception as e:
                         # TODO: Implement better fallback strategy for mediator decisions

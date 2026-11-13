@@ -10,11 +10,13 @@ chronological event telemetry, and multi-agent reasoning diagnostics.
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import json
+import logging
 import os
+import re
 import time
-import traceback
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
@@ -31,6 +33,18 @@ from output_generator import (
     list_run_artifacts,
     read_tracked_artifact,
 )
+import provider_client
+from provider_client import (
+    DisallowedModelError,
+    RunBudgetExceededError,
+    RunCancelledError,
+    RunTimeoutError,
+    get_active_execution_context,
+    get_effective_model,
+    provider_execution_scope,
+)
+
+_logger = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -69,16 +83,113 @@ class ProviderConfig(BaseModel):
     max_calls: int = Field(default=40, ge=1, le=200)
 
 
-class DisallowedModelError(ValueError):
-    """Raised when a client requests a provider model outside the server allowlist."""
-
-
 class ProviderUnavailableError(RuntimeError):
     """Raised when live provider execution is requested without configured credentials."""
 
 
 class EmptyPipelineError(RuntimeError):
     """Raised when the reasoning pipeline yields neither steps nor a final answer."""
+
+
+_ERROR_SECRET_PATTERNS = (
+    re.compile(r"\bsk-[A-Za-z0-9_\-]{3,}"),
+    re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._\-]{4,}"),
+    re.compile(
+        r"(?i)\b((?:api[_-]?key|token|secret|password|authorization)\s*[:=]\s*['\"]?)[^\s'\",;]+"
+    ),
+)
+_ERROR_PATH_PATTERNS = (
+    re.compile(r'[Ff]ile\s+"[^"]+"'),
+    re.compile(r"[A-Za-z]:[\\/][^\s'\",;)\]]+"),
+    re.compile(r"\\\\[^\s'\",;)\]]+"),
+    re.compile(
+        r"(?<![A-Za-z0-9_])/(?:home|Users|tmp|var|app|srv|etc|opt|usr|root|mnt|workspace|workspaces)(?:/[^\s'\",;)\]]*)?"
+    ),
+)
+
+
+def sanitize_public_error_message(
+    exc: Union[Exception, str, None],
+    *,
+    default_message: str = "Execution failed.",
+    max_length: int = 400,
+) -> str:
+    """Return a concise public-safe error message with secrets and filesystem paths redacted."""
+    if isinstance(exc, Exception):
+        raw = str(exc or "").strip() or exc.__class__.__name__
+    elif exc is None:
+        raw = ""
+    else:
+        raw = str(exc).strip()
+    msg = raw or default_message
+
+    msg = _ERROR_SECRET_PATTERNS[0].sub("[REDACTED]", msg)
+    msg = _ERROR_SECRET_PATTERNS[1].sub(r"\1[REDACTED]", msg)
+    msg = _ERROR_SECRET_PATTERNS[2].sub(r"\1[REDACTED]", msg)
+
+    msg = _ERROR_PATH_PATTERNS[0].sub('File "[PATH]"', msg)
+    for path_pat in _ERROR_PATH_PATTERNS[1:]:
+        msg = path_pat.sub("[PATH]", msg)
+
+    msg = re.sub(r"Traceback \(most recent call last\):?", "", msg, flags=re.IGNORECASE)
+    msg = re.sub(r'File "\[PATH\]"(?:,\s*line\s*\d+)?(?:,\s*in\s+[A-Za-z0-9_<>.]+)?', "", msg)
+
+    msg = re.sub(r"\s+", " ", msg).strip()
+    if len(msg) > max_length:
+        msg = msg[: max_length - 3] + "..."
+    return msg or default_message
+
+
+def _build_safe_error_artifacts(
+    exc: Union[Exception, ErrorResult, str],
+    *,
+    mode: str,
+    stop_reason: str,
+    correlation_id: str,
+    error_type: Optional[str] = None,
+    summary_prefix: Optional[str] = None,
+) -> Tuple[ErrorResult, RunEvent]:
+    """Build one sanitized public ErrorResult and matching run_error RunEvent."""
+    if isinstance(exc, ErrorResult):
+        resolved_type = error_type or exc.error_type or "ExecutionError"
+        safe_msg = sanitize_public_error_message(
+            exc.error_message, default_message=resolved_type
+        )
+        safe_details = (
+            sanitize_public_error_message(exc.error_details, default_message=safe_msg)
+            if exc.error_details
+            else safe_msg
+        )
+    elif isinstance(exc, Exception):
+        resolved_type = error_type or type(exc).__name__
+        safe_msg = sanitize_public_error_message(exc, default_message=resolved_type)
+        safe_details = safe_msg
+    else:
+        resolved_type = error_type or "ExecutionError"
+        safe_msg = sanitize_public_error_message(exc, default_message=resolved_type)
+        safe_details = safe_msg
+
+    prefix = summary_prefix or f"Execution error in {mode} mode"
+    safe_summary = f"{prefix}: {safe_msg}"
+
+    error_obj = ErrorResult(
+        error_type=resolved_type,
+        error_message=safe_msg,
+        error_details=safe_details,
+        timestamp=datetime.now(timezone.utc),
+    )
+    error_event = _create_run_event(
+        event_type="run_error",
+        mode=mode,
+        summary=safe_summary,
+        details={
+            "error_type": resolved_type,
+            "error_message": safe_msg,
+            "correlation_id": correlation_id,
+            "stop_reason": stop_reason,
+        },
+    )
+    return error_obj, error_event
 
 
 def get_provider_config() -> ProviderConfig:
@@ -116,7 +227,7 @@ def get_provider_config() -> ProviderConfig:
         default_model=default_model,
         allowed_models=allowed,
         temperature=_safe_float("APS_DEFAULT_TEMPERATURE", 0.7, 0.0, 2.0),
-        timeout_seconds=_safe_float("APS_PROVIDER_TIMEOUT_SECONDS", 120.0, 1.0, 600.0),
+        timeout_seconds=_safe_float("APS_PROVIDER_TIMEOUT_SECONDS", 120.0, 0.05, 600.0),
         max_calls=_safe_int("APS_PROVIDER_MAX_CALLS", 40, 1, 200),
     )
 
@@ -770,8 +881,9 @@ def _infer_output_type(content: str, file_path: str = "", task_obj: Optional[Any
                     pass
 
         from advanced_prompting import AdvancedPromptEngineer, PromptEngineeringConfig
+        from provider_client import get_effective_model
 
-        engineer = AdvancedPromptEngineer(PromptEngineeringConfig())
+        engineer = AdvancedPromptEngineer(PromptEngineeringConfig(model=get_effective_model()))
         inferred = engineer.determine_output_type_from_content(
             content=content,
             file_path=file_path if (file_path and os.path.exists(str(file_path))) else "",
@@ -952,18 +1064,31 @@ def _execute_collaborative(
     except (TypeError, ValueError):
         pass
 
-    raw_history, raw_questions, raw_final_output = run_conversation(**rc_kwargs)
+    scope_cm = (
+        contextlib.nullcontext()
+        if provider_client.get_active_execution_context() is not None
+        else provider_client.provider_execution_scope(
+            default_model=resolved_model,
+            allowed_models=cfg.allowed_models,
+            temperature=request.temperature,
+            timeout_seconds=cfg.timeout_seconds,
+            max_calls=cfg.max_calls,
+        )
+    )
+    with scope_cm:
+        raw_history, raw_questions, raw_final_output = run_conversation(**rc_kwargs)
 
     # 4. Check for ErrorResult from run_conversation
     if isinstance(raw_final_output, ErrorResult):
-        error_obj = raw_final_output
-        err_msg = error_obj.error_message
-        events.append(_create_run_event(
-            event_type="run_error",
+        error_obj, error_event = _build_safe_error_artifacts(
+            raw_final_output,
             mode="collaborative",
-            summary=f"Collaborative deliberation returned error: {err_msg}",
-            details={"error_type": error_obj.error_type, "error_details": error_obj.error_details},
-        ))
+            stop_reason="provider_error",
+            correlation_id=correlation_id,
+            error_type=raw_final_output.error_type,
+            summary_prefix="Collaborative deliberation returned error",
+        )
+        events.append(error_event)
         duration_ms = (time.perf_counter() - start_time) * 1000
         return RunResult(
             mode="collaborative",
@@ -1140,18 +1265,44 @@ def _execute_advanced_pipeline(
     ))
 
     # 2. Build configuration and instantiate engineer
-    config = PromptEngineeringConfig(
-        max_steps=request.max_steps,
-        initial_budget=request.initial_budget,
-        model=resolved_model,
-        temperature=request.temperature,
-        agents=request.agents,
-        max_sc_calls=cfg.max_calls,
-    )
+    config_kwargs: Dict[str, Any] = {
+        "max_steps": request.max_steps,
+        "initial_budget": request.initial_budget,
+        "model": resolved_model,
+        "temperature": request.temperature,
+        "agents": request.agents,
+        "max_sc_calls": cfg.max_calls,
+    }
+    try:
+        cfg_params = inspect.signature(PromptEngineeringConfig).parameters
+        if "max_calls" in cfg_params:
+            config_kwargs["max_calls"] = cfg.max_calls
+        if "timeout_seconds" in cfg_params:
+            config_kwargs["timeout_seconds"] = cfg.timeout_seconds
+    except (TypeError, ValueError):
+        pass
+    config = PromptEngineeringConfig(**config_kwargs)
     engineer = AdvancedPromptEngineer(config)
 
-    # 3. Execute main reasoning pipeline
-    interaction = engineer.main(task_prompt)
+    # 3. Execute main reasoning pipeline inside request-scoped execution context
+    scope_cm = (
+        contextlib.nullcontext()
+        if provider_client.get_active_execution_context() is not None
+        else provider_client.provider_execution_scope(
+            default_model=resolved_model,
+            allowed_models=cfg.allowed_models,
+            temperature=request.temperature,
+            timeout_seconds=cfg.timeout_seconds,
+            max_calls=cfg.max_calls,
+        )
+    )
+    with scope_cm:
+        interaction = engineer.main(task_prompt)
+        ctx = provider_client.get_active_execution_context()
+        if ctx is not None and ctx.termination_reason == "disallowed_model":
+            raise DisallowedModelError(
+                ctx.termination_message or "Requested model is not permitted by provider policy."
+            )
 
     # 4. Extract task object and complexity
     task_obj = getattr(interaction, "task", None) or getattr(engineer, "task_object", None)
@@ -1321,6 +1472,16 @@ def _execute_advanced_pipeline(
     raw_steps = getattr(interaction, "steps", []) or []
     sc_term = getattr(engineer, "_last_sc_termination", {}) or {}
     sc_reason = sc_term.get("reason")
+    interaction_status = getattr(interaction, "status", None)
+    interaction_stop_reason = getattr(interaction, "stop_reason", None)
+    active_ctx = provider_client.get_active_execution_context()
+    ctx_reason = getattr(active_ctx, "termination_reason", None) if active_ctx is not None else None
+    effective_term_reason = interaction_stop_reason or sc_reason or ctx_reason
+    all_plan_steps_complete = (
+        all(ps.completed for ps in plan_step_diagnostics)
+        if plan_step_diagnostics
+        else True
+    )
     run_artifacts = list_run_artifacts(run_id=correlation_id)
 
     final_output_str = ""
@@ -1328,39 +1489,104 @@ def _execute_advanced_pipeline(
     stop_reason: str
     error_obj: Optional[ErrorResult] = None
 
+    _non_complete_reasons = ("budget_exhausted", "timeout", "cancelled", "incomplete")
+
     if answer_text:
+        final_output_str = str(raw_answer)
+    elif planstep_outputs and hasattr(planstep_outputs[-1], "final_output") and str(planstep_outputs[-1].final_output or "").strip():
+        final_output_str = str(planstep_outputs[-1].final_output)
+    elif raw_steps:
+        final_output_str = str(getattr(raw_steps[-1], "description", "") or "")
+
+    if interaction_status in _non_complete_reasons or effective_term_reason in _non_complete_reasons:
+        if final_output_str or raw_steps or planstep_outputs:
+            candidate_status = (
+                interaction_status
+                if interaction_status in _non_complete_reasons
+                else effective_term_reason
+            )
+            final_status = candidate_status  # type: ignore[assignment]
+            stop_reason = str(effective_term_reason or candidate_status)
+        else:
+            candidate_status = (
+                interaction_status
+                if interaction_status in ("budget_exhausted", "timeout", "cancelled")
+                else (
+                    effective_term_reason
+                    if effective_term_reason in ("budget_exhausted", "timeout", "cancelled")
+                    else "error"
+                )
+            )
+            stop_reason = str(effective_term_reason or candidate_status)
+            err = RuntimeError(
+                getattr(active_ctx, "termination_message", None)
+                or f"Pipeline stopped ({stop_reason}) before producing output."
+            )
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            error_obj, error_event = _build_safe_error_artifacts(
+                err,
+                mode="advanced_pipeline",
+                stop_reason=stop_reason,
+                correlation_id=correlation_id,
+                error_type="RunTimeoutError" if stop_reason == "timeout" else (
+                    "RunBudgetExceededError" if stop_reason == "budget_exhausted" else type(err).__name__
+                ),
+            )
+            events.append(error_event)
+            return RunResult(
+                mode="advanced_pipeline",
+                effective_mode="advanced_pipeline",
+                status=candidate_status,  # type: ignore[arg-type]
+                stop_reason=stop_reason,
+                final_output="",
+                output_type=OutputType(output_type="Simple Concise Answer", file_extension=".txt"),
+                conversation=_normalize_conversation_history(request.conversation),
+                questions=[],
+                diagnostics=RunDiagnostics(
+                    complexity_score=complexity_score,
+                    initial_budget=initial_budget,
+                    adjusted_budget=adjusted_budget,
+                    final_reward=final_reward,
+                    plan_steps=plan_step_diagnostics,
+                    reflections=reflection_diagnostics,
+                    agent_attributions=agent_attributions,
+                    duration_ms=duration_ms,
+                    correlation_id=correlation_id,
+                ),
+                events=events,
+                artifacts=run_artifacts,
+                usage={"available": False, "reason": "Provider token usage tracking not reported by client calls"},
+                error=error_obj,
+            )
+    elif answer_text:
         final_output_str = str(raw_answer)
         final_status = "completed"
         stop_reason = "final_answer"
     elif planstep_outputs and hasattr(planstep_outputs[-1], "final_output") and str(planstep_outputs[-1].final_output or "").strip():
         final_output_str = str(planstep_outputs[-1].final_output)
-        final_status = "completed"
-        stop_reason = "planstep_output"
+        if not all_plan_steps_complete:
+            final_status = "incomplete"
+            stop_reason = "incomplete_plan_steps"
+        else:
+            final_status = "completed"
+            stop_reason = "planstep_output"
     elif raw_steps:
         final_output_str = str(getattr(raw_steps[-1], "description", "") or "")
-        if sc_reason in ("budget_exhausted", "timeout", "cancelled"):
-            final_status = sc_reason  # type: ignore[assignment]
-            stop_reason = sc_reason
-        else:
-            final_status = "incomplete"
-            stop_reason = sc_reason or "missing_final_answer"
+        final_status = "incomplete"
+        stop_reason = sc_reason or "missing_final_answer"
     else:
         err = EmptyPipelineError(
             "Advanced reasoning pipeline produced no reasoning steps or final output."
         )
         duration_ms = (time.perf_counter() - start_time) * 1000
-        error_obj = ErrorResult(
-            error_type=type(err).__name__,
-            error_message=str(err),
-            error_details="Interaction.answer, Interaction.planstep_outputs, and Interaction.steps were all empty.",
-            timestamp=datetime.now(timezone.utc),
-        )
-        events.append(_create_run_event(
-            event_type="run_error",
+        error_obj, error_event = _build_safe_error_artifacts(
+            err,
             mode="advanced_pipeline",
-            summary=str(err),
-            details={"error_type": "EmptyPipelineError", "stop_reason": "empty_pipeline"},
-        ))
+            stop_reason="empty_pipeline",
+            correlation_id=correlation_id,
+            error_type=type(err).__name__,
+        )
+        events.append(error_event)
         return RunResult(
             mode="advanced_pipeline",
             effective_mode="advanced_pipeline",
@@ -1479,31 +1705,38 @@ def execute_run(request: RunRequest) -> RunResult:
         if request.mode == "tree_of_thought":
             return _execute_tree_of_thought(request, correlation_id, start_time)
 
-        provider_config = get_provider_config()
-        if os.environ.get("APS_ENFORCE_PROVIDER_READY") == "1":
-            import provider_client
+        if request.mode not in ("collaborative", "advanced_pipeline"):
+            raise ValueError(f"Unknown or unsupported execution mode: '{request.mode}'")
 
+        provider_config = get_provider_config()
+        resolved_model = validate_provider_model(request.model, provider_config)
+
+        if os.environ.get("APS_ENFORCE_PROVIDER_READY") == "1":
             if not provider_client.has_configured_provider():
                 raise ProviderUnavailableError(
                     "LLM provider credentials (OPENAI_API_KEY) are not configured on the server."
                 )
 
-        with artifact_run_scope(correlation_id):
+        with artifact_run_scope(correlation_id), provider_client.provider_execution_scope(
+            default_model=resolved_model,
+            allowed_models=provider_config.allowed_models,
+            temperature=getattr(request, "temperature", None),
+            timeout_seconds=provider_config.timeout_seconds,
+            max_calls=provider_config.max_calls,
+        ):
             if request.mode == "collaborative":
                 return _execute_collaborative(
                     request, correlation_id, start_time, provider_config=provider_config
                 )
-            elif request.mode == "advanced_pipeline":
+            else:
                 return _execute_advanced_pipeline(
                     request, correlation_id, start_time, provider_config=provider_config
                 )
-            else:
-                raise ValueError(f"Unknown or unsupported execution mode: '{request.mode}'")
     except Exception as e:
         duration_ms = (time.perf_counter() - start_time) * 1000
         err_type = type(e).__name__
-        err_msg = str(e) or err_type
-        err_details = traceback.format_exc()
+        raw_err_msg = str(e) or err_type
+        _logger.exception("Execution run %s failed (%s)", correlation_id, err_type)
 
         result_status: RunStatus = "error"
         if err_type == "DisallowedModelError":
@@ -1511,7 +1744,7 @@ def execute_run(request: RunRequest) -> RunResult:
         elif err_type == "ProviderUnavailableError":
             stop_reason = "provider_unavailable"
         elif err_type == "RunBudgetExceededError":
-            if "timed out" in err_msg.lower() or "timeout" in err_msg.lower():
+            if "timed out" in raw_err_msg.lower() or "timeout" in raw_err_msg.lower():
                 stop_reason = "timeout"
                 result_status = "timeout"
             else:
@@ -1520,7 +1753,7 @@ def execute_run(request: RunRequest) -> RunResult:
         elif err_type == "RunCancelledError":
             stop_reason = "cancelled"
             result_status = "cancelled"
-        elif err_type in ("TimeoutError", "RunTimeoutError"):
+        elif err_type in ("TimeoutError", "RunTimeoutError", "APITimeoutError") or "timeout" in err_type.lower():
             stop_reason = "timeout"
             result_status = "timeout"
         elif err_type == "ValueError":
@@ -1528,24 +1761,12 @@ def execute_run(request: RunRequest) -> RunResult:
         else:
             stop_reason = "runtime_error"
 
-        error_obj = ErrorResult(
-            error_type=err_type,
-            error_message=err_msg,
-            error_details=err_details,
-            timestamp=datetime.now(timezone.utc),
-        )
-
-        error_event = _create_run_event(
-            event_type="run_error",
+        error_obj, error_event = _build_safe_error_artifacts(
+            e,
             mode=getattr(request, "mode", "unknown"),
-            summary=f"Execution error in {getattr(request, 'mode', 'unknown')} mode: {err_msg}",
-            details={
-                "error_type": err_type,
-                "error_message": err_msg,
-                "error_details": err_details,
-                "correlation_id": correlation_id,
-                "stop_reason": stop_reason,
-            },
+            stop_reason=stop_reason,
+            correlation_id=correlation_id,
+            error_type=err_type,
         )
 
         fallback_conv: List[Dict[str, Any]] = []
