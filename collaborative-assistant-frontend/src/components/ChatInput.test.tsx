@@ -2,15 +2,17 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChatInput from './ChatInput';
 import { describe, it, expect, vi } from 'vitest';
+
+import type { SVGProps } from 'react';
 // import { Send, Loader2 } from 'lucide-react'; // TSC flags as unused due to mock
 
 // Mock lucide-react icons
 vi.mock('lucide-react', async (importOriginal) => {
-  const original = await importOriginal() as any;
+  const original = await importOriginal<Record<string, unknown>>();
   return {
     ...original,
-    Send: (props: any) => <svg data-testid="send-icon" {...props} />,
-    Loader2: (props: any) => <svg data-testid="loader-icon" {...props} />,
+    Send: (props: SVGProps<SVGSVGElement>) => <svg data-testid="send-icon" {...props} />,
+    Loader2: (props: SVGProps<SVGSVGElement>) => <svg data-testid="loader-icon" {...props} />,
   };
 });
 

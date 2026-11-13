@@ -3,9 +3,9 @@ import unittest
 from unittest.mock import MagicMock, patch, mock_open # Ensure mock_open is imported
 import os # Ensure os is imported
 
-from matplotlib.pyplot import step # This import seems unused, might be from old code
 from advanced_prompting import (
     AdvancedPromptEngineer,
+    CompletionStatus,
     FinalPlanStepOutput,
     FinalStepOutput,
     PromptEngineeringConfig,
@@ -14,7 +14,8 @@ from advanced_prompting import (
     Reflection,
     Interaction,
     OutputType,
-    ComponentType # Ensure ComponentType is imported
+    ComponentType, # Ensure ComponentType is imported
+    response_choices,
 )
 import re
 from complexity_measures import Plan, PlanStep
@@ -60,6 +61,15 @@ class TestParseResponse(unittest.TestCase):
 
     def setUp(self):
         """Initialize test environment with config, engineer and sample task."""
+        self._mock_create = patch("advanced_prompting.client.chat.completions.create")
+        self.mock_create = self._mock_create.start()
+        fake_response = MagicMock()
+        fake_message = MagicMock()
+        fake_message.content = "<reflection>Generated test reflection</reflection><reward>0.7</reward>"
+        fake_response.choices = [SimpleNamespace(message=fake_message)]
+        self.mock_create.return_value = fake_response
+        self.addCleanup(self._mock_create.stop)
+
         self.parser_arg = "default"
         self.config = TEST_CONFIG
         self.parser_arg = TEST_CONFIG.parser_arg
@@ -637,6 +647,24 @@ class TestParseResponse(unittest.TestCase):
 class TestAdvancedPromptEngineer(unittest.TestCase):
     def setUp(self):
         """Initialize test environment with config, engineer and sample task."""
+        self._mock_create = patch("advanced_prompting.client.chat.completions.create")
+        self.mock_create = self._mock_create.start()
+        fake_create_response = MagicMock()
+        fake_create_message = MagicMock()
+        fake_create_message.content = "<count>5</count><thinking>Test thoughts</thinking><step>def factorial(n): return 1 if n == 0 else n * factorial(n-1)</step><reflection>Valid factorial implementation</reflection><reward>0.85</reward><answer>def factorial(n): return 1</answer><final_reward>0.85</final_reward>"
+        fake_create_response.choices = [SimpleNamespace(message=fake_create_message)]
+        self.mock_create.return_value = fake_create_response
+        self.addCleanup(self._mock_create.stop)
+
+        self._mock_parse = patch("advanced_prompting.client.beta.chat.completions.parse")
+        self.mock_parse = self._mock_parse.start()
+        fake_parse_response = MagicMock()
+        fake_parse_message = MagicMock()
+        fake_parse_message.parsed = CompletionStatus(completion=True)
+        fake_parse_response.choices = [SimpleNamespace(message=fake_parse_message)]
+        self.mock_parse.return_value = fake_parse_response
+        self.addCleanup(self._mock_parse.stop)
+
         self.config_container = config_for_test(parser_arg="default") # Use the container
         self.engineer = self.config_container.get_engineer() # Get engineer via container
 
@@ -681,7 +709,7 @@ class TestAdvancedPromptEngineer(unittest.TestCase):
         step_budget = 5
         complexity = 2
 
-        initial_prompt, system_prompt = self.engineer.generate_initial_prompt(
+        system_prompt, initial_prompt = self.engineer.generate_initial_prompt(
             task_desc, retrieved_info, step_budget, complexity, self.output_type
         )
 
@@ -801,6 +829,14 @@ class TestAdvancedPromptEngineer(unittest.TestCase):
             self.assertIsInstance(result, int)
             self.assertGreater(result, 0)
 
+    def test_adjust_step_budget_respects_max_steps(self):
+        task_desc = "Write a factorial calculator"
+        complexity = 5
+        self.engineer.config.max_steps = 3
+        result = self.engineer.adjust_step_budget(task_desc, complexity)
+        budget = result[0] if isinstance(result, tuple) else result
+        self.assertLessEqual(budget, 3)
+
 
     def test_dynamic_confidence_exploration(self):
         interaction = Interaction(
@@ -843,8 +879,14 @@ class TestAdvancedPromptEngineer(unittest.TestCase):
         self.assertEqual(len(merged.steps), 2) # 1 from A, 1 from B
         self.assertEqual(merged.final_reward, 0.8) # Takes A's then B's if A is 0
 
-    def test_choose_best_response(self):
+    @patch("advanced_prompting.client.beta.chat.completions.parse")
+    def test_choose_best_response(self, mock_parse):
         """Test the choose_best_response method"""
+        fake_response = MagicMock()
+        fake_message = MagicMock()
+        fake_message.parsed = response_choices(number_of_selected_response=1)
+        fake_response.choices = [SimpleNamespace(message=fake_message)]
+        mock_parse.return_value = fake_response
 
         # Create test data
         mock_responses = [
@@ -954,7 +996,7 @@ class TestAdvancedPromptEngineer(unittest.TestCase):
 #         self.step_full_text = step_full_text
 
 
-class TestFinalizePlanStepOutput(unittest.TestCase):
+class HistoricalFinalizePlanStepOutputExample:
     def setUp(self):
         # from advanced_prompting import ( # Already imported
         #     AdvancedPromptEngineer,
@@ -1052,7 +1094,7 @@ class TestFinalizePlanStepOutput(unittest.TestCase):
             lambda content, ext: f"planstep_{self.plan_step.step_number}_output{ext}"
         )
 
-    @patch("advanced_prompting.openai.chat.completions.create")
+    @patch("advanced_prompting.client.chat.completions.create")
     def test_finalize_planstep_output_success(self, mock_create):
         # Simulate a successful LLM response.
         fake_final_output = "Final combined output from LLM"
@@ -1073,7 +1115,7 @@ class TestFinalizePlanStepOutput(unittest.TestCase):
         self.assertIn("planstep_1_output", output.file_name)
         print("Success test_finalize_planstep_output_success")
 
-    @patch("advanced_prompting.openai.chat.completions.create")
+    @patch("advanced_prompting.client.chat.completions.create")
     def test_finalize_planstep_output_empty_response(self, mock_create):
         # Simulate an LLM response returning empty content.
         fake_response = MagicMock()
@@ -1090,7 +1132,7 @@ class TestFinalizePlanStepOutput(unittest.TestCase):
         self.assertIn("planstep_1_output", output.file_name)
         print("Success test_finalize_planstep_output_empty_response")
 
-    @patch("advanced_prompting.openai.chat.completions.create")
+    @patch("advanced_prompting.client.chat.completions.create")
     def test_finalize_planstep_output_exception_handling(self, mock_create):
         # Simulate an exception during the LLM call.
         mock_create.side_effect = Exception("Simulated API error")
@@ -1316,11 +1358,15 @@ class TestAdvancedPromptingAdapterMethods(unittest.TestCase):
             mock_determine.assert_called_once_with(f"Output path: {dummy_path}", dummy_path, self.mock_task)
 
     @patch('advanced_prompting.AdvancedPromptEngineer.convert_conversation_output_to_final_step_output')
-    @patch('advanced_prompting.run_conversation') 
+    @patch('conversation_manager.run_conversation') 
     @patch('advanced_prompting.AdvancedPromptEngineer.select_personalities_for_planstep')
     def test_invoke_collaborative_reasoning(self, mock_select_personalities, mock_run_conversation, mock_convert_output):
         mock_select_personalities.return_value = ["Strategist", "Educator"]
-        mock_run_conversation.return_value = "path/to/dummy_output.txt" # run_conversation returns a path
+        mock_run_conversation.return_value = (
+            [{"role": "assistant", "content": "example"}],
+            [],
+            "path/to/dummy_output.txt",
+        )
         
         # Define what the mocked convert_conversation_output_to_final_step_output should return
         expected_final_step_output = FinalStepOutput(
@@ -1432,7 +1478,7 @@ class TestFinalizePlanStepOutput(unittest.TestCase):
             lambda content, ext: f"planstep_{self.plan_step.step_number}_output{ext}"
         )
 
-    @patch("advanced_prompting.openai.chat.completions.create")
+    @patch("advanced_prompting.client.chat.completions.create")
     def test_finalize_planstep_output_success(self, mock_create):
         fake_final_output = "Final combined output from LLM"
         fake_response = MagicMock()
@@ -1450,7 +1496,7 @@ class TestFinalizePlanStepOutput(unittest.TestCase):
         self.assertIn("planstep_1_output", output.file_name)
         # print("Success test_finalize_planstep_output_success") # Commented out
 
-    @patch("advanced_prompting.openai.chat.completions.create")
+    @patch("advanced_prompting.client.chat.completions.create")
     def test_finalize_planstep_output_empty_response(self, mock_create):
         fake_response = MagicMock()
         fake_message = MagicMock()
@@ -1465,7 +1511,7 @@ class TestFinalizePlanStepOutput(unittest.TestCase):
         self.assertIn("planstep_1_output", output.file_name)
         # print("Success test_finalize_planstep_output_empty_response") # Commented out
 
-    @patch("advanced_prompting.openai.chat.completions.create")
+    @patch("advanced_prompting.client.chat.completions.create")
     def test_finalize_planstep_output_exception_handling(self, mock_create):
         mock_create.side_effect = Exception("Simulated API error")
 

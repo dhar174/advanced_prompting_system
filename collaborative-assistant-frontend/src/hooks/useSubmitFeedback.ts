@@ -18,7 +18,7 @@ export const useSubmitFeedback = (): UseSubmitFeedbackResult => {
   const submitFeedback: SubmitFeedbackMutateFunction = async (variables) => {
     try {
       await mutateFunction({ variables });
-    } catch (e) {
+    } catch {
       // Error is already handled by the error object from useMutation
       // console.error("Error in submitFeedback mutation:", e);
     }

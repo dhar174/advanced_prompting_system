@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-09-17T14:44:31.979Z",
+  "entries": [
+    "agent-orchestration-multi-agent-optimize",
+    "ai-agents-architect",
+    "ai-engineering-toolkit",
+    "api-security-best-practices",
+    "backend-security-coder",
+    "code-simplification",
+    "database-design",
+    "docker-expert",
+    "fixing-accessibility",
+    "github-actions-advanced",
+    "graphql",
+    "graphql-schema",
+    "llm-structured-output",
+    "observability-and-instrumentation",
+    "pdf-official",
+    "prompt-engineering-patterns",
+    "pydantic-ai",
+    "pydantic-models-py",
+    "python-pro",
+    "python-testing-patterns",
+    "recursive-context-pruning-token-budgeting",
+    "scikit-learn",
+    "senior-frontend",
+    "sql-optimization-patterns",
+    "tailwind-design-system",
+    "vitest-skill"
+  ]
+}

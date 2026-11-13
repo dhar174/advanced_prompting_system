@@ -1,6 +1,6 @@
 import React from 'react';
 
-export interface CardProps extends React.HTMLAttributes<HTMLDivElement> {}
+export type CardProps = React.HTMLAttributes<HTMLDivElement>;
 
 const Card = React.forwardRef<HTMLDivElement, CardProps>(
   ({ className, ...props }, ref) => {

@@ -1,16 +1,29 @@
 import React from 'react';
-import type { QuestionType } from '../graphql/graphqlTypes';
+import type {
+  QuestionType,
+  OutputTypeInfo,
+  RunDiagnosticsType,
+  RunEventType,
+} from '../graphql/graphqlTypes';
+import StructuredOutputRenderer from './StructuredOutputRenderer';
+import ReasoningDiagnosticsPanel from './ReasoningDiagnosticsPanel';
 
-interface FeedbackDisplayProps {
+export interface FeedbackDisplayProps {
   currentQuestions: QuestionType[];
   finalOutput: string | null;
   runConversationLoading: boolean;
+  outputType?: OutputTypeInfo | null;
+  diagnostics?: RunDiagnosticsType | null;
+  events?: RunEventType[] | null;
 }
 
 const FeedbackDisplay: React.FC<FeedbackDisplayProps> = ({
   currentQuestions,
   finalOutput,
   runConversationLoading,
+  outputType,
+  diagnostics,
+  events,
 }) => {
   return (
     <>
@@ -28,10 +41,11 @@ const FeedbackDisplay: React.FC<FeedbackDisplayProps> = ({
       {finalOutput && !runConversationLoading && (
         <div className="mt-4 p-4 border-t border-slate-200">
           <h3 className="text-md font-semibold mb-2 text-text-primary">Final Output:</h3>
-          <div className="p-3 bg-green-100/50 border border-green-300 rounded-md text-sm text-green-800 whitespace-pre-wrap">
-            {finalOutput}
-          </div>
+          <StructuredOutputRenderer content={finalOutput} outputType={outputType} />
         </div>
+      )}
+      {!runConversationLoading && (
+        <ReasoningDiagnosticsPanel diagnostics={diagnostics} events={events} />
       )}
     </>
   );

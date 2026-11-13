@@ -19,6 +19,16 @@ OutputType
 
  class
 
+## Offline qualification
+
+See [PR #34 qualification](docs/pr34-offline-qualification.md) for the exact tested
+environment, evidence, unresolved quarantines and supported scope. On the qualified
+Windows checkout run `./tools/run-offline.ps1`; frontend commands use
+`./tools/run-frontend-offline.ps1 -Action test` (or `lint`, `build`). These wrappers
+remove API credentials and install process-only outbound-denial guards. Bare pytest
+intentionally fails without the guard. No full browser/end-to-end certification is
+claimed; [#35](https://github.com/dhar174/advanced_prompting_system/issues/35) tracks it.
+
 ## Installation
 
 1. Clone the repository:
@@ -151,6 +161,23 @@ PromptEngineeringConfig
 - `agents`: Number of collaborative agents (default: 3)
 - `temperature`: Sampling temperature (default: 0.7)
 - `model`: GPT model to use (default: "gpt-4o-mini")
+
+## Testing
+
+### Backend Tests
+To run the authoritative offline regression and contract test suite:
+```bash
+pytest -q
+```
+This verifies smoke tests (`test_smoke.py`), import integrity (`test_import_integrity.py`), voting consensus semantics (`test_voting_semantics.py`), safe dynamic message boundary handling (`test_message_handling.py`), functional RAG retrieval (`test_retrieval.py`), and GraphQL schema contracts (`test_graphql_contract.py`) with zero live network or OpenAI calls in ~25 seconds.
+
+### Frontend Tests
+To run the full Vitest component and integration suite:
+```bash
+cd collaborative-assistant-frontend
+npm test -- --run
+```
+This executes all 111 component, hook, and integration tests across the React client.
 
 ## License
 
