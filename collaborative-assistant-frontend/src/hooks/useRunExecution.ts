@@ -197,12 +197,12 @@ export const useRunExecution = (): UseRunExecutionResult => {
     const capAuthErr = [modesError, personalitiesError, policyError].find((e) =>
       isAuthError(e)
     );
-    if (capAuthErr) {
+    if (capAuthErr && !isRetryingDiscovery) {
       clearApiToken();
       setAuthRequiredOverride(true);
       setAuthErrorMessage(formatExecutionError(capAuthErr));
     }
-  }, [modesError, personalitiesError, policyError]);
+  }, [modesError, personalitiesError, policyError, isRetryingDiscovery]);
 
   const validServerModes = useMemo(() => {
     const rawModes = modesData?.executionModes;
@@ -313,7 +313,9 @@ export const useRunExecution = (): UseRunExecutionResult => {
     policyError,
   ]);
 
+  const discoverySeqRef = useRef(0);
   const retryDiscovery = useCallback(async () => {
+    const seq = ++discoverySeqRef.current;
     setIsRetryingDiscovery(true);
     setAuthRequiredOverride(false);
     setAuthErrorMessage(null);
@@ -324,6 +326,11 @@ export const useRunExecution = (): UseRunExecutionResult => {
         refetchPersonalities?.(),
         refetchPolicy?.(),
       ]);
+      if (seq !== discoverySeqRef.current) return;
+      if (results.every((res) => res.status === 'fulfilled')) {
+        setAuthRequiredOverride(false);
+        setAuthErrorMessage(null);
+      }
       for (const res of results) {
         if (res.status === 'rejected' && isAuthError(res.reason)) {
           clearApiToken();
@@ -333,7 +340,7 @@ export const useRunExecution = (): UseRunExecutionResult => {
         }
       }
     } finally {
-      setIsRetryingDiscovery(false);
+      if (seq === discoverySeqRef.current) setIsRetryingDiscovery(false);
     }
   }, [refetchModes, refetchPersonalities, refetchPolicy]);
 
