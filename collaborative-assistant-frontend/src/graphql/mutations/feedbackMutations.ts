@@ -3,13 +3,13 @@ import type { ConversationInputType, FeedbackInputType, QuestionInputType } from
 
 export const SUBMIT_FEEDBACK = gql`
   mutation SubmitFeedback(
-    $conversation: [ConversationInput!]!,
-    $feedback: [FeedbackInput!]!,
+    $conversation: [ConversationInput!]!
+    $feedback: [FeedbackInput!]!
     $questions: [QuestionInput!]
   ) {
     submitFeedback(
-      conversation: $conversation,
-      feedback: $feedback,
+      conversation: $conversation
+      feedback: $feedback
       questions: $questions
     ) {
       success
@@ -25,6 +25,6 @@ export interface SubmitFeedbackVariables {
 
 export interface SubmitFeedbackData {
   submitFeedback: {
-    success: boolean; // Changed from string to boolean to match typical success responses
+    success: string;
   };
 }
