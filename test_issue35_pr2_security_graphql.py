@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from unittest.mock import patch
 
 import pytest
 
 import app as app_module
 import feedback_manager
-from execution_modes import CAPABILITY_REGISTRY, OutputType, PERSONALITY_CATALOG, RunResult
+import provider_client
+from execution_modes import CAPABILITY_REGISTRY, MAX_NUM_ROUNDS, OutputType, PERSONALITY_CATALOG, RunResult
 from output_generator import ArtifactRef
 
 
@@ -336,3 +338,192 @@ def test_feedback_manager_lazy_creation_and_rating_validation(tmp_path, monkeypa
     assert saved[0]["feedback"][0]["rating"] == 5
     assert saved[0]["feedback"][0]["comments"] == "Great summary"
     assert "recorded_at" in saved[0]
+
+
+def test_http_graphql_execution_modes_limits_and_bearer_auth(tmp_path, monkeypatch):
+    """Verify HTTP /graphql enforces APS_API_TOKEN (401 vs Bearer 200) and exposes capability bounds."""
+    monkeypatch.setenv("APS_API_TOKEN", "http-secret-token")
+    flask_app = app_module.create_app({"STATIC_FOLDER": str(tmp_path), "RATE_LIMIT_RPM": 100})
+    client = flask_app.test_client()
+
+    query_payload = {
+        "query": """
+        query ModeCaps {
+          executionModes {
+            id
+            minNumRounds
+            maxNumRounds
+            maxSteps
+            maxAgents
+          }
+        }
+        """
+    }
+
+    unauth_resp = client.post("/graphql", data=json.dumps(query_payload), content_type="application/json")
+    assert unauth_resp.status_code == 401
+
+    auth_resp = client.post(
+        "/graphql",
+        data=json.dumps(query_payload),
+        content_type="application/json",
+        headers={"Authorization": "Bearer http-secret-token"},
+    )
+    assert auth_resp.status_code == 200
+    body = auth_resp.get_json()
+    assert "errors" not in body or not body["errors"]
+    modes = {m["id"]: m for m in body["data"]["executionModes"]}
+    assert modes["collaborative"]["minNumRounds"] == 1
+    assert modes["collaborative"]["maxNumRounds"] == MAX_NUM_ROUNDS == 10
+    assert modes["advanced_pipeline"]["maxSteps"] == 50
+    assert modes["advanced_pipeline"]["maxAgents"] == 10
+
+
+@pytest.mark.parametrize("mutation_kind", ["runConversation", "runExecution"])
+def test_http_graphql_mutations_enforce_policy_and_redact_json(tmp_path, monkeypatch, mutation_kind):
+    """Verify HTTP /graphql runConversation & runExecution enforce policy, escape paths, and redact secrets."""
+    monkeypatch.setenv("APS_API_TOKEN", "http-bearer-pass")
+    flask_app = app_module.create_app({"STATIC_FOLDER": str(tmp_path), "RATE_LIMIT_RPM": 100})
+    client = flask_app.test_client()
+    auth_headers = {"Authorization": "Bearer http-bearer-pass"}
+
+    rc_query = """
+    mutation RunConv($conversation: [ConversationInput!]!, $assistantPersonalities: [String!]!, $leadPersonality: String!, $numRounds: Int!) {
+      runConversation(
+        conversation: $conversation,
+        assistantPersonalities: $assistantPersonalities,
+        leadPersonality: $leadPersonality,
+        numRounds: $numRounds
+      ) {
+        conversation { role name content }
+        questions { assistant question }
+        finalOutput
+      }
+    }
+    """
+    re_query = """
+    mutation RunExec($input: RunExecutionInput!) {
+      runExecution(input: $input) {
+        mode
+        status
+        stopReason
+        finalOutput
+        errorMessage
+        events { eventType summary }
+      }
+    }
+    """
+
+    def _post_mutation(model_override=None):
+        if mutation_kind == "runConversation":
+            payload = {
+                "query": rc_query,
+                "variables": {
+                    "conversation": [{"role": "user", "name": "User", "content": "Analyze"}],
+                    "assistantPersonalities": ["Strategist", "Mediator"],
+                    "leadPersonality": "Strategist",
+                    "numRounds": 1,
+                },
+            }
+        else:
+            inp = {
+                "mode": "collaborative",
+                "taskPrompt": "Analyze",
+                "assistantPersonalities": ["Strategist", "Mediator"],
+                "leadPersonality": "Strategist",
+                "numRounds": 1,
+            }
+            if model_override is not None:
+                inp["model"] = model_override
+            payload = {"query": re_query, "variables": {"input": inp}}
+        return client.post(
+            "/graphql",
+            data=json.dumps(payload),
+            content_type="application/json",
+            headers=auth_headers,
+        )
+
+    # Unauthenticated request must return 401 before executing either mutation
+    unauth = client.post(
+        "/graphql",
+        data=json.dumps({"query": "{ hello }"}),
+        content_type="application/json",
+    )
+    assert unauth.status_code == 401
+
+    # 1. APS_ALLOWED_MODELS restriction
+    monkeypatch.setenv("APS_ALLOWED_MODELS", "gpt-4o-mini")
+    def _disallowed(*args, **kwargs):
+        provider_client.consume_provider_call("forbidden-model-xyz")
+        return ([], [], "should-not-succeed")
+
+    with patch("conversation_manager.run_conversation", side_effect=_disallowed):
+        resp = _post_mutation(model_override="forbidden-model-xyz")
+    assert resp.status_code == 200
+    body = resp.get_json()
+    if mutation_kind == "runConversation":
+        assert body.get("errors")
+    else:
+        assert body["data"]["runExecution"]["status"] == "error"
+        assert body["data"]["runExecution"]["stopReason"] == "disallowed_model"
+
+    # 2. APS_PROVIDER_MAX_CALLS=1
+    monkeypatch.setenv("APS_PROVIDER_MAX_CALLS", "1")
+    def _budget(*args, **kwargs):
+        provider_client.consume_provider_call("gpt-4o-mini")
+        provider_client.consume_provider_call("gpt-4o-mini")
+        return ([], [], "should-not-succeed")
+
+    with patch("conversation_manager.run_conversation", side_effect=_budget):
+        resp = _post_mutation()
+    assert resp.status_code == 200
+    body = resp.get_json()
+    if mutation_kind == "runConversation":
+        assert body.get("errors")
+    else:
+        assert body["data"]["runExecution"]["status"] == "budget_exhausted"
+        assert body["data"]["runExecution"]["stopReason"] == "budget_exhausted"
+    monkeypatch.delenv("APS_PROVIDER_MAX_CALLS", raising=False)
+
+    # 3. Timeout enforcement
+    monkeypatch.setenv("APS_PROVIDER_TIMEOUT_SECONDS", "0.05")
+    def _timeout(*args, **kwargs):
+        time.sleep(0.08)
+        provider_client.consume_provider_call("gpt-4o-mini")
+        return ([], [], "should-not-succeed")
+
+    with patch("conversation_manager.run_conversation", side_effect=_timeout):
+        resp = _post_mutation()
+    assert resp.status_code == 200
+    body = resp.get_json()
+    if mutation_kind == "runConversation":
+        assert body.get("errors")
+    else:
+        assert body["data"]["runExecution"]["status"] == "timeout"
+        assert body["data"]["runExecution"]["stopReason"] == "timeout"
+    monkeypatch.delenv("APS_PROVIDER_TIMEOUT_SECONDS", raising=False)
+
+    # 4. Escaping absolute filenames must never be read from disk
+    escaped_file = tmp_path / "escape.txt"
+    escaped_file.write_text("ESCAPED_HTTP_FILE_SENTINEL", encoding="utf-8")
+    for escape_target in ("C:\\escape.txt", "/tmp/escape.txt", str(escaped_file)):
+        with patch(
+            "conversation_manager.run_conversation",
+            return_value=([{"role": "assistant", "name": "Strategist", "content": "Ok"}], [], escape_target),
+        ):
+            resp = _post_mutation()
+        assert resp.status_code == 200
+        raw_text = resp.get_data(as_text=True)
+        assert "ESCAPED_HTTP_FILE_SENTINEL" not in raw_text
+
+    # 5. Zero sentinel secret/Bearer/path leaks across full HTTP JSON (including events[].summary)
+    secret_boom = (
+        "Crash sk-http-secret-111 Bearer http-bearer-leak "
+        "token=http-kv-leak C:\\escape.txt /tmp/escape.txt"
+    )
+    with patch("conversation_manager.run_conversation", side_effect=RuntimeError(secret_boom)):
+        resp = _post_mutation()
+    assert resp.status_code == 200
+    raw_json = resp.get_data(as_text=True)
+    for sentinel in ("sk-http-secret-111", "http-bearer-leak", "http-kv-leak", "C:\\escape.txt", "/tmp/escape.txt"):
+        assert sentinel not in raw_json
