@@ -1,8 +1,11 @@
 # conversation_manager.py
 
+import contextlib
+import contextvars
 from datetime import datetime
+import time
 
-from typing import Any, Dict, List, Optional, Tuple, Union # Added Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union # Added Optional, Tuple, Union
 from jarowinkler import jarowinkler_similarity
 
 
@@ -36,6 +39,20 @@ from output_generator import (
     generate_code_snippet,
     generate_csv_output,
 )
+from provider_client import (
+    DisallowedModelError,
+    LazyClient,
+    ProviderPolicyError,
+    RunBudgetExceededError,
+    RunCancelledError,
+    RunTimeoutError,
+    consume_provider_call,
+    get_active_execution_context,
+    get_effective_model,
+    get_effective_temperature,
+    provider_execution_scope,
+    reserve_call_scope,
+)
 
 
 # Custom Exception Classes for Type-Safe Error Handling
@@ -67,6 +84,75 @@ class ErrorResult(BaseModel):
 # Configuration constants for output type matching
 DEFAULT_FALLBACK_OUTPUT_TYPE = "Simple Concise Answer"
 MINIMUM_SIMILARITY_THRESHOLD = 0.1
+
+
+_ACTIVE_RUN_OPTIONS: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+    "aps_conversation_run_options", default=None
+)
+
+
+@contextlib.contextmanager
+def _conversation_run_scope(
+    model: Optional[str] = None,
+    temperature: Optional[float] = None,
+    timeout_seconds: Optional[float] = None,
+    max_calls: Optional[int] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+):
+    parent_ctx = get_active_execution_context()
+    if parent_ctx is not None:
+        if model and str(model).strip():
+            get_effective_model(explicit=model)
+        state: Dict[str, Any] = {
+            "model": parent_ctx.default_model,
+            "temperature": temperature if temperature is not None else parent_ctx.temperature,
+            "deadline_monotonic": parent_ctx.deadline_monotonic,
+            "max_calls": parent_ctx.max_calls,
+            "calls_made": parent_ctx.calls_made,
+            "cancel_check": cancel_check or parent_ctx.cancel_check,
+        }
+        token = _ACTIVE_RUN_OPTIONS.set(state)
+        try:
+            yield state
+        finally:
+            _ACTIVE_RUN_OPTIONS.reset(token)
+        return
+
+    normalized_max_calls = (
+        int(max_calls) if max_calls is not None and int(max_calls) > 0 else None
+    )
+    with provider_execution_scope(
+        default_model=model or "gpt-4o-mini",
+        temperature=temperature,
+        timeout_seconds=timeout_seconds,
+        max_calls=normalized_max_calls,
+        cancel_check=cancel_check,
+    ) as ctx:
+        state = {
+            "model": ctx.default_model,
+            "temperature": ctx.temperature,
+            "deadline_monotonic": ctx.deadline_monotonic,
+            "max_calls": ctx.max_calls,
+            "calls_made": ctx.calls_made,
+            "cancel_check": ctx.cancel_check,
+        }
+        token = _ACTIVE_RUN_OPTIONS.set(state)
+        try:
+            yield state
+        finally:
+            _ACTIVE_RUN_OPTIONS.reset(token)
+
+
+def _resolve_model(default: str = "gpt-4o-mini", explicit: Optional[str] = None) -> str:
+    return get_effective_model(explicit=explicit, fallback=default)
+
+
+def _resolve_temperature(explicit: Optional[float] = None) -> Optional[float]:
+    return get_effective_temperature(explicit=explicit)
+
+
+def _consume_run_budget() -> None:
+    consume_provider_call()
 
 # Safe dictionary access helpers
 def safe_get_message_field(msg: Dict[str, Any], field: str, default: str = "") -> str:
@@ -244,7 +330,6 @@ output_type_experts = {
 
 # Set your OpenAI API key as an environment variable
 openai.api_key = os.getenv("OPENAI_API_KEY")
-from provider_client import LazyClient
 client = LazyClient()
 
 
@@ -612,24 +697,30 @@ def summarize_conversation(conversation_history: List[Dict[str, str]]) -> str:
 
     # Use the OpenAI client to summarize the conversation
     try:
-        completion = client.chat.completions.create(
-            model="gpt-4o-mini",  # Replace with the appropriate model
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a helpful assistant that summarizes conversations. Your summary should be concise and capture the key points of the conversation, and correctly attribute statements to the right speakers.",
-                },
-                {
-                    "role": "user",
-                    "content": f"Please summarize the following conversation:\n\n{conversation_text}",
-                },
-            ],
-            max_completion_tokens=256,
-        )
+        with reserve_call_scope(
+            model=_resolve_model("gpt-4o-mini"),
+            call_type="summarize_conversation",
+        ) as resolved_model:
+            completion = client.chat.completions.create(
+                model=resolved_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a helpful assistant that summarizes conversations. Your summary should be concise and capture the key points of the conversation, and correctly attribute statements to the right speakers.",
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Please summarize the following conversation:\n\n{conversation_text}",
+                    },
+                ],
+                max_completion_tokens=256,
+            )
 
         # Extract the summary from the completion response
         summary = completion.choices[0].message.content.strip()
 
+    except (ProviderPolicyError, DisallowedModelError):
+        raise
     except Exception as e:
         summary = f"Error in summarization: {str(e)}"
 
@@ -719,12 +810,16 @@ Please return the output as a JSON object with the following structure:
 
     try:
         # Make the API call to OpenAI's chat completions
-        completion = client.beta.chat.completions.parse(
-            model="gpt-4o-mini",  # Replace with the appropriate model if necessary
-            messages=messages,
-            response_format=ExtractFormat,
-            temperature=0,
-        )
+        with reserve_call_scope(
+            model=_resolve_model("gpt-4o-mini"),
+            call_type="extract_information",
+        ) as resolved_model:
+            completion = client.beta.chat.completions.parse(
+                model=resolved_model,
+                messages=messages,
+                response_format=ExtractFormat,
+                temperature=0,
+            )
 
         # Extract the assistant's response
         extraction = completion.choices[0].message.parsed
@@ -740,6 +835,8 @@ Please return the output as a JSON object with the following structure:
         original_conversation = None
         return conversation_memory
 
+    except (ProviderPolicyError, DisallowedModelError):
+        raise
     except Exception as e:
         print(
             f"Error in extract_information: {str(e)} on line {e.__traceback__.tb_lineno}"
@@ -800,14 +897,20 @@ def cast_binary_vote(assistant_name: str, messages: List[Dict[str, str]], vote_p
     # Ask the assistant to cast a vote based on the messages
     messages.append({"role": "system", "content": vote_prompt})
     try:
-        response = client.beta.chat.completions.parse(
-            model="gpt-4o-mini",  # Specify the model
-            messages=messages,  # Pass the messages directly as a list of dicts
-            response_format=BinaryVote,
-        )
+        with reserve_call_scope(
+            model=_resolve_model("gpt-4o-mini"),
+            call_type="cast_binary_vote",
+        ) as resolved_model:
+            response = client.beta.chat.completions.parse(
+                model=resolved_model,
+                messages=messages,  # Pass the messages directly as a list of dicts
+                response_format=BinaryVote,
+            )
         # Extract the vote from the response
         vote = response.choices[0].message.parsed
         return vote
+    except (ProviderPolicyError, DisallowedModelError):
+        raise
     except Exception as e:
         return ErrorResult(
             error_type="LLMCallError",
@@ -825,14 +928,20 @@ def cast_confidence_vote(
     # Ask the assistant to cast a confidence vote based on the messages
     messages.append({"role": "system", "content": vote_prompt})
     try:
-        response = client.beta.chat.completions.parse(
-            model="gpt-4o-mini",  # Specify the model
-            messages=messages,  # Pass the messages directly as a list of dicts
-            response_format=ConfidenceVote,
-        )
+        with reserve_call_scope(
+            model=_resolve_model("gpt-4o-mini"),
+            call_type="cast_confidence_vote",
+        ) as resolved_model:
+            response = client.beta.chat.completions.parse(
+                model=resolved_model,
+                messages=messages,  # Pass the messages directly as a list of dicts
+                response_format=ConfidenceVote,
+            )
         # Extract the vote from the response
         confidence = response.choices[0].message.parsed
         return confidence
+    except (ProviderPolicyError, DisallowedModelError):
+        raise
     except Exception as e:
         return ErrorResult(
             error_type="LLMCallError",
@@ -859,10 +968,14 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
             },
         ]
         try:
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",  # Specify the model
-                messages=messages,  # Pass the messages directly as a list of dicts
-            )
+            with reserve_call_scope(
+                model=_resolve_model("gpt-4o-mini"),
+                call_type="define_problem",
+            ) as resolved_model:
+                response = client.chat.completions.create(
+                    model=resolved_model,
+                    messages=messages,  # Pass the messages directly as a list of dicts
+                )
             # Extract the text from the response
             assistant_reply = response.choices[
                 0
@@ -875,6 +988,8 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
                 }
             )
             print(f"\nDefinition from {assistant_name}: {assistant_reply}\n")
+        except (ProviderPolicyError, DisallowedModelError):
+            raise
         except Exception as e:
             # TODO: Handle LLM call failures more gracefully
             error_msg = f"Failed to get definition from {assistant_name}: {str(e)}"
@@ -900,17 +1015,20 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
                 },
                 {
                     "role": "system",
-                    "content": f"Problem Statement: {definition['definition']}",            },        ]
-        confidence = cast_confidence_vote(assistant_name, messages)
-        print(
-            f"\nConfidence Vote from {assistant_name} on {definition['assistant']}'s definition: {confidence}\n"
-        )        # Handle both successful votes and errors
-        if isinstance(confidence, ConfidenceVote):
-            definition["confidence"] += confidence.confidence
-        else:
-            # TODO: Better error handling for failed confidence votes
-            print(f"Warning: Failed to get confidence vote from {assistant_name}: {confidence}")
-            # Don't add to confidence score if vote failed
+                    "content": f"Problem Statement: {definition['definition']}",
+                },
+            ]
+            confidence = cast_confidence_vote(assistant_name, messages)
+            print(
+                f"\nConfidence Vote from {assistant_name} on {definition['assistant']}'s definition: {confidence}\n"
+            )
+            # Handle both successful votes and errors
+            if isinstance(confidence, ConfidenceVote):
+                definition["confidence"] += confidence.confidence
+            else:
+                # TODO: Better error handling for failed confidence votes
+                print(f"Warning: Failed to get confidence vote from {assistant_name}: {confidence}")
+                # Don't add to confidence score if vote failed
     # Select the problem statement with the highest confidence vote
     best_definition = max(definitions, key=lambda x: x["confidence"])
     # Get consensus on the problem statement
@@ -1140,7 +1258,13 @@ def define_problem(problem_statement, selected_personalities, previous_def_round
             )
         elif safe_get_message_field(revision_response, 'content', '').startswith("Justification:"):
             # Ask the Mediator to rewrite the problem statement based on the feedback and the justification
-            mediator_prompt = selected_personalities["Mediator"]
+            mediator_prompt = selected_personalities.get(
+                "Mediator",
+                assistant_personalities.get(
+                    "Mediator",
+                    "You are a Mediator guiding collaborative consensus.",
+                ),
+            )
             mediator_messages = [
                 {
                     "role": "system",
@@ -1222,15 +1346,21 @@ def output_type_determination(response) -> Union[OutputType, ErrorResult]:
         },
     ]
     try:
-        response = client.beta.chat.completions.parse(
-            model="gpt-4o-mini",  # Specify the model
-            messages=messages,  # Pass the messages directly as a list of dicts
-            response_format=OutputType,
-            max_completion_tokens=100,
-        )
+        with reserve_call_scope(
+            model=_resolve_model("gpt-4o-mini"),
+            call_type="output_type_determination",
+        ) as resolved_model:
+            response = client.beta.chat.completions.parse(
+                model=resolved_model,
+                messages=messages,  # Pass the messages directly as a list of dicts
+                response_format=OutputType,
+                max_completion_tokens=100,
+            )
         # Extract the output type from the response
         output_type = response.choices[0].message.parsed
         return output_type
+    except (ProviderPolicyError, DisallowedModelError):
+        raise
     except Exception as e:
         return ErrorResult(
             error_type="OutputTypeError",
@@ -1261,12 +1391,16 @@ def test_finalize_output(final_decision: str, output_type: str):
 
     # Make the API call with function calling
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            tools=tools,
-            tool_choice="auto",
-        )
+        with reserve_call_scope(
+            model=_resolve_model("gpt-4o-mini"),
+            call_type="test_finalize_output",
+        ) as resolved_model:
+            response = client.chat.completions.create(
+                model=resolved_model,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+            )
 
         message = response.choices[0].message
         print(f"\nmessage: {message}\n")
@@ -1308,6 +1442,8 @@ def test_finalize_output(final_decision: str, output_type: str):
                 return f"Error: Function '{tool_function_name}' not found."
         else:
             return message
+    except (ProviderPolicyError, DisallowedModelError):
+        raise
     except Exception as e:
         print(f"Error in finalize_output: {str(e)} on line {e.__traceback__.tb_lineno}")
         return f"Error in finalize_output: {str(e)} on line {e.__traceback__.tb_lineno}"
@@ -1343,12 +1479,16 @@ def finalize_output(final_decision: str, output_type: OutputType):
 
     # Make the API call with function calling
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            tools=tools,
-            tool_choice="auto",
-        )
+        with reserve_call_scope(
+            model=_resolve_model("gpt-4o-mini"),
+            call_type="test_finalize_output",
+        ) as resolved_model:
+            response = client.chat.completions.create(
+                model=resolved_model,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+            )
 
         message = response.choices[0].message
         print(f"\nmessage: {message}\n")
@@ -1357,12 +1497,11 @@ def finalize_output(final_decision: str, output_type: OutputType):
             # If true the model will return the name of the tool / function to call and the argument(s)
             tool_call_id = response.choices[0].message.tool_calls[0].id
             tool_function_name = response.choices[0].message.tool_calls[0].function.name
-            tool_query_string = json.loads(
+            tool_args = json.loads(
                 response.choices[0].message.tool_calls[0].function.arguments
-            )["final_decision"]
-            filename = json.loads(
-                response.choices[0].message.tool_calls[0].function.arguments
-            )["filename"]
+            )
+            tool_query_string = tool_args.get("final_decision", final_decision)
+            filename = tool_args.get("filename", f"final_output{output_type.file_extension}")
 
             # Step 3: Call the function and retrieve results. Append the results to the messages list.
             # Map function names to actual functions
@@ -1387,23 +1526,23 @@ def finalize_output(final_decision: str, output_type: OutputType):
                 return filepath
             else:
                 error_result = ErrorResult(
-                    success=False,
                     error_type="ValidationError",
-                    message=f"Function '{tool_function_name}' not found.",
-                    context={"tool_function_name": tool_function_name}
+                    error_message=f"Function '{tool_function_name}' not found.",
+                    error_details=str({"tool_function_name": tool_function_name}),
                 )
-                return str(error_result)
+                return error_result
         else:
-            return message
+            return getattr(message, "content", None) or message
+    except (ProviderPolicyError, DisallowedModelError):
+        raise
     except Exception as e:
         print(f"Error in finalize_output: {str(e)} on line {e.__traceback__.tb_lineno}")
         error_result = ErrorResult(
-            success=False,
             error_type="LLMCallError",
-            message=f"Error in finalize_output: {str(e)} on line {e.__traceback__.tb_lineno}",
-            context={"exception": str(e), "line": e.__traceback__.tb_lineno}
+            error_message=f"Error in finalize_output: {str(e)} on line {e.__traceback__.tb_lineno}",
+            error_details=str(e),
         )
-        return str(error_result)
+        return error_result
 
 
 sample_conversation_history = """User: Hey, have we figured out the root cause of that recurring issue in the system yet?
@@ -2034,14 +2173,20 @@ def final_output_correction(
 
     # Make the API call to correct the final output using structured outputs with beta.chat.completions.parse
     try:
-        response = client.beta.chat.completions.parse(
-            model="gpt-4o" if version_counter <= 1 else "gpt-4o-mini",
-            messages=messages,  # Pass the messages directly as a list of dicts
-            response_format=FinalOutput,
-        )
+        with reserve_call_scope(
+            model=_resolve_model("gpt-4o" if version_counter <= 1 else "gpt-4o-mini"),
+            call_type="final_output_correction",
+        ) as resolved_model:
+            response = client.beta.chat.completions.parse(
+                model=resolved_model,
+                messages=messages,  # Pass the messages directly as a list of dicts
+                response_format=FinalOutput,
+            )
         # Extract the corrected final output from the response
         corrected_final_output = response.choices[0].message.parsed
         return corrected_final_output
+    except (ProviderPolicyError, DisallowedModelError):
+        raise
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -2126,21 +2271,30 @@ def analyze_final_output(
         ]
         # Make the API call to analyze the final output using structured outputs with beta.chat.completions.parse
         try:
-            model_ = "gpt-4o" if first_analysis else "gpt-4o-mini"
-            response = client.beta.chat.completions.parse(
-                model=model_,  # Specify the model
-                messages=messages,  # Pass the messages directly as a list of dicts
-                response_format=FinalOutputAnalysis,
-            )
+            with reserve_call_scope(
+                model=_resolve_model("gpt-4o" if first_analysis else "gpt-4o-mini"),
+                call_type="analyze_final_output",
+            ) as resolved_model:
+                response = client.beta.chat.completions.parse(
+                    model=resolved_model,  # Specify the model
+                    messages=messages,  # Pass the messages directly as a list of dicts
+                    response_format=FinalOutputAnalysis,
+                )
             # Extract the final output from the response
             final_output_analysis_object = response.choices[0].message.parsed
             print(
                 f"\nFinal Output: {final_output}\n, version_counter: {version_counter}\n"
             )
+        except (ProviderPolicyError, DisallowedModelError):
+            raise
         except Exception as e:
             print(
                 f"Error in analyze_final_output: {str(e)} on line {e.__traceback__.tb_lineno} in version {version_counter}"
             )
+            return output_object.final_output
+
+        if final_output_analysis_object is None:
+            return output_object.final_output
 
         # Check if the final output is complete and meets the requirements
         if (
@@ -2253,11 +2407,15 @@ def analyze_to_do_list(conversation_memory, conversation_history):
     ]
     # Make the API call to analyze the to-do list using structured outputs with beta.chat.completions.parse
     try:
-        response = client.beta.chat.completions.parse(
-            model="gpt-4o-mini",  # Specify the model
-            messages=messages,  # Pass the messages directly as a list of dicts
-            response_format=TaskList,
-        )
+        with reserve_call_scope(
+            model=_resolve_model("gpt-4o-mini"),
+            call_type="analyze_to_do_list",
+        ) as resolved_model:
+            response = client.beta.chat.completions.parse(
+                model=resolved_model,  # Specify the model
+                messages=messages,  # Pass the messages directly as a list of dicts
+                response_format=TaskList,
+            )
         # Extract the completion from the response
         completion = response.choices[0].message.parsed
         print(f"\nCompletion: {completion}\n")
@@ -2270,6 +2428,8 @@ def analyze_to_do_list(conversation_memory, conversation_history):
 
         return conversation_memory  # Return the updated conversation memory
 
+    except (ProviderPolicyError, DisallowedModelError):
+        raise
     except Exception as e:
         print(
             f"Error in analyze_to_do_list: {str(e)} on line {e.__traceback__.tb_lineno}"
@@ -2365,21 +2525,32 @@ def get_assistant_response(
     # print(f"\n \n \n \n \n Messages to assistant {assistant_name}: \n", messages, "\n \n \n \n \n")
     # Update the OpenAI call to use the correct method
     try:
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",  # Specify the model
-            messages=messages,  # Pass the messages directly as a list of dicts
-            max_completion_tokens=token_limit,
-        )
+        with reserve_call_scope(
+            model=_resolve_model("gpt-4o-mini"),
+            call_type="get_assistant_response",
+        ) as resolved_model:
+            create_kwargs: Dict[str, Any] = {
+                "model": resolved_model,
+                "messages": messages,
+                "max_completion_tokens": token_limit,
+            }
+            resolved_temp = _resolve_temperature()
+            if resolved_temp is not None:
+                create_kwargs["temperature"] = resolved_temp
+            response = client.chat.completions.create(**create_kwargs)
         # Extract the text from the response
         assistant_reply = response.choices[
             0
         ].message.content.strip()  # Use 'message' key, not 'text'
-        # print(f"{assistant_name}'s reply: \n", assistant_reply)
+        return {"role": "assistant", "name": assistant_name, "content": assistant_reply}
+    except (ProviderPolicyError, DisallowedModelError):
+        raise
     except Exception as e:
-        assistant_reply = f"Error: {str(e)}"
-
-    return {"role": "assistant", "name": assistant_name, "content": assistant_reply}
+        return ErrorResult(
+            error_type="LLMCallError",
+            error_message=f"Assistant '{assistant_name}' failed to respond: {str(e)}",
+            error_details=str(e),
+        )
 
 
 class MediatorReviseOrDecide(BaseModel):
@@ -2391,51 +2562,123 @@ class MediatorReviseOrDecide(BaseModel):
     )
 
 
-def run_conversation(
-    problem_statement, selected_personalities, lead_personality, num_rounds=3, context=None
-):
-    # Normalize problem_statement input
+def _extract_prompt_and_prior_turns(
+    problem_statement: Any,
+) -> Tuple[str, List[Dict[str, Any]]]:
+    """Extract active user prompt (ignoring UI system banners) and prior dialogue turns."""
     if isinstance(problem_statement, str):
-        original_prompt = problem_statement
-    elif isinstance(problem_statement, list) and len(problem_statement) > 0:
-        if isinstance(problem_statement[0], dict):
-            original_prompt = problem_statement[0].get('content', str(problem_statement[0]))
+        text = problem_statement.strip()
+        if not text:
+            raise ValueError("Task prompt must be a non-empty string.")
+        return text, []
+
+    if isinstance(problem_statement, dict):
+        role = str(problem_statement.get("role", "user")).lower()
+        content = str(problem_statement.get("content", "")).strip()
+        if role == "system" or not content:
+            raise ValueError("Task prompt cannot be empty or system-banner only.")
+        return content, []
+
+    if isinstance(problem_statement, list):
+        non_system_turns: List[Dict[str, Any]] = []
+        user_contents: List[str] = []
+        fallback_contents: List[str] = []
+        for idx, item in enumerate(problem_statement):
+            if isinstance(item, dict):
+                role = str(item.get("role", "user")).strip().lower()
+                name = str(item.get("name") or ("User" if role == "user" else "Assistant")).strip()
+                content = str(item.get("content", "")).strip()
+                rnd = item.get("round", 0)
+            elif hasattr(item, "content"):
+                role = str(getattr(item, "role", "user") or "user").strip().lower()
+                name = str(getattr(item, "name", "") or ("User" if role == "user" else "Assistant")).strip()
+                content = str(getattr(item, "content", "") or "").strip()
+                rnd = getattr(item, "round", 0)
+            else:
+                role = "user"
+                name = "User"
+                content = str(item or "").strip()
+                rnd = 0
+
+            if role == "system" or not content:
+                continue
+            turn_entry = {"role": role, "name": name, "round": rnd, "content": content}
+            non_system_turns.append(turn_entry)
+            if role == "user":
+                user_contents.append(content)
+            else:
+                fallback_contents.append(content)
+
+        if user_contents:
+            active_prompt = user_contents[-1]
+        elif fallback_contents:
+            active_prompt = fallback_contents[-1]
         else:
-            original_prompt = str(problem_statement[0])
-    elif isinstance(problem_statement, dict):
-        original_prompt = problem_statement.get('content', str(problem_statement))
-    else:
-        original_prompt = str(problem_statement)
+            raise ValueError(
+                "Conversation contains no actionable user task prompt (system banners are ignored)."
+            )
+        prior_turns = non_system_turns[:-1] if len(non_system_turns) > 1 else []
+        return active_prompt, prior_turns
+
+    text = str(problem_statement or "").strip()
+    if not text:
+        raise ValueError("Task prompt cannot be empty.")
+    return text, []
+
+
+def run_conversation(
+    problem_statement,
+    selected_personalities,
+    lead_personality,
+    num_rounds=3,
+    context=None,
+    model: Optional[str] = None,
+    temperature: Optional[float] = None,
+    timeout_seconds: Optional[float] = None,
+    max_calls: Optional[int] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+):
+    with _conversation_run_scope(
+        model=model,
+        temperature=temperature,
+        timeout_seconds=timeout_seconds,
+        max_calls=max_calls,
+        cancel_check=cancel_check,
+    ):
+        return _run_conversation_impl(
+            problem_statement=problem_statement,
+            selected_personalities=selected_personalities,
+            lead_personality=lead_personality,
+            num_rounds=num_rounds,
+            context=context,
+        )
+
+
+def _run_conversation_impl(
+    problem_statement,
+    selected_personalities,
+    lead_personality,
+    num_rounds=3,
+    context=None,
+):
+    raw_user_prompt, prior_turns = _extract_prompt_and_prior_turns(problem_statement)
 
     original_prompt = (
         "The Primary User has provided the following prompt, from which the problem statement will be defined: "
-        + original_prompt
+        + raw_user_prompt
     )
+    if prior_turns:
+        transcript_lines = [
+            f"{t.get('name') or t.get('role')}: {t.get('content')}"
+            for t in prior_turns[-6:]
+        ]
+        original_prompt += "\n\nPrior Conversation Context:\n" + "\n".join(transcript_lines)
 
     if context:
         original_prompt += f"\n\nAdditional Context: {context}"
 
-    print("problem statement with context (if any)", original_prompt, "\n")    # primary_user = problem_statement[0]['name']
-    # TODO: FIXME - Commented-out code for conversation history and final content generation
-    # The following code was commented out and needs review for potential restoration or removal
-    # Have the Mediator finalize the output based on the final decision, creating the final output content that fulfills the problem statement and the user's needs that will be saved to the final file
-    # conversation_history = [{"role": "user","round":0, "content": original_prompt}]
+    print("problem statement with context (if any)", original_prompt, "\n")
 
-    # TODO: Review and potentially restore final content prompt logic
-    # final_content_prompt = "Based on the final decision or solution provided by the assistant who called for the final vote, please generate the final output content that fulfills the problem statement and the user's needs. This prompt should be clear, actionable, and concise, providing the finalized details needed to generate the final output content that fulfills the problem statement and the user's needs. It should be in the form of an implementation plan, a request, or a directive that guides the generation of the final output. Ensure that the prompt will result in the direct creation of the final output content that fulfills the problem statement and the user's needs and will not require further discussion or clarification. Please provide the final prompt based on the information available."
-    # final_content_messages = [
-    #     {"role": "system", "content": final_content_prompt + f" The output type for the final decision is: {output_type.output_type} with file extension: {output_type.file_extension} and should solve the problem statement: {problem_definition} by following the final decision or solution provided by {final_vote_caller}."},
-    #     {"role": "user", "content": f"Please generate the final output content based on the final decision or solution provided by {final_vote_caller}:\n\n{safe_get_message_field(final_decision_response, 'content', 'No decision content')}. The problem statement it must completely solve is: {problem_definition}. The output you generate should be the final completion of the problem statement and the user's needs, and should not include any further steps or discussions but will represent the final output content that fulfills the problem statement and the user's needs ONLY.",
-    #     },
-    # ]
-    # for role, content in final_content_messages:
-    #     conversation_history.append({"role": role, "name": "Mediator", "round": 0, "content": content})
-
-    # final_output_response = get_assistant_response("Mediator", assistant_personalities["Mediator"] + " " + final_content_prompt, conversation_history)
-
-    # test = test_finalize_output(final_output_response, "py")
-    # print(test)
-    # exit()
     if isinstance(selected_personalities, dict):
         personalities_for_problem = dict(selected_personalities)
     elif isinstance(selected_personalities, (list, tuple, set)):
@@ -2445,7 +2688,8 @@ def run_conversation(
         }
     else:
         personalities_for_problem = dict(assistant_personalities)
-    assistant_personalities.update(personalities_for_problem)
+    # Keep per-run personality mapping strictly local without mutating module-global catalog
+    run_personalities = {**assistant_personalities, **personalities_for_problem}
 
     problem_definition = define_problem(
         original_prompt,
@@ -2458,6 +2702,7 @@ def run_conversation(
             "round": 0,
             "content": assistant_instructions,
         },
+        *[dict(t) for t in prior_turns],
         {
             "role": "user",
             "name": "Primary User",
@@ -2467,8 +2712,9 @@ def run_conversation(
     ]
     # print(conversation_history)
     conversation_memory = ConversationMemory(num_rounds)
-    mediator_name = "Mediator"
+    mediator_name = "Mediator" if "Mediator" in run_personalities else lead_personality
     questions_asked = []
+    all_questions_asked: List[Dict[str, str]] = []
     output_type = None
 
     final_output = None
@@ -2528,25 +2774,34 @@ def run_conversation(
                 )
             # Have the mediator review the responses and decide on the output type
             mediator_prompt = (
-                assistant_personalities[mediator_name]
+                run_personalities.get(mediator_name, assistant_personalities.get("Mediator", ""))
                 + "You are tasked with reviewing the output types suggested by the assistants and making the final decision on the output type for the solution. Please consider the problem statement and the context of the discussion to determine the most appropriate output format. Make your decision based on the following options: simple concise text answer, a detailed report in text or PDF format, a code snippet or script file, structured data in JSON or CSV format, a website or app prototype, or a detailed technical document. You may be more specific if needed or choose a different output type, but ensure it aligns with the problem statement and the discussion so far and meets the user's requirements and expectations. Please provide your decision in the format specified, including both the output type and the file extension."
             )
+            valid_output_types = [ot for ot in output_types if isinstance(ot, OutputType)]
             try:
+                if not valid_output_types:
+                    raise OutputTypeError("All output type suggestions returned errors.")
                 # TODO: Make this votable by the assistants
-                response = client.beta.chat.completions.parse(
-                    model="gpt-4o-mini",  # Specify the model
-                    messages=[
-                        {"role": "system", "content": mediator_prompt},
-                        {
-                            "role": "user",
-                            "content": f"Please decide on the output type based on the defined problem statement:\n\n{problem_definition}. The suggested output types are: {', '.join(output_types.output_type for output_types in output_types)}. Possible file extensions are: {', '.join(output_types.file_extension for output_types in output_types)}. Please provide your recommendation in the provided format, generating both the specific output type and the file extension.",
-                        },
-                    ],
-                    response_format=OutputType,
-                )
+                with reserve_call_scope(
+                    model=_resolve_model("gpt-4o-mini"),
+                    call_type="mediator_output_type",
+                ) as resolved_model:
+                    response = client.beta.chat.completions.parse(
+                        model=resolved_model,
+                        messages=[
+                            {"role": "system", "content": mediator_prompt},
+                            {
+                                "role": "user",
+                                "content": f"Please decide on the output type based on the defined problem statement:\n\n{problem_definition}. The suggested output types are: {', '.join(ot.output_type for ot in valid_output_types)}. Possible file extensions are: {', '.join(ot.file_extension for ot in valid_output_types)}. Please provide your recommendation in the provided format, generating both the specific output type and the file extension.",
+                            },
+                        ],
+                        response_format=OutputType,
+                    )
                 # Extract the output type from the response
                 output_type = response.choices[0].message.parsed
                 print(f"\nMediator Output Type Decision: {output_type}\n")
+            except (ProviderPolicyError, DisallowedModelError):
+                raise
             except Exception as e:
                 # TODO: Implement better fallback strategy for output type determination
                 print(f"\nError in Mediator Output Type Decision: {str(e)}\n")
@@ -2578,20 +2833,25 @@ def run_conversation(
 
         # Proceed in the order of priority
         for assistant_name, _ in assistant_priorities:
-            assistant_prompt = assistant_personalities[assistant_name]
-            mediator_prompt = assistant_personalities[mediator_name]
+            assistant_prompt = run_personalities.get(
+                assistant_name, f"You are a helpful assistant acting as {assistant_name}."
+            )
+            mediator_base_prompt = run_personalities.get(
+                mediator_name, assistant_personalities.get("Mediator", "")
+            )
+            mediator_prompt = mediator_base_prompt
             mediator_initial_response = f"You are the Mediator for this conversation. This is the first round of {num_rounds} to produce the final output. Here's the problem statement: {problem_definition}. Using simple, concise language, guide the discussion towards a final output in the expected format by the end of the final round (round {num_rounds}). This first round is about making a plan or initial decision on how to approach the problem and what steps to take in the next {num_rounds - 1} rounds."
 
             if rnd == 0:
                 mediator_prompt = (
-                    assistant_personalities[mediator_name]
+                    mediator_base_prompt
                     + assistant_instructions
                     + f"This is the first round of {num_rounds} to produce the final output. Here's the problem statement: {problem_definition}. Your task is to guide the discussion towards a final output in the expected format by the end of the final round (round {num_rounds}). You should guide this first round towards making a plan or initial decision on how to approach the problem and what steps to take in the next {num_rounds - 1} rounds."
                 )
                 mediator_initial_response = f"You are the Mediator for this conversation. This is the first round of {num_rounds} to produce the final output. Here's the problem statement: {problem_definition}. Using simple, concise language, guide the discussion towards a final output in the expected format by the end of the final round (round {num_rounds}). This first round is about making a plan or initial decision on how to approach the problem and what steps to take in the next {num_rounds - 1} rounds."
             elif rnd > 0 and rnd + 1 < num_rounds:
                 mediator_prompt = (
-                    assistant_personalities[mediator_name]
+                    mediator_base_prompt
                     + assistant_instructions
                     + f"There are {num_rounds - rnd} rounds left to finalize the output. This is the beginning of round {rnd + 1}, please guide the discussion towards a final output in the expected format by the end of the final round (round {num_rounds})."
                 )
@@ -2600,7 +2860,7 @@ def run_conversation(
                 )
             elif rnd + 1 == num_rounds:
                 mediator_prompt = (
-                    assistant_personalities[mediator_name]
+                    mediator_base_prompt
                     + assistant_instructions
                     + f"This is the final round of the conversation. Please guide the discussion towards a final output in the expected format by the end of this round."
                 )
@@ -2686,7 +2946,9 @@ def run_conversation(
         )
 
         # After each round, have the Mediator summarize
-        mediator_prompt = assistant_personalities[mediator_name]
+        mediator_prompt = run_personalities.get(
+            mediator_name, assistant_personalities.get("Mediator", "")
+        )
         mediator_response = get_assistant_response(
             mediator_name,
             mediator_prompt,
@@ -2725,7 +2987,10 @@ def run_conversation(
         for q in questions_asked:
             for responder_name in selected_personalities:
                 if responder_name == q["assistant"]:
-                    responder_prompt = assistant_personalities[responder_name]
+                    responder_prompt = run_personalities.get(
+                        responder_name,
+                        f"You are a helpful assistant acting as {responder_name}.",
+                    )
                     responder_response = get_assistant_response(
                         responder_name,
                         responder_prompt,
@@ -2781,6 +3046,16 @@ def run_conversation(
         )
         # decrement the number of rounds in ConversationMemory
         conversation_memory.decrement_rounds_left()
+        if questions_asked:
+            all_questions_asked.extend(
+                {
+                    "assistant": str(q.get("assistant", "")),
+                    "asking_assistant": str(q.get("asking_assistant", "")),
+                    "reply": str(q.get("reply", "")),
+                    "question": str(q.get("reply", "")),
+                }
+                for q in questions_asked
+            )
         questions_asked = []
         # Vote on whether to continue the conversation into the next round or end it based on whether this round has reached a conclusion or contains enough information to vote on a final decision/solution
         if rnd <= num_rounds - 1:
@@ -2847,7 +3122,7 @@ def run_conversation(
                 final_decision_messages = [
                     {
                         "role": "system",
-                        "content": f"{assistant_personalities[final_vote_caller]} The conversation has reached a point where a final decision or solution is needed. Please provide your final decision or solution based on the information available. It should be clear, actionable, and concise, providing the finalized details needed to generate the final output content that fulfills the problem statement and the user's needs. Please do not include any further steps or discussions, only the final decision or solution.",
+                        "content": f"{run_personalities.get(final_vote_caller, '')} The conversation has reached a point where a final decision or solution is needed. Please provide your final decision or solution based on the information available. It should be clear, actionable, and concise, providing the finalized details needed to generate the final output content that fulfills the problem statement and the user's needs. Please do not include any further steps or discussions, only the final decision or solution.",
                     },
                     {
                         "role": "user",
@@ -2872,13 +3147,15 @@ def run_conversation(
                     )
                 final_decision_response = get_assistant_response(
                     final_vote_caller,
-                    assistant_personalities[final_vote_caller]
+                    run_personalities.get(final_vote_caller, "")
                     + " "
                     + final_decision_prompt,
                     conversation_history,
                     None,
                     conversation_memory,
                 )
+                if isinstance(final_decision_response, ErrorResult):
+                    raise LLMCallError(final_decision_response.error_message)
                 print(
                     f"\nFinal Decision Response from {final_vote_caller}: {final_decision_response}\n (Unconfirmed)"
                 )
@@ -2895,7 +3172,7 @@ def run_conversation(
                     final_vote_messages = [
                         {
                             "role": "system",
-                            "content": f"{assistant_personalities[assistant_name]} An assistant has recommended a solution for the problem statement {problem_definition}. Please review the conversation summary, then review the final decision or solution provided by {final_vote_caller} and cast your vote to confirm it.",
+                            "content": f"{run_personalities.get(assistant_name, '')} An assistant has recommended a solution for the problem statement {problem_definition}. Please review the conversation summary, then review the final decision or solution provided by {final_vote_caller} and cast your vote to confirm it.",
                         },
                         {
                             "role": "user",
@@ -2938,7 +3215,7 @@ def run_conversation(
                     print("🔄 Falling back to mediator decision due to complete voting failure.")
                     # Force mediator to make final decision
                     mediator_fallback_prompt = (
-                        f"{assistant_personalities[mediator_name]} "
+                        f"{run_personalities.get(mediator_name, assistant_personalities.get('Mediator', ''))} "
                         "CRITICAL SITUATION: All assistants failed to cast valid votes on the final decision. "
                         "As the mediator, you must make the final call on whether to proceed with the proposed solution. "
                         "Review the conversation and make a definitive decision."
@@ -2949,13 +3226,19 @@ def run_conversation(
                         {"role": "user", "content": f"Problem Statement: {problem_definition}"}
                     ]
                     try:
-                        mediator_emergency_response = client.beta.chat.completions.parse(
-                            model="gpt-4o-mini",
-                            messages=mediator_fallback_messages,
-                            response_format=MediatorReviseOrDecide,
-                        )
+                        with reserve_call_scope(
+                            model=_resolve_model("gpt-4o-mini"),
+                            call_type="mediator_emergency",
+                        ) as resolved_model:
+                            mediator_emergency_response = client.beta.chat.completions.parse(
+                                model=resolved_model,
+                                messages=mediator_fallback_messages,
+                                response_format=MediatorReviseOrDecide,
+                            )
                         mediator_decision = mediator_emergency_response.choices[0].message.parsed
                         print(f"🏛️ Emergency Mediator Decision: {mediator_decision}")
+                    except (ProviderPolicyError, DisallowedModelError):
+                        raise
                     except Exception as e:
                         print(f"❌ Emergency mediator decision failed: {e}")
                         # Ultimate fallback - proceed with original decision
@@ -2971,7 +3254,7 @@ def run_conversation(
                     
                     # Mediator breaks the tie
                     tie_breaker_prompt = (
-                        f"{assistant_personalities[mediator_name]} "
+                        f"{run_personalities.get(mediator_name, assistant_personalities.get('Mediator', ''))} "
                         "A tie vote has occurred on the final decision. As the mediator, you must break the tie. "
                         "Review the proposed solution, the conversation context, and make a definitive decision. "
                         "Consider the feedback from both sides and determine the best path forward."
@@ -2983,11 +3266,15 @@ def run_conversation(
                         {"role": "user", "content": f"Vote was tied: {yes_votes} assistants voted YES, {no_votes} assistants voted NO"}
                     ]
                     try:
-                        tie_breaker_response = client.beta.chat.completions.parse(
-                            model="gpt-4o-mini",
-                            messages=tie_breaker_messages,
-                            response_format=MediatorReviseOrDecide,
-                        )
+                        with reserve_call_scope(
+                            model=_resolve_model("gpt-4o-mini"),
+                            call_type="mediator_tie_breaker",
+                        ) as resolved_model:
+                            tie_breaker_response = client.beta.chat.completions.parse(
+                                model=resolved_model,
+                                messages=tie_breaker_messages,
+                                response_format=MediatorReviseOrDecide,
+                            )
                         mediator_decision = tie_breaker_response.choices[0].message.parsed
                         print(f"🏛️ Tie-breaker Decision: {'ACCEPT' if mediator_decision.keep_output else 'REVISE'}")
                         conversation_history.append({
@@ -2996,6 +3283,8 @@ def run_conversation(
                             "round": rnd,
                             "content": f"Mediator Tie-breaker Decision: {'Accepted' if mediator_decision.keep_output else 'Revised'} - {mediator_decision.final_decision}"
                         })
+                    except (ProviderPolicyError, DisallowedModelError):
+                        raise
                     except Exception as e:
                         print(f"❌ Tie-breaker decision failed: {e}")
                         # Default tie-breaker: slight preference for proceeding
@@ -3021,7 +3310,7 @@ def run_conversation(
                         print("🏛️ Requiring mediator approval due to low participation")
                         # Force mediator review for low participation
                         participation_prompt = (
-                            f"{assistant_personalities[mediator_name]} "
+                            f"{run_personalities.get(mediator_name, assistant_personalities.get('Mediator', ''))} "
                             f"Low participation in final vote: only {total_votes}/{total_assistants} assistants voted. "
                             "As mediator, determine if this is sufficient to proceed or if the decision needs revision."
                         )
@@ -3031,13 +3320,19 @@ def run_conversation(
                             {"role": "user", "content": f"Proposed Decision: {safe_get_message_field(final_decision_response, 'content', 'No decision content')}"}
                         ]
                         try:
-                            participation_response = client.beta.chat.completions.parse(
-                                model="gpt-4o-mini",
-                                messages=participation_messages,
-                                response_format=MediatorReviseOrDecide,
-                            )
+                            with reserve_call_scope(
+                                model=_resolve_model("gpt-4o-mini"),
+                                call_type="mediator_low_participation",
+                            ) as resolved_model:
+                                participation_response = client.beta.chat.completions.parse(
+                                    model=resolved_model,
+                                    messages=participation_messages,
+                                    response_format=MediatorReviseOrDecide,
+                                )
                             mediator_decision = participation_response.choices[0].message.parsed
                             print(f"🏛️ Low Participation Decision: {'PROCEED' if mediator_decision.keep_output else 'REVISE'}")
+                        except (ProviderPolicyError, DisallowedModelError):
+                            raise
                         except Exception as e:
                             print(f"❌ Low participation decision failed: {e}")
                             mediator_decision = MediatorReviseOrDecide(
@@ -3083,13 +3378,15 @@ def run_conversation(
 
                     final_output_response = get_assistant_response(
                         lead_personality,
-                        assistant_personalities[lead_personality]
+                        run_personalities.get(lead_personality, assistant_personalities.get("Mediator", ""))
                         + " "
                         + final_content_prompt,
                         conversation_history,
                         None,
                         conversation_memory,
                     )
+                    if isinstance(final_output_response, ErrorResult):
+                        raise LLMCallError(final_output_response.error_message)
                     print(
                         f"\n\nFinal Output Response from {lead_personality}: {final_output_response}\n\n"
                     )
@@ -3143,7 +3440,7 @@ def run_conversation(
                             feedback_messages = [
                                 {
                                     "role": "system",
-                                    "content": f"{assistant_personalities[assistant_name]} Your vote did not confirm the final decision or solution provided by {final_vote_caller}. Please provide feedback on the final decision or solution.",
+                                    "content": f"{run_personalities.get(assistant_name, '')} Your vote did not confirm the final decision or solution provided by {final_vote_caller}. Please provide feedback on the final decision or solution.",
                                 },
                                 {
                                     "role": "user",
@@ -3155,7 +3452,9 @@ def run_conversation(
                                 },
                             ]
                             feedback = get_assistant_response(
-                                assistant_name, assistant_prompt, feedback_messages
+                                assistant_name,
+                                run_personalities.get(assistant_name, assistant_prompt),
+                                feedback_messages,
                             )
                             feedbacks.append(feedback)
                     # Have the Mediator review the feedback and make a final decision
@@ -3163,7 +3462,7 @@ def run_conversation(
                     for feedback in feedbacks:
                         mediator_feedback.append(safe_get_feedback_field(feedback, 'content', 'No feedback content'))
                     mediator_prompt = (
-                        assistant_personalities[mediator_name]
+                        run_personalities.get(mediator_name, assistant_personalities.get("Mediator", ""))
                         + "The final decision or solution provided by the assistant who called for the final vote was not confirmed by the majority of the assistants. Please review the feedback provided by the assistants who voted no and make a final decision or resolution based on the feedback and the context of the discussion. You may choose to revise the final decision or make a final call based on the information available by answering in the format provided, with a boolean value of True to make the call to keep the final decision or False to revise it. If False, provide a revised final decision or solution (as final_decision) based on the feedback and the context of the discussion, otherwise, confirm the final decision."
                     )
                     mediator_messages = [
@@ -3174,14 +3473,20 @@ def run_conversation(
                     ]
                     mediator_decision = ""
                     try:
-                        response = client.beta.chat.completions.parse(
-                            model="gpt-4o-mini",  # Specify the model
-                            messages=mediator_messages,  # Pass the messages directly as a list of dicts
-                            response_format=MediatorReviseOrDecide,
-                        )
+                        with reserve_call_scope(
+                            model=_resolve_model("gpt-4o-mini"),
+                            call_type="mediator_feedback",
+                        ) as resolved_model:
+                            response = client.beta.chat.completions.parse(
+                                model=resolved_model,
+                                messages=mediator_messages,  # Pass the messages directly as a list of dicts
+                                response_format=MediatorReviseOrDecide,
+                            )
                         # Extract the decision from the response
                         mediator_decision = response.choices[0].message.parsed
                         print(f"\nMediator Decision: {mediator_decision}\n")
+                    except (ProviderPolicyError, DisallowedModelError):
+                        raise
                     except Exception as e:
                         # TODO: Implement better fallback strategy for mediator decisions
                         print(f"\nError in Mediator Decision: {str(e)}\n")
@@ -3239,13 +3544,15 @@ def run_conversation(
 
                     final_output_response = get_assistant_response(
                         lead_personality,
-                        assistant_personalities[lead_personality]
+                        run_personalities.get(lead_personality, assistant_personalities.get("Mediator", ""))
                         + " "
                         + final_content_prompt,
                         conversation_history,
                         None,
                         conversation_memory,
                     )
+                    if isinstance(final_output_response, ErrorResult):
+                        raise LLMCallError(final_output_response.error_message)
                     print(
                         f"\n\nFinal Output Response from {lead_personality}: {final_output_response}\n\n"
                     )
@@ -3319,13 +3626,15 @@ def run_conversation(
 
                     final_output_response = get_assistant_response(
                         lead_personality,
-                        assistant_personalities[lead_personality]
+                        run_personalities.get(lead_personality, assistant_personalities.get("Mediator", ""))
                         + " "
                         + final_content_prompt,
                         conversation_history,
                         None,
                         conversation_memory,
                     )
+                    if isinstance(final_output_response, ErrorResult):
+                        raise LLMCallError(final_output_response.error_message)
                     print(
                         f"\n\nFinal Output Response from {lead_personality}: {final_output_response}\n\n"
                     )
@@ -3386,13 +3695,15 @@ def run_conversation(
 
                     final_output_response = get_assistant_response(
                         lead_personality,
-                        assistant_personalities[lead_personality]
+                        run_personalities.get(lead_personality, assistant_personalities.get("Mediator", ""))
                         + " "
                         + final_content_prompt,
                         conversation_history,
                         None,
                         conversation_memory,
                     )
+                    if isinstance(final_output_response, ErrorResult):
+                        raise LLMCallError(final_output_response.error_message)
                     print(
                         f"\n\nFinal Output Response from {lead_personality}: {final_output_response}\n\n"
                     )
@@ -3429,4 +3740,4 @@ def run_conversation(
         print("⚠️  Final conversation data may be lost.")
     
     # print("Conversation History in manager: ", conversation_history, "Type: ", type(conversation_history), "Type Content: ", type(conversation_history[0]["content"]))
-    return (conversation_history, questions_asked, final_output)
+    return (conversation_history, all_questions_asked, final_output)
