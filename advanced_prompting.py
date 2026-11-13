@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 import difflib
@@ -17,7 +18,7 @@ import random
 from tqdm import tqdm
 from conversation_manager import output_type_determination, OutputType
 from pydantic import BaseModel, Field, ValidationError, field_validator
-from typing import List, Tuple, Optional, Dict, Union
+from typing import Callable, List, Tuple, Optional, Dict, Union
 import tiktoken
 import os
 import json # Added for JSON parsing
@@ -1390,6 +1391,7 @@ class PromptEngineeringConfig:
         3  # Number of agents for Collaborative Multi-Agent Reasoning, where multiple agents work together to solve a task by sharing insights and refining each other's suggestions.
     )
     complexity_factor: int = 5  # Factor to adjust step budget based on complexity
+    max_sc_calls: int = 30  # Maximum self-consistency provider calls per call
 
     def __init__(
         self,
@@ -1404,6 +1406,7 @@ class PromptEngineeringConfig:
         backtrack: bool = True,
         agents: int = 3,
         complexity_factor: int = 5,
+        max_sc_calls: int = 30,
     ):
         """Initialize the configuration settings.
 
@@ -1431,6 +1434,7 @@ class PromptEngineeringConfig:
         self.backtrack = backtrack
         self.agents = agents
         self.complexity_factor = complexity_factor
+        self.max_sc_calls = max(int(max_sc_calls), 1)
 
 
 # CompnentType represents a category of different final output component types, ie. whether the output is its own standalone file, a part of a larger file, or a response to a prompt.
@@ -1494,6 +1498,7 @@ class Step(BaseModel):
     final_step_output: Optional[FinalStepOutput] = Field(
         None, title="Final output generated at this step"
     )
+    completed: bool = Field(False, title="Whether the step has been completed")
     # """
     # A class representing a step in a process.
 
@@ -1516,6 +1521,7 @@ class Step(BaseModel):
         thoughts: Optional[str] = None,
         plan_step_number: Optional[int] = None,
         final_step_output: Optional[FinalStepOutput] = None,
+        completed: bool = False,
         **kwargs,
     ):
         super().__init__(
@@ -1526,6 +1532,7 @@ class Step(BaseModel):
             thoughts=kwargs.get("thoughts", thoughts),
             plan_step_number=kwargs.get("plan_step_number", plan_step_number),
             final_step_output=kwargs.get("final_step_output", final_step_output),
+            completed=kwargs.get("completed", completed),
             **{
                 k: v
                 for k, v in kwargs.items()
@@ -1538,6 +1545,7 @@ class Step(BaseModel):
                     "thoughts",
                     "plan_step_number",
                     "final_step_output",
+                    "completed",
                 }
             },
         )
@@ -1762,20 +1770,20 @@ class Interaction:
         task: Task,
         steps: List[Step],
         reflections: List[Reflection],
-        answer: str = None,
+        answer: Optional[str] = None,
         final_reward: float = 0.0,
-        step_outputs: List[FinalStepOutput] = [],
-        planstep_outputs: List[FinalPlanStepOutput] = [],
-        existing_files: List[str] = [],
+        step_outputs: Optional[List[FinalStepOutput]] = None,
+        planstep_outputs: Optional[List[FinalPlanStepOutput]] = None,
+        existing_files: Optional[List[str]] = None,
     ):
         self.task = task
         self.steps = steps
         self.reflections = reflections
         self.answer = answer
         self.final_reward = final_reward
-        self.step_outputs = step_outputs
-        self.planstep_outputs = planstep_outputs
-        self.existing_files = existing_files
+        self.step_outputs = list(step_outputs) if step_outputs is not None else []
+        self.planstep_outputs = list(planstep_outputs) if planstep_outputs is not None else []
+        self.existing_files = list(existing_files) if existing_files is not None else []
 
     def __repr__(self):
         return f"Interaction(task={self.task}, steps={self.steps}, reflections={self.reflections}, answer={self.answer}, final_reward={self.final_reward})"
@@ -3960,7 +3968,7 @@ Example:
                     "content": f"""Now, let's solve the following task, focusing specifically on the <thinking>, and <step> tags, and focusing ONLY on the current step, generating <thinking> and <step> tags for the next step in the task after the most recent <step> tag, building directly on the previous steps. You will be stopped after you complete another <step> tag, or <answer> tag, or when the <count> reaches 0.
 Always think in <thinking> tags before generating a <step> tag, and ensure that it builds on the previous steps.
 Remember to provide a clear and concise answer within <agent_response> tags at the end of the process, if the task is completed within the step budget. Also, the expected format of the end result the user is looking for is {type_of_output} file extension {ext_of_output}, so keep that in mind for the last step."""
-                    + agent_intro_mapping[i]["template"].format(task=task)
+                    + agent_intro_mapping[i % len(agent_intro_mapping)]["template"].format(task=task)
                     + "\n\n"
                     + prompt,
                 },
@@ -3974,7 +3982,7 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
                 )
                 print_saver.print_and_store(f"\nMessages: {messages}\n\n")
                 print_saver.print_and_store(
-                    f"Template: {agent_intro_mapping[i]['template'].format(task=task)}"
+                    f"Template: {agent_intro_mapping[i % len(agent_intro_mapping)]['template'].format(task=task)}"
                 )
                 raise ValueError(
                     "Token count exceeds the limit in collaborative reasoning."
@@ -3990,15 +3998,21 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
             agent_reflections = []
             step_num = step_number
             restart_attempts = 0
-            msgs = messages.copy()
+            base_messages = copy.deepcopy(messages)
+            msgs = copy.deepcopy(base_messages)
             while (
                 len(agent_steps) < step_budget and step_num < step_budget
             ) and agent_response is None:
                 response = self.call_openai(
                     messages=msgs,
-                    temperature=agent_intro_mapping[i]["temperature"],
+                    temperature=agent_intro_mapping[i % len(agent_intro_mapping)]["temperature"],
                     stop_sequence=["</agent_response>"],
                 )
+                if not response:
+                    print_saver.print_and_store(
+                        f"Empty response from Agent {i} at step {step_num}; ending agent loop."
+                    )
+                    break
                 print_saver.print_and_store(f"Agent {i} response: {response}")
                 msgs.append(
                     {
@@ -4084,6 +4098,8 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
                     agent_thinking.append(latest_thinking)
                     current_step.thoughts = latest_thinking
                 agent_steps.append(current_step)
+                backtracks = 0
+                former_score = float(getattr(current_step.reflection, "reward", 0.0) or 0.0)
                 while (
                     (
                         current_step.reflection.reward < 0.8
@@ -4097,8 +4113,9 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
                     )
                     and restart_attempts < restart_limit
                 ):
-                    former_score = current_step.reflection.reward
-                    msgs_b = msgs.copy()
+                    backtracks += 1
+                    former_score = float(getattr(current_step.reflection, "reward", 0.0) or 0.0)
+                    msgs_b = copy.deepcopy(msgs)
                     msgs_b.append(
                         {
                             "role": "user",
@@ -4107,44 +4124,84 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
                     )
                     revision = self.call_openai(
                         messages=msgs_b,
-                        temperature=agent_intro_mapping[i]["temperature"]
+                        temperature=agent_intro_mapping[i % len(agent_intro_mapping)]["temperature"]
                         + max(random.uniform(-0.1, 0.1), 0.01),
                         stop_sequence=["</step>"],
                     )
                     if revision:
-                        msgs.remove(msgs[-1])
-                        if latest_count:
-                            revision = revision.replace(
-                                f"<count>{latest_count}</count>", ""
-                            )
-                        msgs.append({"role": "system", "content": revision})
-                        print_saver.print_and_store(
-                            f"Revision in collaborative: {revision} for step {step_num}."
+                        if msgs:
+                            msgs.pop()
+                        revision_clean = revision
+                        rev_count = get_latest(
+                            r"<count>(\d+)(?=<(?:\/?count|step|reflection|reward|thinking)>|$)",
+                            revision_clean,
                         )
-                        latest_count = get_latest(
-                            r"<count>(.*?)(?=<(?:\/?count|step|reflection|reward|thinking)>|$)",
-                            revision,
+                        if rev_count:
+                            revision_clean = revision_clean.replace(
+                                f"<count>{rev_count}</count>", ""
+                            )
+                        if "</step>" not in revision_clean.lower() and "<step>" in revision_clean.lower():
+                            revision_clean += "</step>"
+                        msgs.append({"role": "system", "content": revision_clean})
+                        print_saver.print_and_store(
+                            f"Revision in collaborative: {revision_clean} for step {step_num}."
                         )
 
-                        revision += "</step>"
-                        latest_step = get_latest(
+                        revised_step = get_latest(
                             r"<step>(.*?)(?=<(?:\/?step|reflection|reward|thinking|count)>|$)",
-                            response,
+                            revision_clean,
                         )
-                        current_step.description = latest_step
+                        if not revised_step or not revised_step.strip():
+                            revised_step = get_latest(
+                                r"<answer>(.*?)(?=<(?:\/?answer|reflection|reward|thinking|count)>|$)",
+                                revision_clean,
+                            )
+                        if not revised_step or not revised_step.strip():
+                            revised_step = revision_clean.strip()
+                        revised_thinking = get_latest(
+                            r"<thinking>(.*?)(?=<(?:\/?thinking|step|reflection|reward|count)>|$)",
+                            revision_clean,
+                        )
+                        if rev_count:
+                            try:
+                                current_step.remaining_budget = max(int(rev_count) - 1, 0)
+                            except (TypeError, ValueError):
+                                pass
+                        if revised_thinking:
+                            current_step.thoughts = revised_thinking
+                            if agent_thinking:
+                                agent_thinking[-1] = revised_thinking
+                            else:
+                                agent_thinking.append(revised_thinking)
+                        if revised_step:
+                            current_step.description = revised_step
+                        if "<agent_response>" in revision_clean.lower():
+                            if "</agent_response>" not in revision_clean.lower():
+                                revision_clean += "</agent_response>"
+                            rev_agent_resp = get_latest(
+                                r"<agent_response>(.*?)</agent_response>", revision_clean
+                            )
+                            if rev_agent_resp:
+                                latest_agent_response = rev_agent_resp
+                        rev_reward = get_latest(
+                            r"<reward>(.*?)(?=<(?:\/?reward|step|reflection|thinking|count)>|$)",
+                            revision_clean,
+                        )
+                        if rev_reward is not None:
+                            latest_reward = rev_reward
+                        response = revision_clean
                         current_step.reflection = self.judge_step(current_step, task)
                         if agent_reflections:
                             if len(agent_reflections) == len(agent_steps):
                                 agent_reflections[-1] = current_step.reflection
                             elif len(agent_reflections) < len(agent_steps):
                                 agent_reflections.append(current_step.reflection)
-                        backtracks += 1
 
                 if latest_agent_response or len(agent_steps) >= step_budget:
                     plan_step_index = 0
-                    for i, stp in enumerate(task.plan.steps):
+                    for _pidx, stp in enumerate(task.plan.steps):
                         if stp.step_number == plan_step_num:
-                            plan_step_index = i
+                            plan_step_index = _pidx
                             break
                     if self.judge_step_completion(
                         agent_steps, task.plan.steps[plan_step_index], max_plan_steps
@@ -4184,7 +4241,7 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
                         and former_score < 0.5
                     ):
                         restart_attempts += 1
-                        msgs = messages.copy()
+                        msgs = copy.deepcopy(base_messages)
                         agent_steps = []
                         agent_thinking = []
                         agent_reflections = []
@@ -4354,8 +4411,8 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
         Refines the prompt based on reflections and reward scores.
         """
         if (
-            interaction.final_reward
-            and interaction.final_reward < self.config.confidence_thresholds[2]
+            interaction.final_reward is not None
+            and interaction.final_reward <= self.config.confidence_thresholds[2]
         ):
             # Low confidence, adjust the budget or modify instructions using the complexity plus the inverse of the final reward times 10 as a factor
             new_budget = self.adjust_step_budget(
@@ -6962,7 +7019,7 @@ Task: {task}
         )
         previous_steps = [
             stp
-            for stp in interaction.steps
+            for stp in (interaction.steps if interaction else [])
             if stp.plan_step_number == plan_step.step_number
         ]
         previous_steps = [
@@ -7069,11 +7126,15 @@ Task: {task}
                 time.sleep(wait + random.uniform(0, 1))  # Adding jitter
 
         if decision:
-            best_response = responses[int(decision) - 1]
-        else:
-            decision = responses.index(max(responses, key=len))
-            best_response = responses[decision] if decision >= 0 else ""
-        return best_response if best_response != "" else random.choice(responses)
+            try:
+                idx = int(decision) - 1
+                if 0 <= idx < len(responses):
+                    best_response = responses[idx]
+            except (ValueError, TypeError):
+                pass
+        if not best_response:
+            best_response = max(responses, key=len)
+        return best_response if best_response else random.choice(responses)
 
     # -------------------------------
     # Self-Consistency
@@ -7082,7 +7143,7 @@ Task: {task}
         self,
         task: Task,
         prompt: str,
-        existing_interaction: Interaction,
+        existing_interaction: Optional[Interaction],
         messages: List[dict],
         output_type: Union[str, "OutputType"],  # Accept both string and OutputType object
         step_budget: int,
@@ -7092,17 +7153,46 @@ Task: {task}
         backtrack_limit: int = 3,
         consistency_multiplier: int = 3,
         max_plan_steps: int = 0,
+        deadline_monotonic: Optional[float] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
+        max_calls: Optional[int] = None,
     ) -> Interaction:
         """
         Implements Self-Consistency by generating multiple reasoning paths and selecting the most consistent one.
         """
-        responses = []
-        steps_objs = existing_interaction.steps if existing_interaction else None
-        reflections_objs = (
-            existing_interaction.reflections if existing_interaction else None
+        responses: List[Interaction] = []
+        base_messages = copy.deepcopy(messages or [])
+        step_budget_int = max(int(step_budget or 1), 1)
+        call_cap = max(
+            int(max_calls if max_calls is not None else getattr(self.config, "max_sc_calls", 30)),
+            1,
         )
-        msgs = messages.copy()
-        for _ in range(self.config.n if self.config.n > 4 else 5):
+        total_calls_made = 0
+        termination_reason: Optional[str] = None
+        self._last_sc_termination = {"reason": None, "calls": 0}
+
+        def _limit_reached() -> bool:
+            nonlocal termination_reason
+            if cancel_check and cancel_check():
+                termination_reason = "cancelled"
+                return True
+            if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                termination_reason = "timeout"
+                return True
+            if total_calls_made >= call_cap:
+                termination_reason = "budget_exhausted"
+                return True
+            return False
+
+        num_paths = self.config.n if self.config.n > 4 else max(int(self.config.n or 1), 1)
+        # Preserve prior behavior for configs with n <= 4 unless explicitly constrained by low call_cap
+        if self.config.n <= 4 and call_cap >= 15:
+            num_paths = 5
+
+        for _ in range(num_paths):
+            if _limit_reached():
+                break
+            msgs = copy.deepcopy(base_messages)
             temperature = max(
                 random.uniform(0.0, 0.5 + (min(0.1 * max(self.config.n, 5), 1.2))), 0.01
             )
@@ -7110,14 +7200,20 @@ Task: {task}
             new_steps = []
             _thinking = []
             step_completion = False
+            candidate_appended = False
             _reflections = []
             step_num = step_number
             restart_attempts = 0
             answer_response = None
-            while len(new_steps) < step_budget and not step_completion:
+            while len(new_steps) < step_budget_int and not step_completion:
+                if _limit_reached():
+                    break
 
                 step_responses = []
-                for _ in range(consistency_multiplier):
+                for _cm in range(max(int(consistency_multiplier or 1), 1)):
+                    if _limit_reached():
+                        break
+                    total_calls_made += 1
                     step_response = self.call_openai(
                         messages=msgs,
                         temperature=max(
@@ -7140,11 +7236,11 @@ Task: {task}
                     if step_response:
                         step_responses.append(step_response)
                 plan_step_index = 0
-                for i, stp in enumerate(task.plan.steps):
+                for _i, stp in enumerate(task.plan.steps):
                     if stp.step_number == plan_step_number:
-                        plan_step_index = i
+                        plan_step_index = _i
                         break
-                if step_responses == []:
+                if not step_responses:
                     print_saver.print_and_store(
                         f"No responses generated for step {step_num}."
                     )
@@ -7155,12 +7251,16 @@ Task: {task}
                     interaction=existing_interaction,
                     step_number=step_num,
                 )
-
-                if response:
-                    msgs.append({"role": "system", "content": response})
+                if not response:
                     print_saver.print_and_store(
-                        f"Response in self-consistency: {response} for step {step_num}."
+                        f"Empty selected response for step {step_num}."
                     )
+                    break
+
+                msgs.append({"role": "system", "content": response})
+                print_saver.print_and_store(
+                    f"Response in self-consistency: {response} for step {step_num}."
+                )
                     # Function to get the latest match using re.finditer
 
                 def get_latest(pattern, text):
@@ -7202,7 +7302,7 @@ Task: {task}
                 # Create a response interaction using just the latest chunks
                 try:
                     current_step = Step(
-                        description=latest_step,
+                        description=latest_step if latest_step is not None else response.strip(),
                         step_number=step_num,
                         remaining_budget=(
                             int(latest_count)
@@ -7210,7 +7310,7 @@ Task: {task}
                             else (
                                 int(new_steps[-1].remaining_budget - 1)
                                 if new_steps
-                                else int(step_budget)
+                                else step_budget_int
                             )
                         ),
                         plan_step_number=plan_step_number,
@@ -7223,15 +7323,21 @@ Task: {task}
                         f"Messages were: \n"
                         + "\n".join([f"{m['role']}: {m['content']}" for m in msgs])
                     )
-                    raise e
-                # step_completion = self.judge_step_completion(
+                    break
 
                 if latest_reflection and latest_reward:
-                    reflection = Reflection(
-                        content=latest_reflection,
-                        reward=float(latest_reward),
-                        step_number=current_step.step_number,
-                    )
+                    try:
+                        parsed_reward = float(latest_reward)
+                    except (TypeError, ValueError):
+                        parsed_reward = None
+                    if parsed_reward is not None:
+                        reflection = Reflection(
+                            content=latest_reflection,
+                            reward=parsed_reward,
+                            step_number=current_step.step_number,
+                        )
+                    else:
+                        reflection = self.judge_step(current_step, task)
                     current_step.reflection = reflection
                     _reflections.append(reflection)
                 else:
@@ -7239,6 +7345,7 @@ Task: {task}
                     current_step.reflection = reflection
                     _reflections.append(reflection)
                 backtracks = 0
+                former_score = float(getattr(current_step.reflection, "reward", 0.0) or 0.0)
                 while (
                     (
                         current_step.reflection.reward < 0.8
@@ -7252,45 +7359,71 @@ Task: {task}
                     )
                     and restart_attempts < restart_limit
                 ):
-                    former_score = current_step.reflection.reward
-                    msgs_b = msgs.copy()
+                    if _limit_reached():
+                        break
+                    backtracks += 1
+                    former_score = float(getattr(current_step.reflection, "reward", 0.0) or 0.0)
+                    msgs_b = copy.deepcopy(msgs)
                     msgs_b.append(
                         {
                             "role": "user",
                             "content": f"You have been rated {current_step.reflection.reward} for your reasoning. The review is as follows: {current_step.reflection.content}. Please rewrite the last step based on the feedback.",
                         }
                     )
+                    total_calls_made += 1
                     revision = self.call_openai(
                         messages=msgs_b,
                         temperature=temperature + max(random.uniform(-0.1, 0.1), 0.01),
                         stop_sequence=["</step>"],
                     )
                     if revision:
-                        msgs.remove(msgs[-1])
-                        msgs.append({"role": "system", "content": revision})
+                        if msgs:
+                            msgs.pop()
+                        revision_clean = revision
                         print_saver.print_and_store(
-                            f"Revision in self-consistency: {revision} for step {step_num}."
+                            f"Revision in self-consistency: {revision_clean} for step {step_num}."
                         )
 
                         # remove count from revision
                         latest_count = get_latest(
-                            r"<count>(.*?)(?=<(?:\/?count|step|reflection|reward|thinking)>|$)",
-                            revision,
+                            r"<count>(\d+)(?=<(?:\/?count|step|reflection|reward|thinking)>|$)",
+                            revision_clean,
                         )
                         if latest_count:
-                            revision = revision.replace(
+                            revision_clean = revision_clean.replace(
                                 f"<count>{latest_count}</count>", ""
                             )
-                        revision += "</step>"
-                        latest_step = get_latest(
+                        if "</step>" not in revision_clean.lower() and "<step>" in revision_clean.lower():
+                            revision_clean += "</step>"
+                        msgs.append({"role": "system", "content": revision_clean})
+                        revised_step = get_latest(
                             r"<step>(.*?)(?=<(?:\/?step|reflection|reward|thinking|count)>|$)",
-                            response,
+                            revision_clean,
                         )
-                        current_step.description = latest_step
+                        if not revised_step or not revised_step.strip():
+                            revised_step = get_latest(
+                                r"<answer>(.*?)(?=<(?:\/?answer|reflection|reward|thinking|count)>|$)",
+                                revision_clean,
+                            )
+                        if not revised_step or not revised_step.strip():
+                            revised_step = revision_clean.strip()
+                        revised_thinking = get_latest(
+                            r"<thinking>(.*?)(?=<(?:\/?thinking|step|reflection|reward|count)>|$)",
+                            revision_clean,
+                        )
+                        if latest_count:
+                            try:
+                                current_step.remaining_budget = max(int(latest_count), 0)
+                            except (TypeError, ValueError):
+                                pass
+                        if revised_thinking:
+                            latest_thinking = revised_thinking
+                            current_step.thoughts = revised_thinking
+                        current_step.description = revised_step
+                        response = revision_clean
                         current_step.reflection = self.judge_step(current_step, task)
                         if _reflections:
                             _reflections[-1] = current_step.reflection
-                        backtracks += 1
                 if latest_thinking:
                     _thinking.append(latest_thinking)
                     current_step.thoughts = latest_thinking  # Add thoughts to the step
@@ -7298,53 +7431,58 @@ Task: {task}
                 if (
                     re.search(r"<answer>", response, re.DOTALL | re.IGNORECASE)
                     is not None
+                    and re.search(r"</answer>", response, re.DOTALL | re.IGNORECASE)
+                    is None
                 ):
                     response += "</answer>"
                 answer_response = get_latest(r"<answer>(.*?)</answer>", response)
-                if answer_response is not None or len(new_steps) >= step_budget:
+                if answer_response is not None or len(new_steps) >= step_budget_int:
                     reason = (
                         f"Got answer: {answer_response}."
                         if answer_response
-                        else f"Length of steps ({len(new_steps)})reached the budget, {step_budget}."
+                        else f"Length of steps ({len(new_steps)}) reached the budget, {step_budget_int}."
                     )
                     print_saver.print_and_store(
                         f"Steps {step_number} to {step_num} completed. Reasoning path: {new_steps}. Reason: {reason}"
                     )
                     plan_step_index = 0
-                    for i, stp in enumerate(task.plan.steps):
+                    for _i, stp in enumerate(task.plan.steps):
                         if stp.step_number == plan_step_number:
-                            plan_step_index = i
+                            plan_step_index = _i
                             break
                     if self.judge_step_completion(
                         new_steps, task.plan.steps[plan_step_index], max_plan_steps
                     )[0]:
                         print_saver.print_and_store(f"Was judged as complete.")
-                        responses.append(
-                            Interaction(
-                                task=task,
-                                steps=new_steps,
-                                reflections=_reflections,
-                                answer=answer_response if answer_response else "",
-                            )
+                        candidate_interaction = Interaction(
+                            task=task,
+                            steps=new_steps,
+                            reflections=_reflections,
+                            answer=answer_response if answer_response else "",
                         )
                         if answer_response is not None:
-                            responses[-1].answer = answer_response
-                            responses[-1].final_reward = (
-                                float(
-                                    get_latest(
-                                        r"<final_reward>(.*?)</final_reward>", response
-                                    )
-                                )
-                                if get_latest(
-                                    r"<final_reward>(.*?)</final_reward>", response
-                                )
+                            candidate_interaction.answer = answer_response
+                            raw_final_reward = get_latest(
+                                r"<final_reward>(.*?)</final_reward>", response
+                            )
+                            parsed_final_reward: Optional[float] = None
+                            if raw_final_reward is not None:
+                                try:
+                                    parsed_final_reward = float(raw_final_reward)
+                                except (TypeError, ValueError):
+                                    parsed_final_reward = None
+                            candidate_interaction.final_reward = (
+                                parsed_final_reward
+                                if parsed_final_reward is not None
                                 else self.judge_final_answer(
-                                    task, responses[-1]
+                                    task, candidate_interaction
                                 ).final_reward
                             )
                             print_saver.print_and_store(
-                                f"Final answer for reasoning path: {responses[-1].answer} with reward: {responses[-1].final_reward}."
+                                f"Final answer for reasoning path: {candidate_interaction.answer} with reward: {candidate_interaction.final_reward}."
                             )
+                        responses.append(candidate_interaction)
+                        candidate_appended = True
                         step_completion = True
                         break
 
@@ -7355,12 +7493,13 @@ Task: {task}
                     ):
 
                         restart_attempts += 1
-                        msgs = messages.copy()
+                        msgs = copy.deepcopy(base_messages)
                         new_steps = []
                         _thinking = []
                         _reflections = []
                         step_num = step_number
                         step_completion = False
+                        candidate_appended = False
                         answer_response = None
                         print_saver.print_and_store(
                             f"Was judged as incomplete. Restarting reasoning path. Attempt {restart_attempts} of {restart_limit}."
@@ -7374,34 +7513,75 @@ Task: {task}
                                 answer=answer_response if answer_response else "",
                             )
                         )
+                        candidate_appended = True
                         break
                 step_num += 1
+            if not candidate_appended and not step_completion and new_steps:
+                responses.append(
+                    Interaction(
+                        task=task,
+                        steps=new_steps,
+                        reflections=_reflections,
+                        answer=answer_response if answer_response else "",
+                        final_reward=0.0,
+                    )
+                )
+
+        self._last_sc_termination = {
+            "reason": termination_reason,
+            "calls": total_calls_made,
+        }
+
+        if not responses:
+            empty_interaction = Interaction(
+                task=task,
+                steps=[],
+                reflections=[],
+                answer="",
+                final_reward=0.0,
+            )
+            if existing_interaction:
+                return Interaction(
+                    task=existing_interaction.task or task,
+                    steps=list(existing_interaction.steps or []),
+                    reflections=list(existing_interaction.reflections or []),
+                    answer=existing_interaction.answer or "",
+                    final_reward=existing_interaction.final_reward or 0.0,
+                    existing_files=list(getattr(existing_interaction, "existing_files", []) or []),
+                    step_outputs=list(getattr(existing_interaction, "step_outputs", []) or []),
+                    planstep_outputs=list(getattr(existing_interaction, "planstep_outputs", []) or []),
+                )
+            return empty_interaction
 
         # Aggregate responses (select the answer with the highest final reward)
         best_interaction: Interaction = max(
             responses, key=lambda x: x.final_reward if x.final_reward else 0.0
         )
         assert isinstance(best_interaction, Interaction)
-        # Add the best interaction to the existing interaction
+        # Merge non-destructively with existing_interaction without mutating caller state
         if existing_interaction:
-            existing_interaction.steps = (
-                best_interaction.steps
-                if len(best_interaction.steps) > len(existing_interaction.steps)
-                else existing_interaction.steps
+            merged_steps = list(existing_interaction.steps or [])
+            for stp in best_interaction.steps:
+                if stp not in merged_steps:
+                    merged_steps.append(stp)
+            merged_reflections = list(existing_interaction.reflections or [])
+            for refl in best_interaction.reflections:
+                if refl not in merged_reflections:
+                    merged_reflections.append(refl)
+            return Interaction(
+                task=best_interaction.task or existing_interaction.task,
+                steps=merged_steps,
+                reflections=merged_reflections,
+                answer=best_interaction.answer or existing_interaction.answer,
+                final_reward=(
+                    best_interaction.final_reward
+                    if best_interaction.final_reward and best_interaction.final_reward > 0.0
+                    else 0.0
+                ),
+                existing_files=list(getattr(existing_interaction, "existing_files", []) or []),
+                step_outputs=list(getattr(existing_interaction, "step_outputs", []) or []),
+                planstep_outputs=list(getattr(existing_interaction, "planstep_outputs", []) or []),
             )
-            existing_interaction.reflections = (
-                best_interaction.reflections
-                if len(best_interaction.reflections)
-                > len(existing_interaction.reflections)
-                else existing_interaction.reflections
-            )
-            existing_interaction.answer = best_interaction.answer
-            existing_interaction.final_reward = (
-                best_interaction.final_reward
-                if best_interaction.final_reward and best_interaction.final_reward > 0.0
-                else 0.0
-            )
-            return existing_interaction
         return best_interaction
 
     # -------------------------------
@@ -7837,7 +8017,10 @@ Task: {task}
                     plan_step=current_plan_step,
                     existing_interaction=main_interaction,
                     output_type=task_object.output_type,
-                    step_budget=max(count // len([p for p in plan.steps if not p.completed]), 1),
+                    step_budget=max(
+                        count // max(len([p for p in plan.steps if not p.completed]), 1),
+                        1,
+                    ),
                     step_number=step,
                     restart_limit=3,
                     max_plan_steps=max_step,
@@ -7859,7 +8042,7 @@ Task: {task}
                 main_interaction,
                 messages,
                 task_object.output_type,
-                max(count / len([p for p in plan.steps if not p.completed]), 1),
+                int(max(count // max(len([p for p in plan.steps if not p.completed]), 1), 1)),
                 step,
                 curr_num,
                 3,
@@ -7896,21 +8079,53 @@ Task: {task}
                 key=lambda x: x.sum_rewards() if x.sum_rewards() else 0.0,
             )
 
-            assert (
-                best_interaction.sum_rewards() is not None
-                and best_interaction.sum_rewards() > 0.0
-            ), f"Invalid reward value: {best_interaction.sum_rewards()}"
+            if best_interaction.sum_rewards() is None or best_interaction.sum_rewards() <= 0.0:
+                print_saver.print_and_store(
+                    f"Low/zero reward interaction observed: {best_interaction.sum_rewards()}"
+                )
 
             # Step 8: Dynamic Confidence Exploration
-            if best_interaction.final_reward < self.config.confidence_thresholds[1]:
+            if (best_interaction.final_reward or 0.0) < self.config.confidence_thresholds[1]:
                 best_interaction = self.dynamic_confidence_exploration(
                     best_interaction, task_object, current_plan_step
                 )
 
             # Step 9: Prompt Refinement
-            if best_interaction.final_reward < self.config.confidence_thresholds[2]:
-                refined_prompt = self.refine_prompt(best_interaction, task)
-                best_interaction = self.self_consistency(task, refined_prompt)
+            if (best_interaction.final_reward or 0.0) <= self.config.confidence_thresholds[2]:
+                refined_prompt = self.refine_prompt(
+                    interaction=best_interaction,
+                    task=curr_desc,
+                    complexity=int(complexity),
+                    prompt=current_planstep_prompt,
+                )
+                refined_messages = copy.deepcopy(messages)
+                for _msg in refined_messages:
+                    if _msg.get("role") == "user":
+                        _msg["content"] = refined_prompt
+                        break
+                best_interaction = self.self_consistency(
+                    task=Task(
+                        curr_desc,
+                        self.task_into_prompt(curr_desc),
+                        complexity,
+                        [],
+                        [],
+                        "",
+                        0.0,
+                        plan,
+                        _output_type,
+                    ),
+                    prompt=refined_prompt,
+                    existing_interaction=main_interaction,
+                    messages=refined_messages,
+                    output_type=task_object.output_type,
+                    step_budget=int(
+                        max(count // max(len([p for p in plan.steps if not p.completed]), 1), 1)
+                    ),
+                    step_number=step,
+                    plan_step_number=curr_num,
+                    restart_limit=3,
+                )
 
             # Now, judge whether the latest plan step or sub-task was completed successfully
             assert isinstance(best_interaction, Interaction)

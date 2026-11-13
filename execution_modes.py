@@ -10,27 +10,128 @@ chronological event telemetry, and multi-agent reasoning diagnostics.
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import time
 import traceback
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-# Authoritative domain models from conversation_manager (safe DAG: conversation_manager -> schema)
+# Authoritative domain models (safe DAG: assistant_personalities/output_generator/conversation_manager -> execution_modes -> schema)
+from assistant_personalities import assistant_personalities as PERSONALITY_CATALOG
 from conversation_manager import ErrorResult, OutputType
+from output_generator import (
+    ArtifactRef,
+    artifact_run_scope,
+    is_tracked_artifact,
+    list_run_artifacts,
+    read_tracked_artifact,
+)
 
 
 # ============================================================================
-# 1. Type Aliases & Literal Enums
+# 1. Type Aliases, Literal Enums & Server Provider Policy
 # ============================================================================
 
 ExecutionModeId = Literal["collaborative", "advanced_pipeline", "tree_of_thought"]
 
-RunStatus = Literal["completed", "gated", "error"]
+RunStatus = Literal[
+    "completed",
+    "gated",
+    "error",
+    "cancelled",
+    "budget_exhausted",
+    "timeout",
+    "incomplete",
+]
+
+MAX_TASK_PROMPT_CHARS = 16000
+MAX_CONTEXT_CHARS = 16000
+MAX_CONVERSATION_TURNS = 100
+MAX_NUM_ROUNDS = 10
+MAX_PIPELINE_STEPS = 50
+MAX_INITIAL_BUDGET = 50
+MAX_AGENTS = 10
+_DEFAULT_ALLOWED_MODELS = ("gpt-4o-mini", "gpt-4o", "o3-mini")
+
+
+class ProviderConfig(BaseModel):
+    """Server-owned provider configuration, model allowlist, and execution ceilings."""
+
+    default_model: str = Field(default="gpt-4o-mini")
+    allowed_models: List[str] = Field(default_factory=lambda: list(_DEFAULT_ALLOWED_MODELS))
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    timeout_seconds: float = Field(default=120.0, gt=0.0, le=600.0)
+    max_calls: int = Field(default=40, ge=1, le=200)
+
+
+class DisallowedModelError(ValueError):
+    """Raised when a client requests a provider model outside the server allowlist."""
+
+
+class ProviderUnavailableError(RuntimeError):
+    """Raised when live provider execution is requested without configured credentials."""
+
+
+class EmptyPipelineError(RuntimeError):
+    """Raised when the reasoning pipeline yields neither steps nor a final answer."""
+
+
+def get_provider_config() -> ProviderConfig:
+    """Resolve server-owned provider policy from environment variables."""
+    default_model = os.environ.get("APS_DEFAULT_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
+    raw_allowed = os.environ.get("APS_ALLOWED_MODELS", "")
+    if raw_allowed.strip():
+        allowed = [m.strip() for m in raw_allowed.split(",") if m.strip()]
+    else:
+        allowed = list(_DEFAULT_ALLOWED_MODELS)
+    if default_model not in allowed:
+        allowed.insert(0, default_model)
+
+    def _safe_float(env_key: str, default: float, lo: float, hi: float) -> float:
+        raw = os.environ.get(env_key, "")
+        if not raw.strip():
+            return default
+        try:
+            val = float(raw)
+            return min(max(val, lo), hi)
+        except ValueError:
+            return default
+
+    def _safe_int(env_key: str, default: int, lo: int, hi: int) -> int:
+        raw = os.environ.get(env_key, "")
+        if not raw.strip():
+            return default
+        try:
+            val = int(raw)
+            return min(max(val, lo), hi)
+        except ValueError:
+            return default
+
+    return ProviderConfig(
+        default_model=default_model,
+        allowed_models=allowed,
+        temperature=_safe_float("APS_DEFAULT_TEMPERATURE", 0.7, 0.0, 2.0),
+        timeout_seconds=_safe_float("APS_PROVIDER_TIMEOUT_SECONDS", 120.0, 1.0, 600.0),
+        max_calls=_safe_int("APS_PROVIDER_MAX_CALLS", 40, 1, 200),
+    )
+
+
+def validate_provider_model(
+    requested_model: Optional[str], config: Optional[ProviderConfig] = None
+) -> str:
+    """Resolve and strictly enforce the server-owned model allowlist."""
+    cfg = config or get_provider_config()
+    candidate = str(requested_model or "").strip() or cfg.default_model
+    if candidate not in cfg.allowed_models:
+        raise DisallowedModelError(
+            f"Requested model '{candidate}' is not permitted. Allowed models: {', '.join(cfg.allowed_models)}."
+        )
+    return candidate
 
 RunEventType = Literal[
     "mode_selected",
@@ -230,6 +331,14 @@ class ExecutionModeCapability(BaseModel):
     label: str = Field(..., description="Human-readable display name for the UI.")
     description: str = Field(..., description="Detailed explanation of execution mechanics.")
     enabled: bool = Field(..., description="Whether the mode is currently executable.")
+    ready: bool = Field(
+        default=True,
+        description="Whether runtime dependencies/credentials are ready to execute this mode.",
+    )
+    unavailable_reason: Optional[str] = Field(
+        default=None,
+        description="Human-readable reason when mode is gated or not currently ready.",
+    )
     gated_issue: Optional[str] = Field(
         default=None,
         description="GitHub issue gating activation if disabled (e.g. 'Issue #36').",
@@ -241,6 +350,14 @@ class ExecutionModeCapability(BaseModel):
     supports_step_planning: bool = Field(
         ...,
         description="Whether this mode supports complexity-driven task planning.",
+    )
+    supports_cancellation: bool = Field(
+        default=False,
+        description="Whether mid-run server-side cancellation is supported.",
+    )
+    supports_resume: bool = Field(
+        default=False,
+        description="Whether pausing and resuming an active run is supported.",
     )
 
 
@@ -264,31 +381,35 @@ class RunRequest(BaseModel):
         description="Multi-turn conversation history [{'role': 'user', 'content': '...', 'name': '...'}].",
     )
     assistant_personalities: List[str] = Field(
-        default_factory=lambda: ["Helpful Assistant"],
+        default_factory=lambda: ["Analytical Thinker", "Mediator"],
         description="Debate personalities selected for multi-agent reasoning.",
     )
     lead_personality: str = Field(
-        default="Helpful Assistant",
+        default="Mediator",
         description="Primary coordinating personality for consensus moderation.",
     )
     num_rounds: int = Field(
         default=3,
         ge=1,
+        le=MAX_NUM_ROUNDS,
         description="Number of debate deliberation rounds for collaborative mode.",
     )
     max_steps: int = Field(
         default=20,
         ge=1,
+        le=MAX_PIPELINE_STEPS,
         description="Maximum reasoning steps allowed in advanced_pipeline mode.",
     )
     initial_budget: int = Field(
         default=20,
         ge=1,
+        le=MAX_INITIAL_BUDGET,
         description="Initial reasoning step budget before complexity adjustment.",
     )
     agents: int = Field(
         default=3,
         ge=0,
+        le=MAX_AGENTS,
         description="Number of collaborative agents per plan step in advanced_pipeline mode.",
     )
     model: str = Field(
@@ -310,16 +431,66 @@ class RunRequest(BaseModel):
         description="Optional request correlation identifier.",
     )
 
+    @field_validator("task_prompt")
+    @classmethod
+    def check_task_prompt_length(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and len(str(v)) > MAX_TASK_PROMPT_CHARS:
+            raise ValueError(f"task_prompt exceeds maximum allowed length of {MAX_TASK_PROMPT_CHARS} characters.")
+        return v
+
+    @field_validator("context")
+    @classmethod
+    def check_context_length(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and len(str(v)) > MAX_CONTEXT_CHARS:
+            raise ValueError(f"context exceeds maximum allowed length of {MAX_CONTEXT_CHARS} characters.")
+        return v
+
+    @field_validator("assistant_personalities")
+    @classmethod
+    def validate_personalities(cls, v: List[str]) -> List[str]:
+        cleaned: List[str] = []
+        for item in v or []:
+            name = str(item or "").strip()
+            if not name:
+                continue
+            if name not in PERSONALITY_CATALOG:
+                raise ValueError(f"Unknown assistant personality '{name}'.")
+            if name not in cleaned:
+                cleaned.append(name)
+        if not cleaned:
+            raise ValueError("At least one valid assistant personality must be selected.")
+        return cleaned
+
+    @field_validator("lead_personality")
+    @classmethod
+    def validate_lead_personality(cls, v: str) -> str:
+        name = str(v or "").strip()
+        if not name or name not in PERSONALITY_CATALOG:
+            raise ValueError(f"Unknown lead personality '{name}'.")
+        return name
+
     @model_validator(mode="after")
     def sync_prompt_and_conversation(self) -> "RunRequest":
         """Bidirectionally synchronize task_prompt and conversation history.
 
         1. Normalizes conversation elements into dictionary representations.
-        2. If task_prompt is not explicitly provided, extracts it from the latest
-           user entry in conversation.
+        2. Ignores UI 'system' banners when deriving task_prompt from conversation.
         3. If only task_prompt is provided and conversation is empty, synthesizes
            an initial user message in conversation.
         """
+        if len(self.conversation) > MAX_CONVERSATION_TURNS:
+            raise ValueError(
+                f"conversation exceeds maximum allowed length of {MAX_CONVERSATION_TURNS} messages."
+            )
+
+        if (
+            self.lead_personality not in self.assistant_personalities
+            and self.lead_personality != "Mediator"
+        ):
+            raise ValueError(
+                f"lead_personality '{self.lead_personality}' must be in assistant_personalities or 'Mediator'."
+            )
+
         normalized_conv: List[Dict[str, Any]] = []
         for item in self.conversation:
             if isinstance(item, dict):
@@ -359,12 +530,20 @@ class RunRequest(BaseModel):
         if not has_prompt:
             extracted = None
             for msg in reversed(self.conversation):
-                if msg.get("role") == "user" and msg.get("content") and str(msg["content"]).strip():
+                if (
+                    str(msg.get("role", "")).lower() == "user"
+                    and msg.get("content")
+                    and str(msg["content"]).strip()
+                ):
                     extracted = str(msg["content"]).strip()
                     break
             if not extracted and self.conversation:
                 for msg in reversed(self.conversation):
-                    if msg.get("content") and str(msg["content"]).strip():
+                    if (
+                        str(msg.get("role", "")).lower() != "system"
+                        and msg.get("content")
+                        and str(msg["content"]).strip()
+                    ):
                         extracted = str(msg["content"]).strip()
                         break
             if extracted:
@@ -387,15 +566,23 @@ class RunResult(BaseModel):
 
     mode: ExecutionModeId = Field(
         ...,
-        description="The mode that executed the request.",
+        description="The requested execution mode.",
+    )
+    effective_mode: Optional[ExecutionModeId] = Field(
+        default=None,
+        description="The actual mode that executed the request.",
     )
     status: RunStatus = Field(
         ...,
-        description="High-level execution status ('completed', 'gated', 'error').",
+        description="High-level execution outcome status.",
+    )
+    stop_reason: Optional[str] = Field(
+        default=None,
+        description="Machine-readable reason execution terminated (e.g. 'final_answer', 'gated', 'budget_exhausted', 'error').",
     )
     final_output: str = Field(
         default="",
-        description="Final answer text or generated file path.",
+        description="Final answer text or generated artifact preview (empty on error/gated).",
     )
     output_type: OutputType = Field(
         default_factory=lambda: OutputType(output_type="Simple Concise Answer", file_extension=".txt"),
@@ -417,10 +604,24 @@ class RunResult(BaseModel):
         default_factory=list,
         description="Chronological stream of lifecycle telemetry events.",
     )
+    artifacts: List[ArtifactRef] = Field(
+        default_factory=list,
+        description="Run-scoped generated output artifact descriptors with SHA-256 checksums.",
+    )
+    usage: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Measured usage telemetry if available, or explicit availability status.",
+    )
     error: Optional[ErrorResult] = Field(
         default=None,
         description="Structured error metadata if execution failed or was gated.",
     )
+
+    @model_validator(mode="after")
+    def ensure_effective_mode(self) -> "RunResult":
+        if self.effective_mode is None:
+            self.effective_mode = self.mode
+        return self
 
     @field_validator("output_type", mode="before")
     @classmethod
@@ -467,27 +668,39 @@ CAPABILITY_REGISTRY: Dict[ExecutionModeId, ExecutionModeCapability] = {
         label="Collaborative Debate",
         description="Multi-agent round deliberation and consensus voting via conversation manager.",
         enabled=True,
+        ready=True,
+        unavailable_reason=None,
         gated_issue=None,
         supports_multi_agent=True,
         supports_step_planning=False,
+        supports_cancellation=False,
+        supports_resume=False,
     ),
     "advanced_pipeline": ExecutionModeCapability(
         id="advanced_pipeline",
         label="Standalone Pipeline",
         description="Complexity-driven step planning, reflections, reward judging, and multi-strategy reasoning.",
         enabled=True,
+        ready=True,
+        unavailable_reason=None,
         gated_issue=None,
         supports_multi_agent=True,
         supports_step_planning=True,
+        supports_cancellation=False,
+        supports_resume=False,
     ),
     "tree_of_thought": ExecutionModeCapability(
         id="tree_of_thought",
         label="Tree of Thoughts",
         description="Tree of thoughts exploration gated pending Issue #36.",
         enabled=False,
+        ready=False,
+        unavailable_reason="Tree of Thoughts execution mode is gated pending Issue #36.",
         gated_issue="Issue #36",
         supports_multi_agent=False,
         supports_step_planning=True,
+        supports_cancellation=False,
+        supports_resume=False,
     ),
 }
 
@@ -497,9 +710,21 @@ def get_capability(mode: str) -> Optional[ExecutionModeCapability]:
     return CAPABILITY_REGISTRY.get(mode)  # type: ignore[arg-type]
 
 
-def list_capabilities() -> List[ExecutionModeCapability]:
-    """Return all registered execution mode capabilities."""
-    return list(CAPABILITY_REGISTRY.values())
+def list_capabilities(check_provider: bool = False) -> List[ExecutionModeCapability]:
+    """Return execution mode capabilities, optionally reflecting live provider readiness."""
+    caps = [cap.model_copy() for cap in CAPABILITY_REGISTRY.values()]
+    enforce = check_provider or os.environ.get("APS_ENFORCE_PROVIDER_READY") == "1"
+    if enforce:
+        import provider_client
+
+        if not provider_client.has_configured_provider():
+            for cap in caps:
+                if cap.enabled:
+                    cap.ready = False
+                    cap.unavailable_reason = (
+                        "LLM provider credentials (OPENAI_API_KEY) are not configured on the server."
+                    )
+    return caps
 
 
 # ============================================================================
@@ -633,8 +858,10 @@ def _execute_tree_of_thought(
 
     return RunResult(
         mode="tree_of_thought",
+        effective_mode="tree_of_thought",
         status="gated",
-        final_output=gating_message,
+        stop_reason="gated",
+        final_output="",
         output_type=OutputType(output_type="Simple Concise Answer", file_extension=".txt"),
         conversation=conversation_transcript,
         questions=[],
@@ -643,20 +870,40 @@ def _execute_tree_of_thought(
             correlation_id=correlation_id,
         ),
         events=[event],
+        artifacts=[],
+        usage={"available": False, "reason": "Mode gated pending Issue #36"},
         error=error_obj,
     )
+
+
+def _strip_system_banners(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Exclude UI/system banners before passing conversation history to runtime engines."""
+    return [
+        msg
+        for msg in (history or [])
+        if str(msg.get("role", "")).lower() != "system"
+        and msg.get("content") is not None
+        and str(msg.get("content", "")).strip() != ""
+    ]
 
 
 def _execute_collaborative(
     request: RunRequest,
     correlation_id: str,
     start_time: float,
+    provider_config: Optional[ProviderConfig] = None,
 ) -> RunResult:
     """
     Execute collaborative debate mode via conversation_manager.run_conversation.
-    Extracts attributions, questions, OutputType, and timeline telemetry.
+    Extracts attributions, questions, OutputType, artifacts, and timeline telemetry.
     """
     from conversation_manager import run_conversation
+
+    cfg = provider_config or get_provider_config()
+    resolved_model = validate_provider_model(request.model, cfg)
+    filtered_history = _strip_system_banners(request.conversation)
+    if not (request.task_prompt and request.task_prompt.strip()) and not filtered_history:
+        raise ValueError("Collaborative mode requires a non-empty user task prompt.")
 
     events: List[RunEvent] = []
 
@@ -669,6 +916,7 @@ def _execute_collaborative(
             "assistant_personalities": request.assistant_personalities,
             "lead_personality": request.lead_personality,
             "num_rounds": request.num_rounds,
+            "model": resolved_model,
         },
     ))
 
@@ -680,15 +928,31 @@ def _execute_collaborative(
         details={"task_prompt": request.task_prompt},
     ))
 
-    # 3. Invoke run_conversation
-    problem_input: Any = request.conversation if request.conversation else (request.task_prompt or "")
-    raw_history, raw_questions, raw_final_output = run_conversation(
-        problem_statement=problem_input,
-        selected_personalities=request.assistant_personalities,
-        lead_personality=request.lead_personality,
-        num_rounds=request.num_rounds,
-        context=request.context,
-    )
+    # 3. Invoke run_conversation cleanly (forwarding provider kwargs when supported by callable)
+    problem_input: Any = filtered_history if filtered_history else (request.task_prompt or "")
+    rc_kwargs: Dict[str, Any] = {
+        "problem_statement": problem_input,
+        "selected_personalities": request.assistant_personalities,
+        "lead_personality": request.lead_personality,
+        "num_rounds": request.num_rounds,
+        "context": request.context,
+    }
+    try:
+        sig = inspect.signature(run_conversation)
+        params = sig.parameters
+        has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+        if has_var_kw or "model" in params:
+            rc_kwargs["model"] = resolved_model
+        if has_var_kw or "temperature" in params:
+            rc_kwargs["temperature"] = request.temperature
+        if has_var_kw or "timeout_seconds" in params:
+            rc_kwargs["timeout_seconds"] = cfg.timeout_seconds
+        if has_var_kw or "max_calls" in params:
+            rc_kwargs["max_calls"] = cfg.max_calls
+    except (TypeError, ValueError):
+        pass
+
+    raw_history, raw_questions, raw_final_output = run_conversation(**rc_kwargs)
 
     # 4. Check for ErrorResult from run_conversation
     if isinstance(raw_final_output, ErrorResult):
@@ -703,13 +967,17 @@ def _execute_collaborative(
         duration_ms = (time.perf_counter() - start_time) * 1000
         return RunResult(
             mode="collaborative",
+            effective_mode="collaborative",
             status="error",
-            final_output=err_msg,
+            stop_reason="provider_error",
+            final_output="",
             output_type=OutputType(output_type="Simple Concise Answer", file_extension=".txt"),
             conversation=_normalize_conversation_history(raw_history or []),
             questions=[],
             diagnostics=RunDiagnostics(duration_ms=duration_ms, correlation_id=correlation_id),
             events=events,
+            artifacts=list_run_artifacts(run_id=correlation_id),
+            usage={"available": False, "reason": "Provider telemetry unavailable on error"},
             error=error_obj,
         )
 
@@ -752,46 +1020,59 @@ def _execute_collaborative(
                 "question": str(q.get("question") or q.get("reply") or ""),
             })
 
-    # 7. Output Type resolution and safe artifact content reading
-    # Constrain file reads strictly to explicitly generated and tracked artifacts
-    # located within the current working directory or safe application temporary directory.
-    # Model-controlled responses or arbitrary server paths (e.g. /etc/passwd) must NEVER be read from disk.
+    # 7. Output Type resolution and strictly run-scoped artifact content reading
     final_output_str = str(raw_final_output or "")
     file_path = ""
     candidate_path = final_output_str.strip()
+    run_artifacts = list_run_artifacts(run_id=correlation_id)
 
-    from output_generator import is_tracked_artifact
+    if candidate_path and is_tracked_artifact(candidate_path, run_id=correlation_id):
+        abs_candidate = os.path.realpath(os.path.abspath(candidate_path))
+        cwd = os.path.realpath(os.path.abspath(os.getcwd()))
+        is_safe_subpath = os.path.commonpath([abs_candidate, cwd]) == cwd
+        if not is_safe_subpath:
+            try:
+                import tempfile
+                td = os.path.realpath(os.path.abspath(tempfile.gettempdir()))
+                is_safe_subpath = os.path.commonpath([abs_candidate, td]) == td
+            except Exception:
+                is_safe_subpath = False
+        if not is_safe_subpath:
+            try:
+                from output_generator import get_artifacts_base_dir
+                art_base = get_artifacts_base_dir()
+                is_safe_subpath = os.path.commonpath([abs_candidate, art_base]) == art_base
+            except Exception:
+                is_safe_subpath = False
 
-    if candidate_path and is_tracked_artifact(candidate_path):
-        try:
-            abs_candidate = os.path.abspath(candidate_path)
-            cwd = os.path.abspath(os.getcwd())
-            is_safe_subpath = os.path.commonpath([abs_candidate, cwd]) == cwd
-            if not is_safe_subpath:
-                try:
-                    import tempfile
-                    td = os.path.abspath(tempfile.gettempdir())
-                    is_safe_subpath = os.path.commonpath([abs_candidate, td]) == td
-                except Exception:
-                    is_safe_subpath = False
-
-            if is_safe_subpath and os.path.isfile(abs_candidate):
-                file_path = abs_candidate
-                with open(abs_candidate, "r", encoding="utf-8", errors="replace") as f:
-                    disk_content = f.read()
-                if disk_content.strip():
-                    final_output_str = disk_content
-        except Exception:
-            pass
+        if is_safe_subpath and os.path.isfile(abs_candidate):
+            file_path = abs_candidate
+            preview = read_tracked_artifact(abs_candidate, run_id=correlation_id)
+            if preview is not None and preview.strip():
+                final_output_str = preview
+            elif abs_candidate.lower().endswith(".pdf"):
+                final_output_str = f"Generated PDF artifact: {os.path.basename(abs_candidate)}"
 
     resolved_output_type = _infer_output_type(content=final_output_str, file_path=file_path)
+
+    has_output = bool(final_output_str.strip()) or bool(run_artifacts)
+    final_status: RunStatus = "completed" if has_output else "incomplete"
+    stop_reason = "final_answer" if has_output else "empty_output"
 
     # 8. Output finalized event
     events.append(_create_run_event(
         event_type="output_finalized",
         mode="collaborative",
-        summary="Collaborative consensus reached and output finalized.",
-        details={"output_type": resolved_output_type.output_type, "file_extension": resolved_output_type.file_extension},
+        summary=(
+            "Collaborative consensus reached and output finalized."
+            if has_output
+            else "Collaborative deliberation completed without non-empty output."
+        ),
+        details={
+            "output_type": resolved_output_type.output_type,
+            "file_extension": resolved_output_type.file_extension,
+            "stop_reason": stop_reason,
+        },
     ))
 
     duration_ms = (time.perf_counter() - start_time) * 1000
@@ -803,13 +1084,17 @@ def _execute_collaborative(
 
     return RunResult(
         mode="collaborative",
-        status="completed",
+        effective_mode="collaborative",
+        status=final_status,
+        stop_reason=stop_reason,
         final_output=final_output_str,
         output_type=resolved_output_type,
         conversation=normalized_history,
         questions=questions_list,
         diagnostics=diagnostics,
         events=events,
+        artifacts=run_artifacts,
+        usage={"available": False, "reason": "Provider token usage tracking not reported by client calls"},
         error=None,
     )
 
@@ -818,13 +1103,26 @@ def _execute_advanced_pipeline(
     request: RunRequest,
     correlation_id: str,
     start_time: float,
+    provider_config: Optional[ProviderConfig] = None,
 ) -> RunResult:
     """
     Execute standalone reasoning pipeline via AdvancedPromptEngineer.main.
     Extracts complexity, plan steps, subtasks, reflections with rewards, attributions,
-    synthesizes chat transcript, and produces timeline telemetry events.
+    synthesizes chat transcript, artifacts, and produces honest completion status.
     """
     from advanced_prompting import AdvancedPromptEngineer, PromptEngineeringConfig
+
+    cfg = provider_config or get_provider_config()
+    resolved_model = validate_provider_model(request.model, cfg)
+
+    task_prompt = (request.task_prompt or "").strip()
+    if not task_prompt and request.conversation:
+        for msg in reversed(_strip_system_banners(request.conversation)):
+            if str(msg.get("role", "")).lower() == "user" and str(msg.get("content", "")).strip():
+                task_prompt = str(msg["content"]).strip()
+                break
+    if not task_prompt:
+        raise ValueError("Advanced pipeline mode requires a non-empty user task prompt.")
 
     events: List[RunEvent] = []
 
@@ -837,7 +1135,7 @@ def _execute_advanced_pipeline(
             "max_steps": request.max_steps,
             "initial_budget": request.initial_budget,
             "agents": request.agents,
-            "model": request.model,
+            "model": resolved_model,
         },
     ))
 
@@ -845,17 +1143,14 @@ def _execute_advanced_pipeline(
     config = PromptEngineeringConfig(
         max_steps=request.max_steps,
         initial_budget=request.initial_budget,
-        model=request.model,
+        model=resolved_model,
         temperature=request.temperature,
         agents=request.agents,
+        max_sc_calls=cfg.max_calls,
     )
     engineer = AdvancedPromptEngineer(config)
 
     # 3. Execute main reasoning pipeline
-    task_prompt = request.task_prompt or ""
-    if not task_prompt and request.conversation:
-        task_prompt = str(request.conversation[-1].get("content", ""))
-
     interaction = engineer.main(task_prompt)
 
     # 4. Extract task object and complexity
@@ -1019,16 +1314,78 @@ def _execute_advanced_pipeline(
             details={"reward": rew, "remaining_budget": getattr(stp, "remaining_budget", 0)},
         ))
 
-    # 7. Final Output & Output Type
-    final_output_str = getattr(interaction, "answer", None)
-    if not final_output_str or not str(final_output_str).strip():
-        planstep_outputs = getattr(interaction, "planstep_outputs", []) or []
-        if planstep_outputs and hasattr(planstep_outputs[-1], "final_output"):
-            final_output_str = str(planstep_outputs[-1].final_output)
-        elif getattr(interaction, "steps", []):
-            final_output_str = str(interaction.steps[-1].description)
+    # 7. Honest completion evaluation & Output Type resolution
+    raw_answer = getattr(interaction, "answer", None)
+    answer_text = str(raw_answer).strip() if raw_answer is not None else ""
+    planstep_outputs = getattr(interaction, "planstep_outputs", []) or []
+    raw_steps = getattr(interaction, "steps", []) or []
+    sc_term = getattr(engineer, "_last_sc_termination", {}) or {}
+    sc_reason = sc_term.get("reason")
+    run_artifacts = list_run_artifacts(run_id=correlation_id)
+
+    final_output_str = ""
+    final_status: RunStatus
+    stop_reason: str
+    error_obj: Optional[ErrorResult] = None
+
+    if answer_text:
+        final_output_str = str(raw_answer)
+        final_status = "completed"
+        stop_reason = "final_answer"
+    elif planstep_outputs and hasattr(planstep_outputs[-1], "final_output") and str(planstep_outputs[-1].final_output or "").strip():
+        final_output_str = str(planstep_outputs[-1].final_output)
+        final_status = "completed"
+        stop_reason = "planstep_output"
+    elif raw_steps:
+        final_output_str = str(getattr(raw_steps[-1], "description", "") or "")
+        if sc_reason in ("budget_exhausted", "timeout", "cancelled"):
+            final_status = sc_reason  # type: ignore[assignment]
+            stop_reason = sc_reason
         else:
-            final_output_str = "Advanced reasoning pipeline completed successfully."
+            final_status = "incomplete"
+            stop_reason = sc_reason or "missing_final_answer"
+    else:
+        err = EmptyPipelineError(
+            "Advanced reasoning pipeline produced no reasoning steps or final output."
+        )
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        error_obj = ErrorResult(
+            error_type=type(err).__name__,
+            error_message=str(err),
+            error_details="Interaction.answer, Interaction.planstep_outputs, and Interaction.steps were all empty.",
+            timestamp=datetime.now(timezone.utc),
+        )
+        events.append(_create_run_event(
+            event_type="run_error",
+            mode="advanced_pipeline",
+            summary=str(err),
+            details={"error_type": "EmptyPipelineError", "stop_reason": "empty_pipeline"},
+        ))
+        return RunResult(
+            mode="advanced_pipeline",
+            effective_mode="advanced_pipeline",
+            status="error",
+            stop_reason="empty_pipeline",
+            final_output="",
+            output_type=OutputType(output_type="Simple Concise Answer", file_extension=".txt"),
+            conversation=_normalize_conversation_history(request.conversation),
+            questions=[],
+            diagnostics=RunDiagnostics(
+                complexity_score=complexity_score,
+                initial_budget=initial_budget,
+                adjusted_budget=adjusted_budget,
+                final_reward=final_reward,
+                plan_steps=plan_step_diagnostics,
+                reflections=reflection_diagnostics,
+                agent_attributions=agent_attributions,
+                duration_ms=duration_ms,
+                correlation_id=correlation_id,
+            ),
+            events=events,
+            artifacts=run_artifacts,
+            usage={"available": False, "reason": "Provider token usage tracking not reported by client calls"},
+            error=error_obj,
+        )
 
     resolved_output_type: Optional[OutputType] = None
     if task_obj and hasattr(task_obj, "output_type") and isinstance(task_obj.output_type, OutputType):
@@ -1039,8 +1396,16 @@ def _execute_advanced_pipeline(
     events.append(_create_run_event(
         event_type="output_finalized",
         mode="advanced_pipeline",
-        summary="Pipeline reasoning completed and final output synthesized.",
-        details={"output_type": resolved_output_type.output_type, "file_extension": resolved_output_type.file_extension},
+        summary=(
+            "Pipeline reasoning completed and final output synthesized."
+            if final_status == "completed"
+            else f"Pipeline stopped ({stop_reason}) without a complete final answer."
+        ),
+        details={
+            "output_type": resolved_output_type.output_type,
+            "file_extension": resolved_output_type.file_extension,
+            "stop_reason": stop_reason,
+        },
     ))
 
     # 8. Synthesize readable chat transcript for UI
@@ -1082,14 +1447,18 @@ def _execute_advanced_pipeline(
 
     return RunResult(
         mode="advanced_pipeline",
-        status="completed",
+        effective_mode="advanced_pipeline",
+        status=final_status,
+        stop_reason=stop_reason,
         final_output=final_output_str,
         output_type=resolved_output_type,
         conversation=conversation_transcript,
         questions=[],
         diagnostics=diagnostics,
         events=events,
-        error=None,
+        artifacts=run_artifacts,
+        usage={"available": False, "reason": "Provider token usage tracking not reported by client calls"},
+        error=error_obj,
     )
 
 
@@ -1109,17 +1478,55 @@ def execute_run(request: RunRequest) -> RunResult:
     try:
         if request.mode == "tree_of_thought":
             return _execute_tree_of_thought(request, correlation_id, start_time)
-        elif request.mode == "collaborative":
-            return _execute_collaborative(request, correlation_id, start_time)
-        elif request.mode == "advanced_pipeline":
-            return _execute_advanced_pipeline(request, correlation_id, start_time)
-        else:
-            raise ValueError(f"Unknown or unsupported execution mode: '{request.mode}'")
+
+        provider_config = get_provider_config()
+        if os.environ.get("APS_ENFORCE_PROVIDER_READY") == "1":
+            import provider_client
+
+            if not provider_client.has_configured_provider():
+                raise ProviderUnavailableError(
+                    "LLM provider credentials (OPENAI_API_KEY) are not configured on the server."
+                )
+
+        with artifact_run_scope(correlation_id):
+            if request.mode == "collaborative":
+                return _execute_collaborative(
+                    request, correlation_id, start_time, provider_config=provider_config
+                )
+            elif request.mode == "advanced_pipeline":
+                return _execute_advanced_pipeline(
+                    request, correlation_id, start_time, provider_config=provider_config
+                )
+            else:
+                raise ValueError(f"Unknown or unsupported execution mode: '{request.mode}'")
     except Exception as e:
         duration_ms = (time.perf_counter() - start_time) * 1000
         err_type = type(e).__name__
         err_msg = str(e) or err_type
         err_details = traceback.format_exc()
+
+        result_status: RunStatus = "error"
+        if err_type == "DisallowedModelError":
+            stop_reason = "disallowed_model"
+        elif err_type == "ProviderUnavailableError":
+            stop_reason = "provider_unavailable"
+        elif err_type == "RunBudgetExceededError":
+            if "timed out" in err_msg.lower() or "timeout" in err_msg.lower():
+                stop_reason = "timeout"
+                result_status = "timeout"
+            else:
+                stop_reason = "budget_exhausted"
+                result_status = "budget_exhausted"
+        elif err_type == "RunCancelledError":
+            stop_reason = "cancelled"
+            result_status = "cancelled"
+        elif err_type in ("TimeoutError", "RunTimeoutError"):
+            stop_reason = "timeout"
+            result_status = "timeout"
+        elif err_type == "ValueError":
+            stop_reason = "invalid_input"
+        else:
+            stop_reason = "runtime_error"
 
         error_obj = ErrorResult(
             error_type=err_type,
@@ -1137,6 +1544,7 @@ def execute_run(request: RunRequest) -> RunResult:
                 "error_message": err_msg,
                 "error_details": err_details,
                 "correlation_id": correlation_id,
+                "stop_reason": stop_reason,
             },
         )
 
@@ -1148,7 +1556,9 @@ def execute_run(request: RunRequest) -> RunResult:
 
         return RunResult(
             mode=getattr(request, "mode", "collaborative"),
-            status="error",
+            effective_mode=getattr(request, "mode", "collaborative"),
+            status=result_status,
+            stop_reason=stop_reason,
             final_output="",
             output_type=OutputType(output_type="Simple Concise Answer", file_extension=".txt"),
             conversation=fallback_conv,
@@ -1158,5 +1568,7 @@ def execute_run(request: RunRequest) -> RunResult:
                 correlation_id=correlation_id,
             ),
             events=[error_event],
+            artifacts=list_run_artifacts(run_id=correlation_id),
+            usage={"available": False, "reason": "Provider telemetry unavailable on error"},
             error=error_obj,
         )

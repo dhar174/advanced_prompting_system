@@ -72,7 +72,8 @@ class TestCollaborativeErrorAndTupleFidelity:
         assert res.error is not None
         assert res.error.error_type == "ConsensusError"
         assert "Tie vote could not be resolved" in res.error.error_message
-        assert res.final_output == "Tie vote could not be resolved by mediator."
+        assert res.final_output == ""
+        assert res.stop_reason == "provider_error"
         assert any(e.event_type == "run_error" for e in res.events)
         assert res.diagnostics.correlation_id is not None
         assert res.diagnostics.duration_ms is not None
@@ -150,7 +151,8 @@ class TestCollaborativeErrorAndTupleFidelity:
         req = RunRequest(mode="collaborative", task_prompt="Analyze system load.")
         res = execute_run(req)
 
-        assert res.status == "completed"
+        assert res.status == "incomplete"
+        assert res.stop_reason == "empty_output"
         assert res.final_output == ""
         assert res.conversation == []
         assert res.questions == []

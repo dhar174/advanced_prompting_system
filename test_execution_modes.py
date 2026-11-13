@@ -171,8 +171,8 @@ class TestRunRequestValidation:
         assert req.mode == "collaborative"
         assert req.task_prompt is None
         assert req.conversation == []
-        assert req.assistant_personalities == ["Helpful Assistant"]
-        assert req.lead_personality == "Helpful Assistant"
+        assert req.assistant_personalities == ["Analytical Thinker", "Mediator"]
+        assert req.lead_personality == "Mediator"
         assert req.num_rounds == 3
         assert req.max_steps == 20
         assert req.initial_budget == 20
@@ -522,7 +522,8 @@ class TestExecuteRunGatedMode:
 
         assert result.mode == "tree_of_thought"
         assert result.status == "gated"
-        assert "Issue #36" in result.final_output
+        assert result.final_output == ""
+        assert result.stop_reason == "gated"
         assert result.error is not None
         assert result.error.error_type == "ModeGatedError"
         assert "Issue #36" in result.error.error_message
@@ -569,7 +570,7 @@ class TestExecuteRunCollaborative:
         req = RunRequest(
             mode="collaborative",
             task_prompt="Analyze database performance",
-            assistant_personalities=["Database Administrator", "Software Engineer"],
+            assistant_personalities=["Data Scientist", "Software Engineer"],
             lead_personality="Mediator",
             num_rounds=2,
         )
@@ -909,21 +910,45 @@ print('execution_modes_import_purity_verified')
         assert res.final_output == str(sensitive_file)
         assert "super_secret_token" not in res.final_output
 
-        # Now test a genuinely tracked artifact created via track_generated_artifact
+        # Now test a genuinely tracked artifact created INSIDE the active run scope
+        from output_generator import get_active_run_id
+
         artifact_file = tmp_path / "final_output.json"
         artifact_file.write_text('{"summary": "safe generated analysis"}', encoding="utf-8")
-        track_generated_artifact(str(artifact_file))
 
+        def scoped_run_returning_artifact(*args, **kwargs):
+            active_run = get_active_run_id()
+            track_generated_artifact(str(artifact_file), run_id=active_run)
+            return ([{"role": "assistant", "content": "Done"}], [], str(artifact_file))
+
+        monkeypatch.setattr(
+            conversation_manager,
+            "run_conversation",
+            scoped_run_returning_artifact,
+        )
+
+        res2 = execute_run(req)
+        assert res2.status == "completed"
+        # Tracked artifact content IS safely read for its owning run and recorded in artifacts
+        assert '{"summary": "safe generated analysis"}' in res2.final_output
+        assert len(res2.artifacts) == 1
+        assert res2.artifacts[0].filename == "final_output.json"
+
+        # Cross-run isolation: a different run_id MUST NOT read artifacts owned by res2's run
+        cross_req = RunRequest(
+            mode="collaborative",
+            task_prompt="What is in the config?",
+            correlation_id="run_cross_tenant_probe",
+        )
         monkeypatch.setattr(
             conversation_manager,
             "run_conversation",
             Mock(return_value=([{"role": "assistant", "content": "Done"}], [], str(artifact_file))),
         )
-
-        res2 = execute_run(req)
-        assert res2.status == "completed"
-        # Tracked artifact content IS safely read
-        assert '{"summary": "safe generated analysis"}' in res2.final_output
+        res3 = execute_run(cross_req)
+        assert "safe generated analysis" not in res3.final_output
+        assert res3.final_output == str(artifact_file)
+        assert res3.artifacts == []
         clear_tracked_artifacts()
 
     def test_pipeline_step_limit_enforcement(self, monkeypatch, mock_pipeline_interaction):

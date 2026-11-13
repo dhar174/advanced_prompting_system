@@ -147,7 +147,7 @@ class RunExecutionInput:
     task_prompt: Optional[str] = None
     conversation: Optional[List[ConversationInput]] = None
     assistant_personalities: Optional[List[str]] = None
-    lead_personality: Optional[str] = "Helpful Assistant"
+    lead_personality: Optional[str] = "Mediator"
     num_rounds: int = 3
     max_steps: int = 20
     initial_budget: int = 20
@@ -413,8 +413,8 @@ class Mutation:
                 for c in input.conversation
             ]
 
-        personalities = input.assistant_personalities or ["Helpful Assistant"]
-        lead = input.lead_personality or "Helpful Assistant"
+        personalities = input.assistant_personalities or ["Analytical Thinker", "Mediator"]
+        lead = input.lead_personality or "Mediator"
 
         req = RunRequest(
             mode=input.mode,  # type: ignore[arg-type]
