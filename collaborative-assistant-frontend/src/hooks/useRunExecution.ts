@@ -142,11 +142,6 @@ export const useRunExecution = (): UseRunExecutionResult => {
   const [authErrorMessage, setAuthErrorMessage] = useState<string | null>(null);
   const [isRetryingDiscovery, setIsRetryingDiscovery] = useState<boolean>(false);
 
-  const queryContext = useMemo(
-    () => (apiToken ? { headers: { Authorization: `Bearer ${apiToken}` } } : undefined),
-    [apiToken]
-  );
-
   const {
     data: modesData,
     loading: modesLoading,
@@ -155,7 +150,6 @@ export const useRunExecution = (): UseRunExecutionResult => {
   } = useQuery<GetExecutionModesData>(GET_EXECUTION_MODES, {
     fetchPolicy: 'cache-first',
     notifyOnNetworkStatusChange: true,
-    ...(queryContext ? { context: queryContext } : {}),
   });
 
   const {
@@ -165,7 +159,6 @@ export const useRunExecution = (): UseRunExecutionResult => {
     refetch: refetchPersonalities,
   } = useQuery<GetPersonalitiesData>(GET_PERSONALITIES, {
     fetchPolicy: 'cache-first',
-    ...(queryContext ? { context: queryContext } : {}),
   });
 
   const {
@@ -175,7 +168,6 @@ export const useRunExecution = (): UseRunExecutionResult => {
     refetch: refetchPolicy,
   } = useQuery<GetProviderPolicyData>(GET_PROVIDER_POLICY, {
     fetchPolicy: 'cache-first',
-    ...(queryContext ? { context: queryContext } : {}),
   });
 
   const [inFlight, setInFlight] = useState(false);
