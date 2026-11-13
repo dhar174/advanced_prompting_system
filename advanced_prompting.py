@@ -8287,6 +8287,23 @@ Task: {task}
 
         # Step 2: Assess Complexity
         complexity, plan = self.assess_complexity(refined_task)
+        if not isinstance(complexity, (int, float)) or complexity <= 0.0:
+            complexity = 0.1
+        if not isinstance(plan, Plan) or not getattr(plan, "steps", None):
+            plan = Plan(
+                steps=[
+                    PlanStep(
+                        step_number=1,
+                        completed=False,
+                        step_name="Task Execution",
+                        step_description=task,
+                        step_explanation=refined_task,
+                        step_output="Completed task solution",
+                        step_full_text=task,
+                        subtasks=[],
+                    )
+                ]
+            )
         self._check_policy_budget()
         task_object = Task(
             task, refined_task, complexity, [], [], "", 0.0, plan, _output_type
