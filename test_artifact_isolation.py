@@ -350,3 +350,108 @@ def test_active_scope_cannot_select_known_foreign_owner_or_label():
             with pytest.raises(PermissionError):
                 output_generator.resolve_output_filepath('report.txt', run_id=foreign)
     assert Path(path).read_text() == 'private'
+
+
+class TestWindowsPathNormalizationAndConcurrency:
+    """Verify mixed-case containment and race-free concurrent artifact root creation."""
+
+    def test_mixed_case_path_containment_and_traversal_denial(self, monkeypatch, tmp_path):
+        mixed_base = tmp_path / "MixedCaseArtifacts"
+        mixed_base.mkdir()
+        swapped_base = str(mixed_base).swapcase()
+        monkeypatch.setenv("APS_ARTIFACTS_DIR", swapped_base)
+
+        with output_generator.artifact_run_scope("tenant/case") as owner_id:
+            run_dir = output_generator.get_run_artifact_dir("tenant/case")
+            assert output_generator._is_within_directory(run_dir, swapped_base) is True
+            assert output_generator._is_within_directory(run_dir.swapcase(), run_dir) is True
+
+            generated = output_generator.generate_text_file_output("case-ok", "nested/note.txt")
+            assert Path(generated).read_text(encoding="utf-8") == "case-ok"
+            assert output_generator.read_tracked_artifact(generated, run_id=owner_id) == "case-ok"
+
+            if os.name == "nt":
+                # Swapped-case absolute path inside run_dir resolves cleanly; outside path is still denied.
+                resolved = output_generator.resolve_output_filepath(
+                    os.path.join(run_dir.swapcase(), "nested", "second.txt")
+                )
+                assert os.path.normcase(resolved) == os.path.normcase(
+                    os.path.join(run_dir, "nested", "second.txt")
+                )
+
+            outside = str(tmp_path / "outside_escape.txt")
+            for bad in ("../escape.txt", ".", outside, outside.swapcase()):
+                with pytest.raises(PermissionError):
+                    output_generator.resolve_output_filepath(bad)
+
+        # Also verify _is_within_directory / _paths_equal honor normcase even under simulated Windows semantics.
+        import ntpath
+
+        monkeypatch.setattr(output_generator.os.path, "normcase", ntpath.normcase)
+        monkeypatch.setattr(output_generator.os.path, "normpath", ntpath.normpath)
+        monkeypatch.setattr(output_generator.os.path, "commonpath", ntpath.commonpath)
+        assert output_generator._is_within_directory(r"c:\APS\Run_1\file.txt", r"C:/aps/run_1") is True
+        assert output_generator._paths_equal(r"c:\APS\Run_1", r"C:/aps/run_1/") is True
+        assert output_generator._is_within_directory(r"D:\APS\Run_1\file.txt", r"C:\APS\Run_1") is False
+
+    def test_uncreated_artifacts_dir_concurrent_threads_zero_permission_errors(self, monkeypatch, tmp_path):
+        uncreated_root = tmp_path / "fresh_parent" / "uncreated_aps_artifacts"
+        assert not uncreated_root.exists()
+        monkeypatch.setenv("APS_ARTIFACTS_DIR", str(uncreated_root))
+
+        num_threads = 16
+        barrier = threading.Barrier(num_threads)
+        errors = []
+        outputs = {}
+
+        def scoped_worker(idx: int) -> None:
+            try:
+                barrier.wait(timeout=5)
+                with output_generator.artifact_run_scope(f"concurrent-{idx}") as owner_id:
+                    run_dir = output_generator.get_run_artifact_dir()
+                    path = output_generator.generate_text_file_output(
+                        f"thread-{idx}",
+                        f"sub/item_{idx}.txt",
+                    )
+                    outputs[idx] = (
+                        owner_id,
+                        run_dir,
+                        path,
+                        output_generator.read_tracked_artifact(path),
+                    )
+            except Exception as exc:  # pragma: no cover - diagnostic capture
+                errors.append((idx, exc))
+
+        threads = [threading.Thread(target=scoped_worker, args=(i,)) for i in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        assert errors == []
+        assert len(outputs) == num_threads
+        assert uncreated_root.is_dir()
+        seen_dirs = set()
+        for idx, (owner_id, run_dir, path, content) in outputs.items():
+            assert content == f"thread-{idx}"
+            assert os.path.isdir(run_dir)
+            assert os.path.isfile(path)
+            seen_dirs.add(os.path.normcase(run_dir))
+        assert len(seen_dirs) == num_threads
+
+    def test_import_output_generator_does_not_create_artifacts_dir(self, tmp_path):
+        import subprocess
+        import sys
+
+        uncreated = tmp_path / "import_only_no_create"
+        env = os.environ.copy()
+        env["APS_ARTIFACTS_DIR"] = str(uncreated)
+        proc = subprocess.run(
+            [sys.executable, "-c", "import output_generator"],
+            cwd=os.path.dirname(__file__),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert not uncreated.exists()
