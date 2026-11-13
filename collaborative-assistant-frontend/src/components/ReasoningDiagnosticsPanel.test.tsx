@@ -78,8 +78,9 @@ describe('ReasoningDiagnosticsPanel', () => {
 
   it('allows switching to Reflections tab and displays thoughts', () => {
     render(<ReasoningDiagnosticsPanel diagnostics={sampleDiagnostics} events={sampleEvents} />);
-    const reflectionsTab = screen.getByRole('button', { name: /Steps & Reflections/i });
+    const reflectionsTab = screen.getByRole('tab', { name: /Steps & Reflections/i });
     fireEvent.click(reflectionsTab);
+    expect(reflectionsTab).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByText(/Step 1 Reflection/i)).toBeInTheDocument();
     expect(screen.getByText(/Checked coupling and cohesion/i)).toBeInTheDocument();
     expect(screen.getByText(/Design passes high-modularity criteria/i)).toBeInTheDocument();
@@ -87,12 +88,12 @@ describe('ReasoningDiagnosticsPanel', () => {
 
   it('allows switching to Agent Attributions tab and Event Stream tab', () => {
     render(<ReasoningDiagnosticsPanel diagnostics={sampleDiagnostics} events={sampleEvents} />);
-    const agentsTab = screen.getByRole('button', { name: /Agent Attributions/i });
+    const agentsTab = screen.getByRole('tab', { name: /Agent Attributions/i });
     fireEvent.click(agentsTab);
     expect(screen.getByText('Strategist')).toBeInTheDocument();
     expect(screen.getByText(/Proposed decoupling schemas/i)).toBeInTheDocument();
 
-    const eventsTab = screen.getByRole('button', { name: /Event Stream/i });
+    const eventsTab = screen.getByRole('tab', { name: /Event Stream/i });
     fireEvent.click(eventsTab);
     expect(screen.getByText('mode_selected')).toBeInTheDocument();
     expect(screen.getByText(/Pipeline initialized/i)).toBeInTheDocument();
@@ -101,12 +102,28 @@ describe('ReasoningDiagnosticsPanel', () => {
   it('toggles expand/collapse on header button click', () => {
     render(<ReasoningDiagnosticsPanel diagnostics={sampleDiagnostics} events={sampleEvents} />);
     const toggleBtn = screen.getByRole('button', { name: /Reasoning Diagnostics & Telemetry/i });
-    expect(screen.getByRole('button', { name: /Execution Plan/i })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Execution Plan/i })).toBeInTheDocument();
 
     fireEvent.click(toggleBtn);
-    expect(screen.queryByRole('button', { name: /Execution Plan/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /Execution Plan/i })).not.toBeInTheDocument();
 
     fireEvent.click(toggleBtn);
-    expect(screen.getByRole('button', { name: /Execution Plan/i })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Execution Plan/i })).toBeInTheDocument();
+  });
+
+  it('labels unfinished steps Incomplete instead of In Progress on halted runs', () => {
+    const incompleteDiag: RunDiagnosticsType = {
+      ...sampleDiagnostics,
+      planSteps: [{ ...sampleDiagnostics.planSteps[0], completed: false }],
+    };
+    render(
+      <ReasoningDiagnosticsPanel
+        diagnostics={incompleteDiag}
+        events={sampleEvents}
+        runStatus="budget_exhausted"
+      />
+    );
+    expect(screen.getByText('Incomplete')).toBeInTheDocument();
+    expect(screen.queryByText('In Progress')).not.toBeInTheDocument();
   });
 });

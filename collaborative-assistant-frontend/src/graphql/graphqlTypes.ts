@@ -7,6 +7,7 @@ export interface ConversationInputType {
 export interface FeedbackInputType {
   assistant: string;
   rating: number;
+  comments?: string | null;
 }
 
 export interface QuestionInputType {
@@ -31,6 +32,15 @@ export interface QuestionType {
 
 export type ExecutionModeId = 'collaborative' | 'advanced_pipeline' | 'tree_of_thought';
 
+export type RunStatus =
+  | 'completed'
+  | 'gated'
+  | 'error'
+  | 'incomplete'
+  | 'budget_exhausted'
+  | 'cancelled'
+  | 'timeout';
+
 export interface ExecutionModeCapabilityType {
   id: ExecutionModeId;
   label: string;
@@ -39,6 +49,31 @@ export interface ExecutionModeCapabilityType {
   gatedIssue?: string | null;
   supportsMultiAgent: boolean;
   supportsStepPlanning: boolean;
+  ready?: boolean;
+  unavailableReason?: string | null;
+  supportsCancellation?: boolean;
+  supportsResume?: boolean;
+}
+
+export interface PersonalityCapabilityType {
+  id: string;
+  instructions: string;
+}
+
+export interface ProviderPolicyType {
+  defaultModel: string;
+  allowedModels: string[];
+  defaultTemperature: number;
+}
+
+export interface ArtifactRefType {
+  artifactId: string;
+  runId: string;
+  filename: string;
+  path: string;
+  mimeType: string;
+  sizeBytes: number;
+  sha256: string;
 }
 
 export interface OutputTypeInfo {
@@ -116,19 +151,23 @@ export interface RunExecutionInputType {
   maxSteps?: number;
   initialBudget?: number;
   agents?: number;
-  model?: string;
+  model?: string | null;
   temperature?: number;
   context?: string | null;
 }
 
 export interface RunExecutionResponseType {
   mode: ExecutionModeId;
-  status: 'completed' | 'gated' | 'error';
+  effectiveMode?: string | null;
+  status: RunStatus;
+  stopReason?: string | null;
   conversation: ConversationType[];
   questions?: QuestionType[] | null;
   finalOutput: string;
   outputType: OutputTypeInfo;
   diagnostics: RunDiagnosticsType;
   events: RunEventType[];
+  artifacts?: ArtifactRefType[];
+  usageAvailable?: boolean;
   errorMessage?: string | null;
 }
