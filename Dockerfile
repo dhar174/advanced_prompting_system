@@ -22,7 +22,6 @@ COPY pyproject.toml README.md ./
 COPY advanced_prompting.py app.py assistant_personalities.py complexity_measures.py \
      conversation_manager.py execution_modes.py feedback_manager.py function_definitions.py \
      output_generator.py provider_client.py schema.py wsgi.py ./
-COPY ml_complexity_model.pkl ./
 COPY --from=frontend-builder /frontend/dist ./collaborative-assistant-frontend/dist
 
 RUN pip install --no-cache-dir --upgrade pip \

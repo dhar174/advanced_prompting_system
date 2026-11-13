@@ -33,6 +33,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+          python -m spacy download en_core_web_sm
 
       - name: Run offline test suite
         run: |
@@ -76,6 +77,8 @@ jobs:
         run: ../tools/run-frontend-offline.sh build
 
   browser-e2e:
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.qualification/browsers
     name: Offline Browser E2E (Chromium + WSGI Check)
     runs-on: ubuntu-latest
     needs: [backend-test, frontend-test]
@@ -108,7 +111,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev,e2e,server]"
+          python -m spacy download en_core_web_sm
           python -m playwright install chromium --with-deps
+          python -c "from pathlib import Path; from playwright.sync_api import sync_playwright; p=sync_playwright().start(); assert Path(p.chromium.executable_path).is_file(); p.stop()"
 
       - name: Compile WSGI & E2E harness modules
         run: |
@@ -126,3 +131,18 @@ jobs:
           name: browser-e2e-qualification-logs
           path: .qualification/logs/
           if-no-files-found: ignore
+
+  production-image:
+    name: Production runtime image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build tracked source image
+        run: git archive HEAD | docker build -t aps-qualified -
+      - name: Qualify runtime without outbound network
+        run: >-
+          docker run --rm --network none
+          -v "$PWD:/qualification:ro"
+          -e PYTHONPATH=/qualification/tools/offline:/app:/qualification
+          -e APS_OFFLINE_TESTS=1 -e OFFLINE_MODE=1
+          aps-qualified python /qualification/tools/e2e/runtime_smoke.py

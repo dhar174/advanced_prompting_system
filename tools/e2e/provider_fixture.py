@@ -18,6 +18,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Iterator, List, Optional, Tuple
+from output_generator import get_active_run_id
 
 _ACTIVE_SCENARIO: contextvars.ContextVar[str] = contextvars.ContextVar(
     "aps_e2e_provider_scenario", default="default"
@@ -204,6 +205,7 @@ class FakeProviderClient:
 
     def __init__(self, ledger: Optional[ProviderCallLedger] = None, scenario: str = "default") -> None:
         self.ledger = ledger or ProviderCallLedger()
+        self.output_filename = None
         self.default_scenario = scenario
         self._lock = threading.RLock()
         self._slow_delay_used = False
@@ -263,7 +265,7 @@ class _ChatCompletions:
                 full_prompt=prompt_text,
                 error="Simulated upstream outage",
             )
-            raise RuntimeError("Simulated upstream outage sk-secret-should-not-leak")
+            raise RuntimeError("Simulated upstream outage sk-secret-should-not-leak /private/aps-sensitive-path")
 
         if scenario == "empty_model":
             self._parent.ledger.record(
@@ -310,6 +312,7 @@ class _ChatCompletions:
             else:
                 payload = final_dec
             args_dict: Dict[str, Any] = {"final_decision": payload}
+            filename = self._parent.output_filename or filename
             if filename:
                 args_dict["filename"] = filename
             tool_call = SimpleNamespace(
@@ -393,6 +396,10 @@ class _ChatCompletions:
             suffix = f" {fmt_tag}" if fmt_tag else ""
             content = f"Deterministic collaborative contribution aligned with task requirements.{suffix}"
 
+        if scenario.startswith("two_step"):
+            marker = "SECOND_STEP_OUTPUT" if "SECOND_STEP_OUTPUT" in prompt_text else "FIRST_STEP_OUTPUT"
+            content = (content.replace("</answer>", f" {marker}</answer>")
+                       if "</answer>" in content else f"{content} {marker}")
         return SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=None), finish_reason="stop")]
         )
@@ -427,7 +434,7 @@ class _BetaCompletions:
                 full_prompt=prompt_text,
                 error="Simulated upstream outage",
             )
-            raise RuntimeError("Simulated upstream outage sk-secret-should-not-leak")
+            raise RuntimeError("Simulated upstream outage sk-secret-should-not-leak /private/aps-sensitive-path")
 
         self._parent.ledger.record(
             method="beta.chat.completions.parse",
@@ -513,7 +520,7 @@ class _BetaCompletions:
                         step_number=1,
                         completed=False,
                         step_name="Execute Task",
-                        step_description="Analyze requirements and build answer",
+                        step_description="Design a verification strategy and risk analysis for the deliverable",
                         step_explanation="Produce deterministic offline plan deliverable",
                         step_output="Final structured solution",
                         step_full_text="Step 1: Execute Task",
@@ -535,8 +542,19 @@ class _BetaCompletions:
         else:
             raise AssertionError(f"Unexpected structured response_format in FakeProviderClient: {response_format!r}")
 
+        if response_format is Plan and scenario.startswith("two_step"):
+            parsed.steps[0].subtasks = []
+            parsed.steps[0].step_description = "Brainstorm strategy FIRST_STEP_OUTPUT"
+            parsed.steps[0].description = parsed.steps[0].step_description
+            second = parsed.steps[0].model_copy(deep=True)
+            second.step_number = 2
+            second.step_name = "Second Required Step"
+            second.step_description = "Brainstorm strategy SECOND_STEP_OUTPUT"
+            second.description = second.step_description
+            second.step_full_text = "Step 2: SECOND_STEP_OUTPUT"
+            parsed.steps.append(second)
         return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(parsed=parsed), finish_reason="stop")]
+            choices=[SimpleNamespace(message=SimpleNamespace(parsed=parsed, content=parsed.model_dump_json(), refusal=None), finish_reason="stop")]
         )
 
 

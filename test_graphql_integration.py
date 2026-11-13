@@ -9,13 +9,14 @@ so `schema.py`, `execution_modes.py`, `conversation_manager.py`, `advanced_promp
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Dict
 
 import pytest
 
 from app import create_app
-from output_generator import clear_tracked_artifacts, read_tracked_artifact
+from output_generator import clear_tracked_artifacts, list_run_artifacts, read_tracked_artifact
 from tools.e2e.provider_fixture import (
     FakeProviderClient,
     ProviderCallLedger,
@@ -32,6 +33,10 @@ mutation RunExec($input: RunExecutionInput!) {
     stopReason
     finalOutput
     errorMessage
+    events {
+      eventType
+      summary
+    }
     usageAvailable
     outputType {
       outputType
@@ -65,7 +70,12 @@ mutation RunExec($input: RunExecutionInput!) {
       planSteps {
         stepNumber
         stepName
+        stepOutput
         completed
+        subtasks {
+          subtaskNumber
+          completed
+        }
       }
       reflections {
         stepNumber
@@ -79,6 +89,21 @@ mutation RunExec($input: RunExecutionInput!) {
         contributionSummary
       }
     }
+  }
+}
+"""
+
+RUN_CONVERSATION_MUTATION = """
+mutation RunLegacy($conversation: [ConversationInput!]!, $assistantPersonalities: [String!]!, $leadPersonality: String!, $numRounds: Int!) {
+  runConversation(
+    conversation: $conversation,
+    assistantPersonalities: $assistantPersonalities,
+    leadPersonality: $leadPersonality,
+    numRounds: $numRounds
+  ) {
+    conversation { role name content }
+    questions { assistant question }
+    finalOutput
   }
 }
 """
@@ -103,6 +128,45 @@ def _post_graphql(client, query: str, variables: Dict | None = None):
         json={"query": query, "variables": variables or {}},
         content_type="application/json",
     )
+
+
+def _run_collaborative_mutation(client, mutation_kind, *, model=None):
+    """Exercise either public route without replacing resolvers or runtime helpers."""
+    prompt = "[FORMAT:TXT] Build an offline verification checklist."
+    if mutation_kind == "runConversation":
+        query = RUN_CONVERSATION_MUTATION
+        variables = {
+            "conversation": [{"role": "user", "name": "User", "content": prompt}],
+            "assistantPersonalities": ["Strategist", "Mediator"],
+            "leadPersonality": "Strategist",
+            "numRounds": 1,
+        }
+    else:
+        query = RUN_EXECUTION_MUTATION
+        input_payload = {
+            "mode": "collaborative",
+            "taskPrompt": prompt,
+            "assistantPersonalities": ["Strategist", "Mediator"],
+            "leadPersonality": "Strategist",
+            "numRounds": 1,
+        }
+        if model is not None:
+            input_payload["model"] = model
+        variables = {"input": input_payload}
+    response = _post_graphql(client, query, variables)
+    assert response.status_code == 200
+    return response.get_json()
+
+
+def _assert_mutation_stopped(body, mutation_kind, expected_status):
+    if mutation_kind == "runConversation":
+        assert body.get("errors"), body
+        assert not (body.get("data") or {}).get("runConversation"), body
+    else:
+        assert "errors" not in body, body
+        result = body["data"]["runExecution"]
+        assert result["status"] == expected_status, result
+        assert result["stopReason"] == expected_status, result
 
 
 @pytest.mark.parametrize(
@@ -166,11 +230,14 @@ def test_http_graphql_collaborative_real_orchestration_and_artifacts(
     assert len(data["artifacts"]) >= 1
     art = data["artifacts"][0]
     assert art["filename"].endswith(expected_ext)
-    assert art["path"].startswith(f"artifacts/{corr_id}/")
+    assert art["path"].startswith(f"artifacts/{art['runId']}/")
     assert art["sizeBytes"] > 0
     assert len(art["sha256"]) == 64
 
-    disk_file = tmp_path / ".aps_artifacts" / corr_id / art["filename"]
+    registered = list_run_artifacts(run_id=art["runId"])
+    assert registered
+    disk_file = Path(next(ref.path for ref in registered if ref.artifact_id == art["artifactId"]))
+    assert disk_file.is_relative_to(tmp_path / ".aps_artifacts")
     assert disk_file.exists()
     raw_bytes = disk_file.read_bytes()
     assert signature.lower() in raw_bytes.lower()
@@ -178,8 +245,11 @@ def test_http_graphql_collaborative_real_orchestration_and_artifacts(
     assert read_tracked_artifact(str(disk_file), run_id="unrelated_run_id") is None
 
 
-def test_http_graphql_advanced_pipeline_solo_vs_collaborative_differs(live_graphql_client):
+def test_http_graphql_advanced_pipeline_solo_vs_collaborative_differs(live_graphql_client, monkeypatch):
     client, _provider, ledger, _tmp_path = live_graphql_client
+    # Nested team deliberation needs more than the conservative 40-call server default.
+    # Keep a finite ceiling while the separate one-call regression proves hard enforcement.
+    monkeypatch.setenv("APS_PROVIDER_MAX_CALLS", "200")
     task_prompt = (
         "Design a multi-stage verification strategy and risk analysis "
         "for an offline qualification runbook."
@@ -296,7 +366,7 @@ def test_http_graphql_negative_provider_outage_and_all_error_voting(live_graphql
     assert outage_data["status"] == "error"
     assert "sk-secret" not in json.dumps(outage_data)
 
-    # 3. Empty model XML/response triggers error instead of fake completion
+    # 3. Empty model XML/response never becomes a fabricated completed answer.
     with scenario_scope("empty_model"):
         empty_resp = _post_graphql(
             client,
@@ -313,4 +383,194 @@ def test_http_graphql_negative_provider_outage_and_all_error_voting(live_graphql
         )
     assert empty_resp.status_code == 200
     empty_data = empty_resp.get_json()["data"]["runExecution"]
-    assert empty_data["status"] == "error"
+    assert empty_data["status"] in {"error", "incomplete", "budget_exhausted"}
+    assert empty_data["finalOutput"] == ""
+    assert not any(step["completed"] for step in empty_data["diagnostics"]["planSteps"])
+
+
+@pytest.mark.parametrize("mutation_kind", ["runConversation", "runExecution"])
+def test_http_public_mutations_share_provider_call_ceiling(
+    live_graphql_client, monkeypatch, mutation_kind
+):
+    """The real deliberation's second SDK attempt must not reach the provider."""
+    client, _provider, ledger, _tmp_path = live_graphql_client
+    monkeypatch.setenv("APS_PROVIDER_MAX_CALLS", "1")
+
+    body = _run_collaborative_mutation(client, mutation_kind)
+
+    _assert_mutation_stopped(body, mutation_kind, "budget_exhausted")
+    assert ledger.total_calls == 1
+    assert ledger.entries[0].correlation_id
+
+
+@pytest.mark.parametrize("mutation_kind", ["runConversation", "runExecution"])
+def test_http_public_mutations_enforce_nondefault_model_on_every_real_call(
+    live_graphql_client, monkeypatch, mutation_kind
+):
+    client, _provider, ledger, _tmp_path = live_graphql_client
+    allowed_model = "offline-allowed-model"
+    monkeypatch.setenv("APS_DEFAULT_MODEL", allowed_model)
+    monkeypatch.setenv("APS_ALLOWED_MODELS", allowed_model)
+
+    body = _run_collaborative_mutation(client, mutation_kind)
+
+    assert "errors" not in body, body
+    result = body["data"][mutation_kind]
+    assert result["finalOutput"], result
+    if mutation_kind == "runExecution":
+        assert result["status"] == "completed", (result, ledger.total_calls)
+    assert ledger.total_calls > 1
+    assert {entry.model for entry in ledger.entries} == {allowed_model}
+    assert len({entry.correlation_id for entry in ledger.entries}) == 1
+    assert ledger.entries[0].correlation_id
+
+
+@pytest.mark.parametrize("mutation_kind", ["runConversation", "runExecution"])
+def test_http_public_mutations_reject_disallowed_models_before_provider_dispatch(
+    live_graphql_client, monkeypatch, mutation_kind
+):
+    client, _provider, ledger, _tmp_path = live_graphql_client
+    monkeypatch.setenv("APS_ALLOWED_MODELS", "offline-allowed-model")
+    # Legacy clients use the configured default; unified clients can also request a model.
+    monkeypatch.setenv("APS_DEFAULT_MODEL", "offline-forbidden-model")
+
+    body = _run_collaborative_mutation(
+        client, mutation_kind, model="offline-forbidden-model"
+    )
+
+    if mutation_kind == "runConversation":
+        assert body.get("errors"), body
+    else:
+        result = body["data"]["runExecution"]
+        assert result["status"] == "error", result
+        assert result["stopReason"] == "disallowed_model", result
+    assert ledger.total_calls == 0
+
+
+@pytest.mark.parametrize("mutation_kind", ["runConversation", "runExecution"])
+def test_http_public_mutations_stop_after_provider_exceeds_shared_deadline(
+    live_graphql_client, monkeypatch, mutation_kind
+):
+    """A slow boundary fixture cannot replenish the deadline in nested helpers."""
+    client, provider, ledger, _tmp_path = live_graphql_client
+    provider.set_scenario("slow_delay")
+    monkeypatch.setenv("APS_PROVIDER_TIMEOUT_SECONDS", "0.05")
+
+    body = _run_collaborative_mutation(client, mutation_kind)
+
+    _assert_mutation_stopped(body, mutation_kind, "timeout")
+    assert ledger.total_calls == 1
+    assert ledger.entries[0].correlation_id
+
+
+@pytest.mark.parametrize("mutation_kind", ["runConversation", "runExecution"])
+@pytest.mark.parametrize("filename_kind", ["absolute", "traversal"])
+def test_http_public_mutations_confine_actual_model_selected_writes(
+    live_graphql_client, mutation_kind, filename_kind
+):
+    """Script only the provider's tool arguments; invoke the real protected writer."""
+    client, provider, ledger, tmp_path = live_graphql_client
+    outside = tmp_path / "outside-run-sentinel.txt"
+    sentinel = "EXISTING_OUTSIDE_FILE_MUST_NOT_BE_OVERWRITTEN"
+    outside.write_text(sentinel, encoding="utf-8")
+    provider.output_filename = (
+        str(outside) if filename_kind == "absolute" else "../../outside-run-sentinel.txt"
+    )
+
+    body = _run_collaborative_mutation(client, mutation_kind)
+
+    assert outside.read_text(encoding="utf-8") == sentinel
+    assert ledger.total_calls > 1
+    assert any("Final Decision:" in prompt for prompt in ledger.captured_prompts)
+    if mutation_kind == "runConversation":
+        assert body.get("errors"), body
+    else:
+        result = body["data"]["runExecution"]
+        assert result["status"] != "completed", result
+        assert result["artifacts"] == [], result
+    assert sentinel not in json.dumps(body)
+
+
+@pytest.mark.parametrize("mutation_kind", ["runConversation", "runExecution"])
+def test_http_public_mutations_allocate_distinct_artifact_owners(live_graphql_client, mutation_kind):
+    client, _provider, ledger, _tmp_path = live_graphql_client
+
+    first = _run_collaborative_mutation(client, mutation_kind)
+    assert "errors" not in first, first
+    first_owners = {entry.correlation_id for entry in ledger.entries}
+    first_call_count = ledger.total_calls
+    second = _run_collaborative_mutation(client, mutation_kind)
+    assert "errors" not in second, second
+    second_owners = {
+        entry.correlation_id for entry in ledger.entries[first_call_count:]
+    }
+
+    assert len(first_owners) == len(second_owners) == 1
+    assert None not in first_owners | second_owners
+    assert first_owners.isdisjoint(second_owners)
+    first_owner = next(iter(first_owners))
+    second_owner = next(iter(second_owners))
+    first_refs = list_run_artifacts(run_id=first_owner)
+    second_refs = list_run_artifacts(run_id=second_owner)
+    assert first_refs and second_refs
+    assert read_tracked_artifact(first_refs[0].path, run_id=first_owner)
+    assert read_tracked_artifact(second_refs[0].path, run_id=second_owner)
+    assert read_tracked_artifact(first_refs[0].path, run_id=second_owner) is None
+    assert read_tracked_artifact(second_refs[0].path, run_id=first_owner) is None
+    assert {ref.path for ref in first_refs}.isdisjoint({ref.path for ref in second_refs})
+    if mutation_kind == "runExecution":
+        first_artifacts = first["data"]["runExecution"]["artifacts"]
+        second_artifacts = second["data"]["runExecution"]["artifacts"]
+        assert first_artifacts and second_artifacts
+        assert {a["runId"] for a in first_artifacts} == first_owners
+        assert {a["runId"] for a in second_artifacts} == second_owners
+
+
+@pytest.mark.parametrize("agents", [0, 2])
+@pytest.mark.parametrize("max_steps", [1, 2])
+def test_http_pipeline_requires_all_plan_steps_before_whole_task_success(
+    live_graphql_client, monkeypatch, agents, max_steps
+):
+    """A first-step answer must survive as partial work without skipping step two."""
+    client, _provider, ledger, _tmp_path = live_graphql_client
+    monkeypatch.setenv("APS_PROVIDER_MAX_CALLS", "200")
+
+    with scenario_scope("two_step"):
+        response = _post_graphql(
+            client,
+            RUN_EXECUTION_MUTATION,
+            {
+                "input": {
+                    "mode": "advanced_pipeline",
+                    "taskPrompt": "Complete both independently required deliverables.",
+                    "agents": agents,
+                    "maxSteps": max_steps,
+                    "initialBudget": max_steps,
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert "errors" not in body, body
+    result = body["data"]["runExecution"]
+    steps = result["diagnostics"]["planSteps"]
+    assert len(steps) == 2, result
+    assert ledger.total_calls > 0
+    voting_calls = [entry for entry in ledger.entries if entry.response_format == "BinaryVote"]
+    assert bool(voting_calls) is (agents > 0)
+    assert steps[0]["completed"], result
+    assert "FIRST_STEP_OUTPUT" in result["finalOutput"], result
+    if max_steps == 1:
+        assert result["status"] in {"budget_exhausted", "incomplete"}, result
+        assert not steps[1]["completed"], result
+        assert "SECOND_STEP_OUTPUT" not in result["finalOutput"], result
+    else:
+        assert result["status"] == "completed", (
+            result,
+            ledger.total_calls,
+            dict(Counter(entry.response_format or entry.method for entry in ledger.entries)),
+        )
+        assert all(step["completed"] for step in steps), result
+        assert all(sub["completed"] for step in steps for sub in step["subtasks"]), result
+        assert "SECOND_STEP_OUTPUT" in result["finalOutput"], result
