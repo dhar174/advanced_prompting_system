@@ -1478,9 +1478,9 @@ def _execute_advanced_pipeline(
     ctx_reason = getattr(active_ctx, "termination_reason", None) if active_ctx is not None else None
     effective_term_reason = interaction_stop_reason or sc_reason or ctx_reason
     all_plan_steps_complete = (
-        all(ps.completed for ps in plan_step_diagnostics)
+        all(ps.completed and all(st.completed for st in ps.subtasks) for ps in plan_step_diagnostics)
         if plan_step_diagnostics
-        else True
+        else False
     )
     run_artifacts = list_run_artifacts(run_id=correlation_id)
 
@@ -1560,8 +1560,8 @@ def _execute_advanced_pipeline(
             )
     elif answer_text:
         final_output_str = str(raw_answer)
-        final_status = "completed"
-        stop_reason = "final_answer"
+        final_status = "completed" if all_plan_steps_complete else "incomplete"
+        stop_reason = "final_answer" if all_plan_steps_complete else "incomplete_plan_steps"
     elif planstep_outputs and hasattr(planstep_outputs[-1], "final_output") and str(planstep_outputs[-1].final_output or "").strip():
         final_output_str = str(planstep_outputs[-1].final_output)
         if not all_plan_steps_complete:

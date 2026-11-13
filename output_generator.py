@@ -14,6 +14,7 @@ import os
 import re
 import threading
 import uuid
+import ntpath
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
@@ -111,6 +112,9 @@ class RunArtifactRegistry:
 
         if active is not None and (raw == active.owner_id or raw == active.correlation_id):
             return active.owner_id
+
+        if active is not None:
+            raise PermissionError("Cannot select a foreign artifact owner inside an active run.")
 
         with self._lock:
             if raw in self._scopes_by_owner or raw in self._by_run:
@@ -219,7 +223,10 @@ class RunArtifactRegistry:
 
     def list_artifacts(self, run_id: Optional[str] = None) -> List[ArtifactRef]:
         """List all tracked artifacts for a specific run scope."""
-        owner_id = self.resolve_owner_id(run_id)
+        try:
+            owner_id = self.resolve_owner_id(run_id)
+        except PermissionError:
+            return []
         with self._lock:
             return list(self._by_run.get(owner_id, {}).values())
 
@@ -313,6 +320,10 @@ def resolve_output_filepath(filename: str, run_id: Optional[str] = None) -> str:
     raw_name = filename.strip()
     if not raw_name or "\x00" in raw_name:
         raise ValueError("Artifact filename must be a valid non-empty string.")
+
+    portable_parts = raw_name.replace("\\", "/").split("/")
+    if ".." in portable_parts or (os.name != "nt" and ntpath.splitdrive(raw_name)[0]):
+        raise PermissionError("Artifact path contains traversal or a foreign drive.")
 
     active_run = run_id if (run_id is not None and str(run_id) != "") else get_active_run_id()
 
