@@ -103,7 +103,7 @@ _ERROR_PATH_PATTERNS = (
     re.compile(r"[A-Za-z]:[\\/][^\s'\",;)\]]+"),
     re.compile(r"\\\\[^\s'\",;)\]]+"),
     re.compile(
-        r"(?<![A-Za-z0-9_])/(?:home|Users|tmp|var|app|srv|etc|opt|usr|root|mnt|workspace|workspaces)(?:/[^\s'\",;)\]]*)?"
+        r"(?<![A-Za-z0-9_])/(?:home|Users|tmp|var|app|srv|etc|opt|usr|root|mnt|private|workspace|workspaces)(?:/[^\s'\",;)\]]*)?"
     ),
 )
 
@@ -200,7 +200,7 @@ def get_provider_config() -> ProviderConfig:
         allowed = [m.strip() for m in raw_allowed.split(",") if m.strip()]
     else:
         allowed = list(_DEFAULT_ALLOWED_MODELS)
-    if default_model not in allowed:
+    if default_model not in allowed and not raw_allowed.strip():
         allowed.insert(0, default_model)
 
     def _safe_float(env_key: str, default: float, lo: float, hi: float) -> float:
