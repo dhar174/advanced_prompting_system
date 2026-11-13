@@ -33,9 +33,29 @@ from textstat import flesch_reading_ease
 date_str = dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 save_path = f"debug_log_complexity_{date_str}.txt"
 
+import provider_client
 from provider_client import LazyClient
 
 client = LazyClient() if os.getenv("OPENAI_API_KEY") not in (None, "", "dummy_key_for_testing") else None
+
+
+def _resolve_llm_client():
+    """Return configured or scope-active LLM client without import-time side effects."""
+    if client is not None:
+        return client
+    if (
+        provider_client.get_active_execution_context() is not None
+        and provider_client.has_configured_provider()
+    ):
+        return LazyClient()
+    if os.getenv("OPENAI_API_KEY") not in (None, "", "dummy_key_for_testing"):
+        return LazyClient()
+    return None
+
+
+def _policy_exception_types() -> Tuple[type, ...]:
+    """Return request-scoped provider policy exception classes for pass-through re-raise."""
+    return (provider_client.ProviderPolicyError, provider_client.DisallowedModelError)
 
 import numpy as np
 import logging
@@ -215,6 +235,8 @@ def get_embedding(text, model="text-embedding-3-small"):
                 f"Embedding fetched successfully for text: '{text[:20]}...'"
             )
         embedding = response.data[0].embedding
+    except _policy_exception_types():
+        raise
     except Exception as e:
         logging.error(f"An error occurred while fetching embedding: {str(e)}")
         printer.print_custom(
@@ -410,10 +432,16 @@ def is_real_words(text) -> str:
 
 
 def count_tokens(text, model_name):
-    encoding_name = tiktoken.encoding_name_for_model(model_name)
-    encoding = tiktoken.get_encoding(encoding_name)
-    tokens = encoding.encode(text)
-    return len(tokens)
+    try:
+        try:
+            encoding_name = tiktoken.encoding_name_for_model(model_name)
+        except KeyError:
+            encoding_name = "cl100k_base"
+        encoding = tiktoken.get_encoding(encoding_name)
+        tokens = encoding.encode(text)
+        return len(tokens)
+    except BaseException:
+        return max(1, len(text) // 4) if text else 0
 
 
 from nltk.util import ngrams
@@ -804,15 +832,18 @@ def merge_steps(
         for subtask in steps:
             input_text += f"{subtask.subtask_full_text}\n"
         input_text += f"{step_obj.subtask_full_text}]\n"
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    if not openai_api_key:
+    llm_client = _resolve_llm_client()
+    if llm_client is None:
         printer.print_custom("[Language Model] OpenAI API key not found.")
         return ""
-    openai.api_key = openai_api_key
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if openai_api_key:
+        openai.api_key = openai_api_key
+    effective_model = provider_client.get_effective_model(fallback="gpt-4o-mini")
     if isinstance(step_obj, PlanStep):
         try:
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = llm_client.chat.completions.create(
+                model=effective_model,
                 messages=[
                     {
                         "role": "system",
@@ -859,13 +890,15 @@ def merge_steps(
                 subtasks=step_obj.subtasks,
             )
 
+        except _policy_exception_types():
+            raise
         except Exception as e:
             printer.print_custom(f"[Language Model] Error merging steps: {e}")
             return step_obj
     elif isinstance(step_obj, Subtask):
         try:
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = llm_client.chat.completions.create(
+                model=effective_model,
                 messages=[
                     {
                         "role": "system",
@@ -908,6 +941,8 @@ def merge_steps(
             )
 
             return merged_subtask
+        except _policy_exception_types():
+            raise
         except Exception as e:
             printer.print_custom(f"[Language Model] Error merging subtasks: {e}")
             return step_obj
@@ -983,15 +1018,17 @@ def generate_plan(input_query: str) -> str:
     Returns:
         str: Generated plan as text.
     """
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    if not openai_api_key:
+    llm_client = _resolve_llm_client()
+    if llm_client is None:
         printer.print_custom("[Language Model] OpenAI API key not found.")
         return ""
-    openai.api_key = openai_api_key
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if openai_api_key:
+        openai.api_key = openai_api_key
 
     try:
-        response = client.beta.chat.completions.parse(
-            model="gpt-4o-mini",
+        response = llm_client.beta.chat.completions.parse(
+            model=provider_client.get_effective_model(fallback="gpt-4o-mini"),
             messages=[
                 {
                     "role": "system",
@@ -1011,6 +1048,8 @@ def generate_plan(input_query: str) -> str:
         output = response.choices[0].message.parsed
 
         return output
+    except _policy_exception_types():
+        raise
     except Exception as e:
         printer.print_custom(f"[Language Model] Error generating plan: {e}")
         return ""
@@ -1433,7 +1472,7 @@ class TextClassification(BaseModel):
 def classify_remaining_text_structured(
     leftover_text: str,
     api_key: Optional[str] = None,
-    model: str = "gpt-4o-mini",
+    model: Optional[str] = None,
     temperature: float = 0.0,
     max_completion_tokens: int = 10,
 ) -> Optional[TextClassification]:
@@ -1453,13 +1492,18 @@ def classify_remaining_text_structured(
                                       Returns None if classification fails.
     """
     # Set the OpenAI API key
+    llm_client = _resolve_llm_client()
     if api_key is None:
         api_key = os.getenv("OPENAI_API_KEY")
-        if api_key is None:
+        if api_key is None and llm_client is None:
             raise ValueError(
                 "OpenAI API key not provided and not found in environment variables."
             )
-    openai.api_key = api_key
+    if api_key:
+        openai.api_key = api_key
+    if llm_client is None:
+        raise ValueError("OpenAI client is not configured.")
+    effective_model = provider_client.get_effective_model(model, fallback="gpt-4o-mini")
     system_prompt = f"""You are an intelligent assistant that classifies text snippets as 'useful' or 'junk' based on their relevance and informativeness in a generated plan, with the goal of identifying the remaining text as 'useful' or 'junk'. Respond only with a bool that is true for 'useful' and false for 'junk'. This bool will be returned as the 'is_useful' field in the TextClassification class.
 
 ### Instructions:
@@ -1589,8 +1633,8 @@ Respond only with a bool that is true for 'useful' and false for 'junk'. This bo
 
     try:
         # Make the API request with structured output
-        response = client.beta.chat.completions.parse(
-            model=model,
+        response = llm_client.beta.chat.completions.parse(
+            model=effective_model,
             messages=[
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": prompt},
@@ -1609,6 +1653,8 @@ Respond only with a bool that is true for 'useful' and false for 'junk'. This bo
             printer.print_custom(f"Unexpected response format: {parsed_response}")
             return None
 
+    except _policy_exception_types():
+        raise
     except Exception as e:
         # Handle other possible errors
         printer.print_custom(f"Unexpected error: {e}")
@@ -2462,6 +2508,8 @@ def remove_converted_text_preserving_order(input_query, steps, case_sensitive=Fa
         printer.print_custom(f"Cosine Similarity: {cosine_sim} \n\n")
 
         return remaining_text, converted_text
+    except _policy_exception_types():
+        raise
     except Exception as e:
         printer.print_custom(
             f"Error in remove_converted_text_preserving_order: {e} Error on line: {sys.exc_info()[-1].tb_lineno}"
@@ -2482,7 +2530,7 @@ def convert_plan(
         Plan: Structured representation of the plan.
 
     """
-    model = "gpt-4o-mini"
+    model = provider_client.get_effective_model(fallback="gpt-4o-mini")
     instructions = convert_instruction_a
 
     plan_token_count = count_tokens(input_query + instructions, model)
@@ -2543,7 +2591,10 @@ def convert_plan(
             + "If the plan is complete and there is no meaningful text to convert, please indicate that the conversion is complete by replying simply with the word 'Complete' and nothing else, rather than an empty response. Remember not to generate new steps or subtasks that are not present in the plan. Only convert the existing steps and subtasks that are part of the plan, simply replying with the word 'Complete' if there is no meaningful text to convert into steps and subtasks."
         )
     try:
-        response = client.beta.chat.completions.parse(
+        llm_client = _resolve_llm_client()
+        if llm_client is None:
+            raise RuntimeError("OpenAI client is not configured.")
+        response = llm_client.beta.chat.completions.parse(
             model=model,
             messages=[
                 {
@@ -3056,6 +3107,8 @@ Here is the remaining text to be converted:
             )
         )
         return existing_plan
+    except _policy_exception_types():
+        raise
     except Exception as e:
         printer.print_custom(
             f"[Language Model] Error generating plan: {e}. Error occurred on line {sys.exc_info()[-1].tb_lineno}"
@@ -3076,15 +3129,17 @@ def generate_plan_legacy(input_query: str) -> str:
     Returns:
         str: Generated plan as text.
     """
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    if not openai_api_key:
+    llm_client = _resolve_llm_client()
+    if llm_client is None:
         printer.print_custom("[Language Model] OpenAI API key not found.")
         return ""
-    openai.api_key = openai_api_key
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if openai_api_key:
+        openai.api_key = openai_api_key
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = llm_client.chat.completions.create(
+            model=provider_client.get_effective_model(fallback="gpt-4o-mini"),
             messages=[
                 {
                     "role": "system",
@@ -3103,6 +3158,8 @@ def generate_plan_legacy(input_query: str) -> str:
         plan = response.choices[0].message.content
 
         return plan
+    except _policy_exception_types():
+        raise
     except Exception as e:
         printer.print_custom(f"[Language Model] Error generating plan: {e}")
         return ""
@@ -3666,15 +3723,17 @@ def generate_follow_up_questions(input_query: str, num_questions: int = 3) -> li
     Returns:
         list: List of follow-up questions.
     """
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    if not openai_api_key:
+    llm_client = _resolve_llm_client()
+    if llm_client is None:
         printer.print_custom("[Interactive Query Expansion] OpenAI API key not found.")
         return []
-    openai.api_key = openai_api_key
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if openai_api_key:
+        openai.api_key = openai_api_key
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = llm_client.chat.completions.create(
+            model=provider_client.get_effective_model(fallback="gpt-4o-mini"),
             messages=[
                 {
                     "role": "system",
@@ -3701,6 +3760,8 @@ def generate_follow_up_questions(input_query: str, num_questions: int = 3) -> li
                 f"[Interactive Query Expansion] Generated Questions: {question_list}"
             )
         return question_list
+    except _policy_exception_types():
+        raise
     except Exception as e:
         printer.print_custom(
             f"[Interactive Query Expansion] Error generating follow-up questions: {e}"

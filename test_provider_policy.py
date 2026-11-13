@@ -487,3 +487,167 @@ def test_policy_modules_have_no_import_time_openai_construction():
     )
     assert proc.returncode == 0, proc.stderr
     assert "IMPORT_OK" in proc.stdout
+
+
+def test_complexity_measures_seam_respects_policy_and_reraises_errors(monkeypatch):
+    """complexity_measures works when client=None at import, uses effective model, and never swallows policy errors."""
+    import complexity_measures
+
+    observed_models = []
+
+    def handler(kind, kwargs):
+        observed_models.append((kind, kwargs.get("model")))
+        if kind == "parse":
+            parsed = complexity_measures.Plan(
+                steps=[
+                    complexity_measures.PlanStep(
+                        step_number=1,
+                        completed=False,
+                        step_name="Step 1",
+                        step_description="Do step 1",
+                        step_explanation="Explain",
+                        step_output="Out",
+                        step_full_text="Step 1: Do step 1",
+                        subtasks=[],
+                    )
+                ]
+            )
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="stop",
+                        message=SimpleNamespace(parsed=parsed, content="Step 1: Do step 1", refusal=None),
+                    )
+                ]
+            )
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="1. Step one\n2. Step two\nMerged PlanStep: Step 1",
+                        parsed=None,
+                    )
+                )
+            ]
+        )
+
+    fake_client = _OptionsAwareClient(handler)
+    monkeypatch.setattr(provider_client, "get_client", lambda: fake_client)
+    monkeypatch.setattr(complexity_measures, "client", None)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    # 1. Inside gpt-4o-only scope with client=None, complexity_measures uses LazyClient + gpt-4o
+    with provider_client.provider_execution_scope(
+        default_model="gpt-4o",
+        allowed_models=("gpt-4o",),
+        max_calls=10,
+        timeout_seconds=10.0,
+    ):
+        assert complexity_measures.generate_plan_legacy("Test plan")
+        assert complexity_measures.generate_follow_up_questions("Test plan") == ["Step one", "Step two"]
+        plan = complexity_measures.convert_plan("1. Step one")
+        assert isinstance(plan, complexity_measures.Plan)
+
+    assert len(observed_models) == 3
+    assert all(m == "gpt-4o" for _, m in observed_models)
+
+    # 2. Policy / model errors inside complexity_measures handlers must never be swallowed
+    with provider_client.provider_execution_scope(
+        default_model="gpt-4o",
+        allowed_models=("gpt-4o",),
+        max_calls=0,
+        timeout_seconds=10.0,
+    ):
+        with pytest.raises(provider_client.RunBudgetExceededError):
+            complexity_measures.generate_plan_legacy("Blocked")
+        with pytest.raises(provider_client.RunBudgetExceededError):
+            complexity_measures.convert_plan("Blocked")
+        with pytest.raises(provider_client.RunBudgetExceededError):
+            complexity_measures.generate_plan("Blocked")
+        with pytest.raises(provider_client.RunBudgetExceededError):
+            complexity_measures.generate_follow_up_questions("Blocked")
+        step_obj = complexity_measures.PlanStep(
+            step_number=1,
+            completed=False,
+            step_name="S1",
+            step_description="Desc",
+            step_explanation="Exp",
+            step_output="Out",
+            step_full_text="Step 1",
+            subtasks=[],
+        )
+        with pytest.raises(provider_client.RunBudgetExceededError):
+            complexity_measures.merge_steps([step_obj], step_obj)
+
+    with provider_client.provider_execution_scope(
+        default_model="gpt-4o",
+        allowed_models=("gpt-4o",),
+        max_calls=5,
+        timeout_seconds=10.0,
+    ):
+        with pytest.raises(provider_client.DisallowedModelError):
+            complexity_measures.classify_remaining_text_structured("Leftover", model="gpt-4o-mini")
+
+
+def test_advanced_pipeline_budget_exhausted_inside_assess_complexity(monkeypatch):
+    """max_calls=1 exhausting inside assess_complexity() -> is_complex_llm() surfaces budget_exhausted cleanly."""
+    import advanced_prompting
+    import complexity_measures
+
+    monkeypatch.setenv("APS_PROVIDER_MAX_CALLS", "1")
+    monkeypatch.setenv("APS_DEFAULT_MODEL", "gpt-4o-mini")
+    monkeypatch.delenv("APS_ALLOWED_MODELS", raising=False)
+
+    calls = []
+
+    def handler(kind, kwargs):
+        calls.append(kind)
+        if kind == "parse":
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            parsed=SimpleNamespace(output_type="Simple Concise Answer", file_extension=".txt"),
+                            content="{}",
+                        )
+                    )
+                ]
+            )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Refined prompt", parsed=None))]
+        )
+
+    fake_client = _OptionsAwareClient(handler)
+    monkeypatch.setattr(provider_client, "get_client", lambda: fake_client)
+    monkeypatch.setattr(complexity_measures, "client", None)
+    monkeypatch.setattr(complexity_measures, "get_nlp_spacy", lambda: (lambda text: [1, 2, 3]))
+    monkeypatch.setattr(
+        advanced_prompting.AdvancedPromptEngineer,
+        "task_into_prompt",
+        lambda self, task: task,
+    )
+
+    # First real provider call happens in output_type_determination -> exhausts max_calls=1;
+    # second call inside assess_complexity() -> is_complex_llm() -> generate_plan_legacy()
+    # must raise RunBudgetExceededError (never swallowed into complexity=0.0 AssertionError).
+    def fake_ot(task):
+        advanced_prompting.client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": task}],
+        )
+        return advanced_prompting.OutputType(output_type="Simple Concise Answer", file_extension=".txt")
+
+    monkeypatch.setattr(advanced_prompting, "output_type_determination", fake_ot)
+
+    res = execute_run(
+        RunRequest(
+            mode="advanced_pipeline",
+            task_prompt="Assess complexity with budget 1",
+            max_steps=3,
+            agents=0,
+        )
+    )
+    assert len(calls) == 1
+    assert res.status == "budget_exhausted"
+    assert res.stop_reason == "budget_exhausted"
+    assert provider_client.get_active_execution_context() is None
