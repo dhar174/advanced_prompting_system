@@ -1,14 +1,13 @@
-// import './App.css'; // Removed as it's not used with Tailwind typically
 import ConversationPage from './pages/ConversationPage';
+import ErrorBoundary from './components/ErrorBoundary';
 import { Toaster } from 'react-hot-toast';
 
 function App() {
   return (
-    <>
+    <ErrorBoundary>
       <ConversationPage />
-      {/* Optional: Toaster for error notifications from react-hot-toast */}
       <Toaster position="top-right" />
-    </>
+    </ErrorBoundary>
   );
 }
 
