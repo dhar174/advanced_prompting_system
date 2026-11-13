@@ -9,7 +9,7 @@ describe('ApiAuthPanel', () => {
     const onApplyToken = vi.fn();
     const onClearToken = vi.fn();
 
-    render(
+    const { rerender } = render(
       <ApiAuthPanel
         authRequired={false}
         hasToken={false}
@@ -33,6 +33,9 @@ describe('ApiAuthPanel', () => {
     await userEvent.click(screen.getByTestId('apply-api-token-button'));
     expect(onApplyToken).toHaveBeenCalledWith('my-token-123');
 
+    expect(input.value).toBe('');
+    expect(input.type).toBe('password');
+    rerender(<ApiAuthPanel authRequired={false} hasToken={true} onApplyToken={onApplyToken} onClearToken={onClearToken} />);
     await userEvent.click(screen.getByTestId('clear-api-token-button'));
     expect(onClearToken).toHaveBeenCalledTimes(1);
     expect(input.value).toBe('');
