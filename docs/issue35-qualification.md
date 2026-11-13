@@ -35,3 +35,9 @@ The production-image job builds a tracked-files-only archive, installs runtime d
 A local Docker build was attempted but its npm dependency-download stage could not reach the registry from the Docker network. This does not establish an image pass. Production-image qualification must be judged from the exact-head CI job, independently of dev-environment results. No deployment or paid provider calls are part of these checks.
 
 A fresh runtime-only environment (installed with `.[server]`, without development extras or downloaded models) also passed Gunicorn health/readiness/SPA and both modes using the mounted deterministic fixture. This is runtime dependency evidence, not a substitute for the separate image-build job. The real HTTP suite passes 27 cases locally, including both multi-step solo/team branches and their partial-budget results.
+
+## Final review qualification commit
+
+The reviewed code/test commit is `164b5dd9060d341916b1d7afbdd003145db56a02` ([CI run 43471190720](https://github.com/dhar174/advanced_prompting_system/actions/runs/43471190720)). Local guarded full suites pass **294 tests on Python 3.11 and 3.12**, including **27 HTTP integration cases and eight Chromium checks**. Frontend guard/lint/build and all **147 frontend tests** pass. On that exact commit the Linux backend matrix, frontend job and tracked-source production-image qualification have passed; the dedicated browser job's live status and downloadable evidence are available in the linked run. This document's subsequent revision only records these results; it does not alter the qualified runtime.
+
+Individual review threads receive fix commits, focused regression descriptions and exact-head CI evidence. The review summaries and follow-up checklists receive separate point-by-point responses. Thread resolution is based on verification, including outdated threads; it does not merge a PR or close Issue #35.
