@@ -1,31 +1,24 @@
 # Active Context (`advanced_prompting_system`)
 
 ## Current Focus
-- **Track 1: End-to-End Execution Modes & UI Integration (Issue #35 Phases 3–5 & Issue #21)**:
-  - Phase 3: Created `execution_modes.py` with strongly typed Pydantic v2 schemas (`RunRequest`, `RunResult`, `RunEvent`, `RunDiagnostics`, `PlanStepDiagnostic`, `SubtaskDiagnostic`, `ReflectionDiagnostic`, `AgentAttribution`), `CAPABILITY_REGISTRY`, and dispatcher.
-  - Phase 4: Extended `schema.py` with Strawberry GraphQL types, `Query.execution_modes`, `Mutation.run_execution`, and `Mutation.run_advanced_pipeline`.
-  - Phase 5: Built frontend components `StructuredOutputRenderer.tsx`, `ReasoningDiagnosticsPanel.tsx`, `AssistantConfigPanel.tsx` (execution mode selector), and custom hook `useRunExecution.ts`.
-- **Offline Qualification Baseline (Track 1 Certified & PR #38 Hardened)**:
-  - Backend offline suite (`./tools/run-offline.ps1 -PytestArgs '-q'`): **210 passed / 0 failed / 0 skipped** (up from 206 baseline, +4 new security/adversarial tests in `test_execution_modes.py` and `test_advanced_prompting.py`).
-  - Frontend offline suite (`./tools/run-frontend-offline.ps1 -Action test`): **124 passed / 0 failed** across 13 Vitest files (up from 111 baseline, +13 new unit tests in `StructuredOutputRenderer.test.tsx`, `ReasoningDiagnosticsPanel.test.tsx`, and `useRunExecution.test.ts`).
-  - Frontend offline bundle build (`-Action build`): **PASS** (zero TypeScript or Vite bundle errors).
-  - Frontend offline lint (`-Action lint`): **PASS** (zero ESLint errors or warnings).
-  - Frontend offline guard (`-Action guard`): **PASS** (Node outbound network denial verified).
+- **Issue #35 Completion (Stacked PRs #39, #40, PR 3)**:
+  - **PR #39 (`fix/issue-35-engine-artifacts-provider` -> `main`)**: Engine retrieval propagation, `provider_client` model policy & budget/cancellation scoping, per-run `.aps_artifacts/<run_id>/` isolation.
+  - **PR #40 (`feat/issue-35-graphql-security-react-lifecycle` -> PR #39)**: Unified `execution_modes` (`collaborative`, `advanced_pipeline`, gated `tree_of_thought`), GraphQL security hardening (loopback CORS allowlist, optional Bearer auth, per-IP rate limiting, query depth/token limiters, error sanitization), and React 19 UI lifecycle (`useRunExecution`, `ReasoningDiagnosticsPanel`, abort-wait isolation, draft restoration).
+  - **PR 3 (`feat/issue-35-browser-e2e-packaging-docs` -> PR #40)**: Unmocked HTTP `/graphql` -> real orchestration integration suite (`test_graphql_integration.py`, `tools/e2e/`), offline Playwright Chromium E2E suite (`test_browser_e2e.py`), CI `browser-e2e` job (`.github/workflows/test.yml`), Cloud Run-compliant multi-stage `Dockerfile`, `.dockerignore`, `wsgi.py`, `.env.example`, updated `pyproject.toml`, `README.md`, `docs/issue35-qualification.md`, and `docs/offline-test-inventory.md`.
+- **Verified Offline Qualification Baseline (Post Issue #35 PR 3)**:
+  - Backend + HTTP GraphQL integration + Playwright Chromium E2E (`./tools/run-offline.ps1 -PytestArgs '-q'`): **243 passed / 0 failed** (43.38s).
+  - Frontend offline Vitest suite (`./tools/run-frontend-offline.ps1 -Action test`): **126 passed / 0 failed** across 15 Vitest files (12.27s).
+  - Frontend offline `guard`, `lint`, and `build`: **PASS** (`index.css` external Google Fonts `@import` removed for zero external browser requests offline).
 
 ## Recent Verified Architectural Changes
-1. **PR #38 Review Hardening (`execution_modes.py`, `output_generator.py`, `advanced_prompting.py`)**:
-   - Constrained collaborative artifact reads strictly to explicitly tracked output files via `output_generator.track_generated_artifact` within safe workspace subpaths, eliminating arbitrary host file disclosure.
-   - Enforced `max_steps` cap across `adjust_step_budget`, `AdvancedPromptEngineer.main` reasoning loop, and `RunDiagnostics.adjusted_budget`. Preserved `initial_budget` when explicitly bounded by caller.
-   - Guarded zero-agent solo reasoning against `UnboundLocalError` by initializing `agent_interaction = None` and recording solo attribution in `execution_modes.py`.
-2. **Track 1 Execution Modes & GraphQL Telemetry (`execution_modes.py`, `schema.py`)**:
-   - `RunRequest` provides bidirectional synchronization between `task_prompt` and polymorphic `conversation` inputs.
-   - Fail-closed gating for `tree_of_thought` returns deterministic `RunResult(status="gated")` without calling LLM providers.
-   - `schema.py` exposes `Query.execution_modes`, `Mutation.run_execution`, and `Mutation.run_advanced_pipeline` while preserving `run_conversation` and `submit_feedback` 100% backward-compatible.
-2. **Frontend Mode Switching & Observability (`collaborative-assistant-frontend/`)**:
-   - `AssistantConfigPanel.tsx` dynamically adapts controls between Collaborative Debate (`collaborative`), Standalone Pipeline (`advanced_pipeline`), and disabled `tree_of_thought` (Issue #36 badge).
-   - `ReasoningDiagnosticsPanel.tsx` visualizes complexity scores, step budgets, reflections, rewards, plan subtasks, agent attributions, and event logs.
-   - `StructuredOutputRenderer.tsx` formats output by `OutputType` (code containers, JSON pretty-print, CSV table/raw preview, copy to clipboard).
+1. **Unmocked Pipeline & Browser Bug Fixes (`advanced_prompting.py`, `schema.py`, `index.css`)**:
+   - Guarded `AdvancedPromptEngineer.main()` against `<= 0.0` complexity / empty `Plan` when optional spaCy `en_core_web_sm` is absent; fixed `judge_step_completion` candidate step evaluation, `best_interaction.answer` copy, and `self.judge_final_answer(task_object, main_interaction)`.
+   - Generalized `schema._sanitize_error_message(exc: Exception | str)` and applied it to `run_result.error.error_message`.
+   - Removed external `fonts.googleapis.com` `@import` from `collaborative-assistant-frontend/src/index.css`.
+2. **Offline E2E & WSGI Packaging (`tools/e2e/`, `test_browser_e2e.py`, `wsgi.py`, `Dockerfile`)**:
+   - `FakeProviderClient` + `ProviderCallLedger` + `OfflineE2EServer` (`127.0.0.1`) drive real Flask `/graphql` + built Vite SPA inside headless Chromium with fail-closed `page.route` blocking.
+   - `wsgi:app` binds `0.0.0.0:${PORT:-8000}` (`waitress`/Flask fallback locally, `gunicorn` in multi-stage `Dockerfile` with `PORT=8080`, non-root `appuser`, `.[server]`).
 
 ## Next Priorities
-1. **Issue #36**:
-   - Implement genuine Tree-of-Thoughts (`ToT`) search with bounded offline-testable provider contracts.
+1. **Issue #36 (`tree_of_thought`)**:
+   - Remains strictly gated (`enabled=False`) pending genuine Tree-of-Thoughts implementation; Issues `#20` and `#22` also remain open.

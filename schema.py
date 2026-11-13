@@ -307,7 +307,7 @@ def _build_run_execution_response(run_result: Any) -> RunExecutionResponse:
         for evt in run_result.events
     ]
 
-    error_msg = run_result.error.error_message if run_result.error else None
+    error_msg = _sanitize_error_message(run_result.error.error_message) if run_result.error else None
     artifacts_gql = [
         ArtifactRefType(
             artifact_id=a.artifact_id,
@@ -343,9 +343,11 @@ def _build_run_execution_response(run_result: Any) -> RunExecutionResponse:
     )
 
 
-def _sanitize_error_message(exc: Exception) -> str:
+def _sanitize_error_message(exc: Exception | str) -> str:
     """Return a concise, safe error message without leaking tracebacks, keys, or filesystem paths."""
-    msg = str(exc or "").strip() or exc.__class__.__name__
+    msg = (exc if isinstance(exc, str) else str(exc or "")).strip()
+    if not msg:
+        msg = exc if isinstance(exc, str) else exc.__class__.__name__
     msg = re.sub(r"sk-[A-Za-z0-9_\-]+", "[REDACTED]", msg)
     msg = re.sub(r"[A-Za-z]:\\[^\s'\"]+", "[PATH]", msg)
     msg = re.sub(r"/(?:home|Users|tmp|var|app|srv)/[^\s'\"]+", "[PATH]", msg)

@@ -41,9 +41,17 @@ nlp = [
     "tiktoken>=0.5.0",
     "transformers>=4.30.0",
 ]
+e2e = [
+    "playwright>=1.50.0",
+]
+server = [
+    "waitress>=3.0.0",
+    "gunicorn>=22.0.0; platform_system != 'Windows'",
+]
 dev = [
     "advanced-prompting-system[test]",
     "advanced-prompting-system[nlp]",
+    "advanced-prompting-system[server]",
     "matplotlib>=3.7.0",
 ]
 
@@ -54,11 +62,13 @@ py-modules = [
     "assistant_personalities",
     "complexity_measures",
     "conversation_manager",
+    "execution_modes",
     "feedback_manager",
     "function_definitions",
     "output_generator",
     "provider_client",
     "schema",
+    "wsgi",
 ]
 
 [tool.pytest.ini_options]

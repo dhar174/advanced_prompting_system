@@ -11,8 +11,22 @@ No filename ignores remain. A renamed shadowed duplicate class is historical
 source, not certifying coverage. Default discovery also excludes `historical_verification`
 and the separate frontend/node_modules trees; these are not backend release tests.
 
-Owner/tracking: [completion issue #35 Phase 2](https://github.com/dhar174/advanced_prompting_system/issues/35).
-All quarantines resolved under Phase 2 without live provider calls or weakening assertions.
+Owner/tracking: [completion issue #35](https://github.com/dhar174/advanced_prompting_system/issues/35).
+All Phase 2 quarantines were resolved without live provider calls or weakening assertions,
+and Issue #35 PR 1–PR 3 expanded offline coverage across execution-mode contracts, GraphQL/HTTP security,
+unmocked Flask `/graphql` orchestration (`test_graphql_integration.py`), and offline Playwright Chromium E2E (`test_browser_e2e.py`).
+
+## Suite Expansion Summary (Issue #35 PR 1–PR 3)
+
+| Suite / File | Scope | Disposition |
+|---|---|---|
+| `test_advanced_prompting.py` | 48 unit/parser/adapter tests | Passing offline |
+| `test_issue35_pr1_regressions.py` | Engine retrieval, provider config/model allowlist, artifact scoping | Passing offline |
+| `test_execution_modes.py` | `collaborative`, `advanced_pipeline`, gated `tree_of_thought` (`#36`) | Passing offline |
+| `test_graphql_contract.py` | Strawberry schema queries, `runExecution`, CORS/Bearer/size/depth/rate-limit checks | Passing offline |
+| `test_graphql_integration.py` | 9 unmocked HTTP `/graphql` -> `execute_run` -> real orchestration & artifact tests | Passing offline |
+| `test_browser_e2e.py` | 6 offline Chromium Playwright tests (`OfflineE2EServer` + loopback route guard) | Passing offline |
+| `collaborative-assistant-frontend/` | 15 Vitest test suites (126 tests), ESLint, TypeScript + Vite build | Passing offline |
 
 | Test or helper | Disposition |
 |---|---|

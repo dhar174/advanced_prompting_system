@@ -7807,6 +7807,23 @@ Task: {task}
 
         # Step 2: Assess Complexity
         complexity, plan = self.assess_complexity(refined_task)
+        if not isinstance(complexity, (int, float)) or complexity <= 0.0:
+            complexity = 0.1
+        if not isinstance(plan, Plan) or not getattr(plan, "steps", None):
+            plan = Plan(
+                steps=[
+                    PlanStep(
+                        step_number=1,
+                        completed=False,
+                        step_name="Task Execution",
+                        step_description=task,
+                        step_explanation=refined_task,
+                        step_output="Completed task solution",
+                        step_full_text=task,
+                        subtasks=[],
+                    )
+                ]
+            )
         task_object = Task(
             task, refined_task, complexity, [], [], "", 0.0, plan, _output_type
         )
@@ -8152,10 +8169,19 @@ Task: {task}
                 for stp in main_interaction.steps
                 if stp.plan_step_number == curr_num
             ]
+            candidate_steps_this_planstep = list(steps_this_planstep)
+            for b_step in (best_interaction.steps or []):
+                if b_step.plan_step_number is None or b_step.plan_step_number == 0:
+                    b_step.plan_step_number = curr_num
+                if b_step.plan_step_number == curr_num and b_step not in candidate_steps_this_planstep:
+                    candidate_steps_this_planstep.append(b_step)
             if current_plan_step and isinstance(current_plan_step, PlanStep):
                 if current_plan_subtask and isinstance(current_plan_subtask, Subtask):
-                    complete, next_st = self.judge_subtask_completion(
-                        best_interaction.steps[-1], current_plan_subtask
+                    subtask_step = best_interaction.steps[-1] if best_interaction.steps else None
+                    complete, next_st = (
+                        self.judge_subtask_completion(subtask_step, current_plan_subtask)
+                        if subtask_step is not None
+                        else (False, current_plan_subtask.subtask_number)
                     )
                     if complete:
                         current_plan_subtask.completed = True
@@ -8176,20 +8202,19 @@ Task: {task}
                     else:
                         current_plan_subtask.completed = False
                 complete, next_step_num = self.judge_step_completion(
-                    steps_this_planstep, current_plan_step, max_step
+                    candidate_steps_this_planstep, current_plan_step, max_step
                 )
                 if complete:
                     current_plan_step.completed = True
-                    if (
-                        best_interaction.steps
-                        and task_object.plan.steps[planstep_index].completed
-                    ):
-                        for step in best_interaction.steps:
-                            if step not in main_interaction.steps:
-                                main_interaction.steps.append(step)
-                        for reflection in best_interaction.reflections:
+                    if best_interaction.steps:
+                        for stp in best_interaction.steps:
+                            if stp not in main_interaction.steps:
+                                main_interaction.steps.append(stp)
+                        for reflection in (best_interaction.reflections or []):
                             if reflection not in main_interaction.reflections:
                                 main_interaction.reflections.append(reflection)
+                    if best_interaction.answer and best_interaction.answer.strip():
+                        main_interaction.answer = best_interaction.answer
 
                     steps_this_planstep = [
                         stp
@@ -8263,7 +8288,7 @@ Task: {task}
                 print_saver.print_and_store(
                     f"\n\nFinal Answer: {main_interaction.answer}\n\n"
                 )
-                interaction = self.judge_final_answer(task, main_interaction)
+                interaction = self.judge_final_answer(task_object, main_interaction)
                 main_interaction.final_reward = interaction.final_reward
                 return main_interaction
         else:
