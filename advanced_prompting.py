@@ -2769,31 +2769,49 @@ class AdvancedPromptEngineer:
     def component_decision(self, task: Task, plan_step: PlanStep) -> str:
         """Decide the component type for the final output based on the task and plan step requirements."""
 
-        planstep_outputs = [
-            (
-                (task.planstep_outputs[output_index].final_output, True)
-                if output_index < len(task.planstep_outputs)
-                else ("No output yet", False)
-            )
-            for output_index in range(len(task.plan.steps))
-        ]
-        plan_steps_strs = [
-            {
-                f"""\n Plan Step Number: {plan_step.step_number} \n
-            {plan_step.step_name}: {plan_step.step_description} \n
-            Plan Step Explanation: {plan_step.step_explanation} \n
-            Plan Step Expected Output: {plan_step.step_output} \n
-            Plan Step Full Text: {plan_step.step_full_text} \n
-            Plan Step Completed? {plan_step.completed} \n
-            Plan Step Output: {output} """: plan_step.step_number
-            }
-            for plan_step, output in zip(task.plan.steps, planstep_outputs)
-        ]
-        plan_steps_strs = sorted(plan_steps_strs, key=lambda x: list(x.values())[0])
-
-        full_plan = "\n".join(
-            [list(plan_step.keys())[0] for plan_step in plan_steps_strs]
+        plan_steps = (
+            list(task.plan.steps)
+            if getattr(task, "plan", None) is not None and getattr(task.plan, "steps", None)
+            else []
         )
+        raw_outputs = (
+            list(task.planstep_outputs)
+            if getattr(task, "planstep_outputs", None)
+            else []
+        )
+        planstep_outputs: Dict[int, Tuple[str, bool]] = {
+            ps.step_number: ("No output yet", False) for ps in plan_steps
+        }
+        unkeyed_outputs: List[Tuple[int, Any]] = []
+        for output_index, po in enumerate(raw_outputs):
+            po_planstep = getattr(po, "planstep", None)
+            po_step_num = getattr(po_planstep, "step_number", None)
+            if po_step_num is not None:
+                planstep_outputs[po_step_num] = (po.final_output, True)
+            else:
+                unkeyed_outputs.append((output_index, po))
+        for output_index, po in unkeyed_outputs:
+            if output_index < len(plan_steps):
+                fallback_step_num = plan_steps[output_index].step_number
+                if not planstep_outputs.get(fallback_step_num, ("No output yet", False))[1]:
+                    planstep_outputs[fallback_step_num] = (po.final_output, True)
+
+        plan_steps_strs = [
+            (
+                ps.step_number,
+                f"""\n Plan Step Number: {ps.step_number} \n
+            {ps.step_name}: {ps.step_description} \n
+            Plan Step Explanation: {ps.step_explanation} \n
+            Plan Step Expected Output: {ps.step_output} \n
+            Plan Step Full Text: {ps.step_full_text} \n
+            Plan Step Completed? {ps.completed} \n
+            Plan Step Output: {planstep_outputs.get(ps.step_number, ("No output yet", False))} """,
+            )
+            for ps in plan_steps
+        ]
+        plan_steps_strs.sort(key=lambda item: item[0])
+
+        full_plan = "\n".join(text for _, text in plan_steps_strs)
 
         system_prompt = {
             "role": "system",
@@ -2894,7 +2912,7 @@ class AdvancedPromptEngineer:
         Plan Step Full Text: '{plan_step.step_full_text}'
         Plan Step Explanation: '{plan_step.step_explanation}'
         Is Plan Step Completed? {plan_step.completed}
-        Plan Step Output: {planstep_outputs[plan_step.step_number - 1][0]}
+        Plan Step Output: {planstep_outputs.get(plan_step.step_number, ("No output yet", False))[0]}
 
         This Plan Step is part of the following Task:
         Task Description: '{task.description}'

@@ -69,10 +69,24 @@ def _storage_dir_name(owner_id: str) -> str:
     return f"run_{digest}"
 
 
+def _normalize_path_for_compare(path: str) -> str:
+    """Normalize path separators and platform casing for safe path comparisons."""
+    return os.path.normcase(os.path.normpath(path))
+
+
+def _paths_equal(path_a: str, path_b: str) -> bool:
+    """Return True iff two paths refer to the same normalized location."""
+    return _normalize_path_for_compare(path_a) == _normalize_path_for_compare(path_b)
+
+
 def _is_within_directory(target_path: str, base_dir: str) -> bool:
     """Return True iff target_path is inside or equal to base_dir on the same drive."""
+    if not target_path or not base_dir:
+        return False
     try:
-        return os.path.commonpath([target_path, base_dir]) == base_dir
+        norm_target = _normalize_path_for_compare(target_path)
+        norm_base = _normalize_path_for_compare(base_dir)
+        return os.path.commonpath([norm_target, norm_base]) == norm_base
     except ValueError:
         return False
 
@@ -288,16 +302,20 @@ def get_artifacts_base_dir() -> str:
     """Return the application-owned base directory for generated run artifacts."""
     configured = os.environ.get("APS_ARTIFACTS_DIR")
     base = configured if configured else os.path.join(os.getcwd(), ".aps_artifacts")
-    return os.path.realpath(os.path.abspath(base))
+    raw_base = os.path.abspath(base)
+    os.makedirs(raw_base, exist_ok=True)
+    return os.path.realpath(raw_base)
 
 
 def get_run_artifact_dir(run_id: Optional[str] = None) -> str:
     """Return (and lazily create) the dedicated collision-resistant artifact directory for a run."""
     owner_id = _REGISTRY.resolve_owner_id(run_id)
     dir_name = _storage_dir_name(owner_id)
-    base_dir = get_artifacts_base_dir()
+    raw_base = get_artifacts_base_dir()
+    os.makedirs(raw_base, exist_ok=True)
+    base_dir = os.path.realpath(raw_base)
     run_dir = os.path.realpath(os.path.join(base_dir, dir_name))
-    if not _is_within_directory(run_dir, base_dir) or run_dir == base_dir:
+    if not _is_within_directory(run_dir, base_dir) or _paths_equal(run_dir, base_dir):
         raise PermissionError("Invalid artifact run scope path")
     os.makedirs(run_dir, exist_ok=True)
     return run_dir
@@ -346,7 +364,7 @@ def resolve_output_filepath(filename: str, run_id: Optional[str] = None) -> str:
                 f"Artifact path '{filename}' escapes allowed artifact directory '{anchor_dir}'."
             )
         real_target = os.path.realpath(candidate)
-        if not _is_within_directory(real_target, real_anchor) or real_target == real_anchor:
+        if not _is_within_directory(real_target, real_anchor) or _paths_equal(real_target, real_anchor):
             raise PermissionError(
                 f"Artifact path '{filename}' escapes allowed artifact directory via symlink."
             )
@@ -367,7 +385,7 @@ def resolve_output_filepath(filename: str, run_id: Optional[str] = None) -> str:
     real_target = os.path.realpath(abs_path)
     if active_run:
         real_anchor = os.path.realpath(get_run_artifact_dir(active_run))
-        if not _is_within_directory(real_target, real_anchor) or real_target == real_anchor:
+        if not _is_within_directory(real_target, real_anchor) or _paths_equal(real_target, real_anchor):
             raise PermissionError(
                 f"Absolute artifact path '{filename}' escapes active run sandbox '{real_anchor}'."
             )

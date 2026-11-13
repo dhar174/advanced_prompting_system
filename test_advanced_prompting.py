@@ -743,6 +743,133 @@ class TestAdvancedPromptEngineer(unittest.TestCase):
         # Ensure decision is one of the valid string values from ComponentType
         self.assertIn(decision, ComponentType.values())
 
+    def _make_plan_step(self, step_number: int, name: str = "Step") -> PlanStep:
+        return PlanStep(
+            step_number=step_number,
+            completed=False,
+            step_name=f"{name} {step_number}",
+            step_description=f"Description for step {step_number}",
+            step_explanation=f"Explanation for step {step_number}",
+            step_output=f"Expected output {step_number}",
+            step_full_text=f"Full text {step_number}",
+            subtasks=[],
+        )
+
+    def _make_final_planstep_output(
+        self, plan_step: PlanStep, final_output: str
+    ) -> FinalPlanStepOutput:
+        return FinalPlanStepOutput(
+            final_output=final_output,
+            output_type=self.output_type,
+            version=1,
+            component_type=ComponentType["standalone_file"],
+            steps=[],
+            planstep=plan_step,
+            file_name="out.py",
+            parent_file_name="",
+        )
+
+    def _make_task_with_outputs(
+        self, plan_steps, planstep_outputs, description: str = "Component decision test"
+    ) -> Task:
+        task = Task(
+            description=description,
+            refined_description=description,
+            complexity=1,
+            steps=[],
+            reflections=[],
+            answer="",
+            final_reward=0.0,
+            plan=Plan(steps=plan_steps),
+            output_type=self.output_type,
+        )
+        task.planstep_outputs = list(planstep_outputs)
+        return task
+
+    def test_component_decision_sparse_step_number(self):
+        step1 = self._make_plan_step(1)
+        step3 = self._make_plan_step(3)
+        task = self._make_task_with_outputs(
+            [step1],
+            [self._make_final_planstep_output(step1, "ONLY_STEP_1")],
+            description="Sparse step test",
+        )
+
+        decision = self.engineer.component_decision(task, step3)
+        self.assertIn(decision, ComponentType.values())
+        user_msg = self.mock_create.call_args.kwargs["messages"][-1]["content"]
+        self.assertIn("Plan Step Output: No output yet", user_msg)
+        self.assertNotIn("Plan Step Output: ONLY_STEP_1", user_msg)
+
+        # When a sparse output explicitly matches step 3, it must be surfaced.
+        task.planstep_outputs.append(
+            self._make_final_planstep_output(step3, "SPARSE_STEP_3_OUT")
+        )
+        decision_with_out = self.engineer.component_decision(task, step3)
+        self.assertIn(decision_with_out, ComponentType.values())
+        user_msg_with_out = self.mock_create.call_args.kwargs["messages"][-1]["content"]
+        self.assertIn("Plan Step Output: SPARSE_STEP_3_OUT", user_msg_with_out)
+
+    def test_component_decision_zero_and_negative_step_number_do_not_wrap_to_last(self):
+        step1 = self._make_plan_step(1)
+        step2 = self._make_plan_step(2)
+        task = self._make_task_with_outputs(
+            [step1, step2],
+            [
+                self._make_final_planstep_output(step1, "FIRST_OUT"),
+                self._make_final_planstep_output(step2, "LAST_OUT_MUST_NOT_LEAK"),
+            ],
+            description="Zero step test",
+        )
+
+        for bad_num in (0, -1):
+            bad_step = self._make_plan_step(bad_num)
+            decision = self.engineer.component_decision(task, bad_step)
+            self.assertIn(decision, ComponentType.values())
+            user_msg = self.mock_create.call_args.kwargs["messages"][-1]["content"]
+            step_header_section = user_msg.split("This Plan Step is part of the following Task:")[0]
+            self.assertIn("Plan Step Output: No output yet", step_header_section)
+            self.assertNotIn("LAST_OUT_MUST_NOT_LEAK", step_header_section)
+
+    def test_component_decision_empty_plan_steps(self):
+        orphan_step = self._make_plan_step(1)
+        task = self._make_task_with_outputs(
+            [],
+            [],
+            description="Empty plan steps test",
+        )
+
+        decision = self.engineer.component_decision(task, orphan_step)
+        self.assertIn(decision, ComponentType.values())
+        user_msg = self.mock_create.call_args.kwargs["messages"][-1]["content"]
+        self.assertIn("Plan Step Output: No output yet", user_msg)
+
+    def test_component_decision_out_of_order_planstep_outputs_matched_by_step_number(self):
+        step1 = self._make_plan_step(1)
+        step2 = self._make_plan_step(2)
+        task = self._make_task_with_outputs(
+            [step1, step2],
+            [
+                self._make_final_planstep_output(step2, "SECOND_STEP_OUTPUT"),
+                self._make_final_planstep_output(step1, "FIRST_STEP_OUTPUT"),
+            ],
+            description="Out of order outputs test",
+        )
+
+        self.engineer.component_decision(task, step1)
+        msg_step1 = self.mock_create.call_args.kwargs["messages"][-1]["content"]
+        header_step1 = msg_step1.split("This Plan Step is part of the following Task:")[0]
+        self.assertIn("Plan Step Output: FIRST_STEP_OUTPUT", header_step1)
+        self.assertNotIn("SECOND_STEP_OUTPUT", header_step1)
+        self.assertIn("Plan Step Output: ('FIRST_STEP_OUTPUT', True)", msg_step1)
+        self.assertIn("Plan Step Output: ('SECOND_STEP_OUTPUT', True)", msg_step1)
+
+        self.engineer.component_decision(task, step2)
+        msg_step2 = self.mock_create.call_args.kwargs["messages"][-1]["content"]
+        header_step2 = msg_step2.split("This Plan Step is part of the following Task:")[0]
+        self.assertIn("Plan Step Output: SECOND_STEP_OUTPUT", header_step2)
+        self.assertNotIn("FIRST_STEP_OUTPUT", header_step2)
+
 
     def test_judge_step_completion(self):
         step_list = [ # judge_step_completion expects a List[Step]
