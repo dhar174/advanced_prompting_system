@@ -85,7 +85,7 @@ describe('apolloClient auth & 401 handling', () => {
     }
   });
 
-  it('omits Authorization header when no token is set or after clearApiToken', async () => {
+  it('omits and strips stale Authorization headers when no token is set or after clearApiToken during refetch', async () => {
     const capturedHeaders: Array<Record<string, string> | undefined> = [];
     const mockLink = new ApolloLink((operation) => {
       capturedHeaders.push(operation.getContext().headers as Record<string, string> | undefined);
@@ -98,12 +98,31 @@ describe('apolloClient auth & 401 handling', () => {
     const apollo = createApolloClient(mockLink);
     await apollo.query({ query: GET_EXECUTION_MODES, fetchPolicy: 'network-only' });
 
+    // Even if operation context carried a stale Authorization header, createAuthLink strips it when cleared.
     setApiToken('temp-token');
+    const observableQuery = apollo.watchQuery({
+      query: GET_EXECUTION_MODES,
+      fetchPolicy: 'network-only',
+      context: {
+        headers: {
+          Authorization: 'Bearer stale-inline-token',
+          authorization: 'Bearer stale-lower-token',
+          'X-Custom': 'keep-me',
+        },
+      },
+    });
+    await observableQuery.result();
+    expect(capturedHeaders[1]?.Authorization).toBe('Bearer temp-token');
+    expect(capturedHeaders[1]?.authorization).toBeUndefined();
+    expect(capturedHeaders[1]?.['X-Custom']).toBe('keep-me');
+
     clearApiToken();
-    await apollo.query({ query: GET_EXECUTION_MODES, fetchPolicy: 'network-only' });
+    await observableQuery.refetch();
 
     expect(capturedHeaders[0]?.Authorization).toBeUndefined();
-    expect(capturedHeaders[1]?.Authorization).toBeUndefined();
+    expect(capturedHeaders[2]?.Authorization).toBeUndefined();
+    expect(capturedHeaders[2]?.authorization).toBeUndefined();
+    expect(capturedHeaders[2]?.['X-Custom']).toBe('keep-me');
   });
 
   it('clears stored token and notifies authRequired listeners on HTTP 401', async () => {

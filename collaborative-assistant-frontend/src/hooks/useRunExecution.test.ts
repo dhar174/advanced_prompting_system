@@ -364,9 +364,64 @@ describe('useRunExecution hook', () => {
       GET_EXECUTION_MODES,
       expect.objectContaining({
         fetchPolicy: 'cache-first',
-        context: { headers: { Authorization: 'Bearer active-bearer-token' } },
       })
     );
+    const modesQueryOptions = (useQuery as unknown as ReturnType<typeof vi.fn>).mock.calls.find(
+      (call) => call[0] === GET_EXECUTION_MODES
+    )?.[1] as { context?: unknown } | undefined;
+    expect(modesQueryOptions?.context).toBeUndefined();
+  });
+
+  it('clears stored token BEFORE discovery refetch on clearStoredApiToken and transitions fail-closed on 401', async () => {
+    setApiToken('active-bearer-token');
+    let tokenSeenDuringRefetch: string | null = null;
+    let isCleared = false;
+
+    const refetchModes = vi.fn().mockImplementation(async () => {
+      tokenSeenDuringRefetch = getApiToken();
+      if (!tokenSeenDuringRefetch) {
+        isCleared = true;
+        throw Object.assign(new Error('Authentication required.'), {
+          networkError: { statusCode: 401 },
+        });
+      }
+      return { data: { executionModes: READY_MODES } };
+    });
+
+    (useQuery as unknown as ReturnType<typeof vi.fn>).mockImplementation((query: unknown) => {
+      if (query === GET_EXECUTION_MODES) {
+        return isCleared
+          ? {
+              data: null,
+              loading: false,
+              error: { networkError: { statusCode: 401 }, message: 'Authentication required.' },
+              refetch: refetchModes,
+            }
+          : {
+              data: { executionModes: READY_MODES },
+              loading: false,
+              error: undefined,
+              refetch: refetchModes,
+            };
+      }
+      return { data: null, loading: false, error: undefined, refetch: vi.fn() };
+    });
+
+    const { result, rerender } = renderHook(() => useRunExecution());
+    expect(result.current.discoveryStatus).toBe('available');
+    expect(result.current.hasApiToken).toBe(true);
+
+    await act(async () => {
+      await result.current.clearStoredApiToken();
+    });
+    rerender();
+
+    expect(refetchModes).toHaveBeenCalledTimes(1);
+    expect(tokenSeenDuringRefetch).toBe('');
+    expect(getApiToken()).toBe('');
+    expect(result.current.hasApiToken).toBe(false);
+    expect(result.current.discoveryStatus).toBe('auth_required');
+    expect(result.current.executionModes).toEqual([]);
   });
 
   it('prevents stale response application when cancelled in flight', async () => {

@@ -7,13 +7,17 @@ export function createAuthLink(): ApolloLink {
   return setContext((_, previousContext) => {
     const existingHeaders =
       (previousContext?.headers as Record<string, string> | undefined) ?? {};
+    const cleanedHeaders = { ...existingHeaders };
+    delete cleanedHeaders.Authorization;
+    delete cleanedHeaders.authorization;
+
     const token = getApiToken();
     if (!token) {
-      return { headers: existingHeaders };
+      return { headers: cleanedHeaders };
     }
     return {
       headers: {
-        ...existingHeaders,
+        ...cleanedHeaders,
         Authorization: `Bearer ${token}`,
       },
     };
