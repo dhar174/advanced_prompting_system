@@ -170,6 +170,10 @@ class ExecutionModeCapabilityType:
     unavailable_reason: Optional[str] = None
     supports_cancellation: bool = False
     supports_resume: bool = False
+    min_num_rounds: Optional[int] = None
+    max_num_rounds: Optional[int] = None
+    max_steps: Optional[int] = None
+    max_agents: Optional[int] = None
 
 @strawberry.input
 class RunExecutionInput:
@@ -293,6 +297,8 @@ def _build_run_execution_response(run_result: Any) -> RunExecutionResponse:
         agent_attributions=attributions_gql,
     )
 
+    from execution_modes import sanitize_public_error_message
+
     events_gql = [
         RunEventTypeGQL(
             event_id=evt.event_id,
@@ -302,12 +308,18 @@ def _build_run_execution_response(run_result: Any) -> RunExecutionResponse:
             step_number=evt.step_number,
             plan_step_number=evt.plan_step_number,
             agent_name=evt.agent_name,
-            summary=evt.summary,
+            summary=sanitize_public_error_message(
+                evt.summary, default_message=evt.event_type
+            ),
         )
         for evt in run_result.events
     ]
 
-    error_msg = run_result.error.error_message if run_result.error else None
+    error_msg = (
+        sanitize_public_error_message(run_result.error.error_message)
+        if run_result.error
+        else None
+    )
     artifacts_gql = [
         ArtifactRefType(
             artifact_id=a.artifact_id,
@@ -345,13 +357,9 @@ def _build_run_execution_response(run_result: Any) -> RunExecutionResponse:
 
 def _sanitize_error_message(exc: Exception) -> str:
     """Return a concise, safe error message without leaking tracebacks, keys, or filesystem paths."""
-    msg = str(exc or "").strip() or exc.__class__.__name__
-    msg = re.sub(r"sk-[A-Za-z0-9_\-]+", "[REDACTED]", msg)
-    msg = re.sub(r"[A-Za-z]:\\[^\s'\"]+", "[PATH]", msg)
-    msg = re.sub(r"/(?:home|Users|tmp|var|app|srv)/[^\s'\"]+", "[PATH]", msg)
-    if len(msg) > 400:
-        msg = msg[:397] + "..."
-    return msg
+    from execution_modes import sanitize_public_error_message
+
+    return sanitize_public_error_message(exc)
 
 
 def _build_error_run_response(
@@ -405,6 +413,10 @@ class Query:
                     unavailable_reason=getattr(cap, "unavailable_reason", None),
                     supports_cancellation=bool(getattr(cap, "supports_cancellation", False)),
                     supports_resume=bool(getattr(cap, "supports_resume", False)),
+                    min_num_rounds=getattr(cap, "min_num_rounds", None),
+                    max_num_rounds=getattr(cap, "max_num_rounds", None),
+                    max_steps=getattr(cap, "max_steps", None),
+                    max_agents=getattr(cap, "max_agents", None),
                 )
             )
         return capabilities
@@ -446,9 +458,16 @@ class Mutation:
         leadPersonality: str,
         num_rounds: int,
     ) -> RunConversationResponse:
-        """Legacy conversation mutation preserved for full backward compatibility."""
-        from conversation_manager import run_conversation
-        from execution_modes import MAX_NUM_ROUNDS, MAX_TASK_PROMPT_CHARS, PERSONALITY_CATALOG
+        """Legacy conversation mutation routed through unified execution_modes policy & run scope."""
+        from execution_modes import (
+            MAX_NUM_ROUNDS,
+            MAX_TASK_PROMPT_CHARS,
+            PERSONALITY_CATALOG,
+            RunRequest,
+            execute_run,
+            get_provider_config,
+            sanitize_public_error_message,
+        )
 
         if not conversation:
             raise ValueError("Conversation must contain at least one message.")
@@ -485,19 +504,33 @@ class Mutation:
         )
 
         try:
-            result = run_conversation(
-                conversation_dicts,
-                cleaned_personalities,
-                lead_clean,
-                num_rounds,
+            cfg = get_provider_config()
+            req = RunRequest(
+                mode="collaborative",
+                conversation=conversation_dicts,
+                assistant_personalities=cleaned_personalities,
+                lead_personality=lead_clean,
+                num_rounds=num_rounds,
+                model=cfg.default_model,
+                temperature=cfg.temperature,
             )
+            result = execute_run(req)
         except ValueError as exc:
             raise ValueError(_sanitize_error_message(exc)) from None
         except Exception as exc:
             logger.exception("run_conversation failed")
             raise RuntimeError(f"Conversation execution failed: {_sanitize_error_message(exc)}") from None
 
-        conversation_history, questions_asked, final_output = result
+        if result.status != "completed" or result.error is not None:
+            raw_err = (
+                result.error.error_message
+                if result.error and result.error.error_message
+                else f"Conversation execution did not complete ({result.stop_reason or result.status})."
+            )
+            safe_err = sanitize_public_error_message(raw_err)
+            if result.stop_reason in ("invalid_input", "disallowed_model"):
+                raise ValueError(safe_err)
+            raise RuntimeError(f"Conversation execution failed: {safe_err}")
 
         conversation_objs = [
             Conversation(
@@ -505,7 +538,7 @@ class Mutation:
                 name=entry.get("name") or "",
                 content=entry.get("content", ""),
             )
-            for entry in conversation_history
+            for entry in result.conversation
         ]
 
         question_objs = [
@@ -513,13 +546,13 @@ class Mutation:
                 assistant=q.get("assistant", ""),
                 question=q.get("question") or q.get("reply") or "",
             )
-            for q in questions_asked
+            for q in result.questions
         ]
 
         return RunConversationResponse(
             conversation=conversation_objs,
             questions=question_objs,
-            final_output=final_output,
+            final_output=result.final_output,
         )
 
     @strawberry.mutation

@@ -470,6 +470,22 @@ class ExecutionModeCapability(BaseModel):
         default=False,
         description="Whether pausing and resuming an active run is supported.",
     )
+    min_num_rounds: Optional[int] = Field(
+        default=None,
+        description="Minimum collaborative debate rounds supported by this mode, if applicable.",
+    )
+    max_num_rounds: Optional[int] = Field(
+        default=None,
+        description="Maximum collaborative debate rounds supported by this mode, if applicable.",
+    )
+    max_steps: Optional[int] = Field(
+        default=None,
+        description="Maximum pipeline steps supported by this mode, if applicable.",
+    )
+    max_agents: Optional[int] = Field(
+        default=None,
+        description="Maximum parallel/collaborative agents supported by this mode, if applicable.",
+    )
 
 
 # ============================================================================
@@ -786,6 +802,10 @@ CAPABILITY_REGISTRY: Dict[ExecutionModeId, ExecutionModeCapability] = {
         supports_step_planning=False,
         supports_cancellation=False,
         supports_resume=False,
+        min_num_rounds=1,
+        max_num_rounds=MAX_NUM_ROUNDS,
+        max_steps=None,
+        max_agents=None,
     ),
     "advanced_pipeline": ExecutionModeCapability(
         id="advanced_pipeline",
@@ -799,6 +819,10 @@ CAPABILITY_REGISTRY: Dict[ExecutionModeId, ExecutionModeCapability] = {
         supports_step_planning=True,
         supports_cancellation=False,
         supports_resume=False,
+        min_num_rounds=None,
+        max_num_rounds=None,
+        max_steps=MAX_PIPELINE_STEPS,
+        max_agents=MAX_AGENTS,
     ),
     "tree_of_thought": ExecutionModeCapability(
         id="tree_of_thought",
@@ -812,6 +836,10 @@ CAPABILITY_REGISTRY: Dict[ExecutionModeId, ExecutionModeCapability] = {
         supports_step_planning=True,
         supports_cancellation=False,
         supports_resume=False,
+        min_num_rounds=None,
+        max_num_rounds=None,
+        max_steps=None,
+        max_agents=None,
     ),
 }
 

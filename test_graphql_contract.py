@@ -4,9 +4,14 @@ Validates that the Strawberry GraphQL schema resolver returns the exact schema s
 expected by the frontend React client.
 """
 
+import json
+import os
+import tempfile
+import time
 import unittest
 from unittest.mock import patch
 import strawberry
+import provider_client
 from schema import Query, Mutation
 from execution_modes import (
     RunResult,
@@ -376,6 +381,180 @@ class TestGraphQLContract(unittest.TestCase):
         self.assertEqual(pipeline_data["diagnostics"]["planSteps"][0]["stepName"], "Validate Claims")
         self.assertEqual(pipeline_data["diagnostics"]["planSteps"][0]["subtasks"][0]["subtaskName"], "Check signature")
         self.assertEqual(pipeline_data["diagnostics"]["reflections"][0]["reward"], 0.95)
+
+    def test_execution_modes_exposes_round_step_agent_bounds(self):
+        """Verify Query.executionModes exposes minNumRounds, maxNumRounds, maxSteps, maxAgents."""
+        query = """
+        query ModeBounds {
+            executionModes {
+                id
+                minNumRounds
+                maxNumRounds
+                maxSteps
+                maxAgents
+            }
+        }
+        """
+        result = self.schema.execute_sync(query)
+        self.assertIsNone(result.errors, f"Errors: {result.errors}")
+        mode_map = {m["id"]: m for m in result.data["executionModes"]}
+
+        self.assertEqual(mode_map["collaborative"]["minNumRounds"], 1)
+        self.assertEqual(mode_map["collaborative"]["maxNumRounds"], 10)
+        self.assertIsNone(mode_map["collaborative"]["maxSteps"])
+        self.assertIsNone(mode_map["collaborative"]["maxAgents"])
+
+        self.assertIsNone(mode_map["advanced_pipeline"]["minNumRounds"])
+        self.assertIsNone(mode_map["advanced_pipeline"]["maxNumRounds"])
+        self.assertEqual(mode_map["advanced_pipeline"]["maxSteps"], 50)
+        self.assertEqual(mode_map["advanced_pipeline"]["maxAgents"], 10)
+
+        self.assertIsNone(mode_map["tree_of_thought"]["minNumRounds"])
+        self.assertIsNone(mode_map["tree_of_thought"]["maxNumRounds"])
+        self.assertIsNone(mode_map["tree_of_thought"]["maxSteps"])
+        self.assertIsNone(mode_map["tree_of_thought"]["maxAgents"])
+
+    def test_run_conversation_and_run_execution_enforce_policy_and_sanitize_events(self):
+        """Verify both runConversation and runExecution enforce provider policy, artifact scope, and sanitization."""
+        rc_mutation = """
+        mutation RunConv($conversation: [ConversationInput!]!, $assistantPersonalities: [String!]!, $leadPersonality: String!, $numRounds: Int!) {
+            runConversation(
+                conversation: $conversation,
+                assistantPersonalities: $assistantPersonalities,
+                leadPersonality: $leadPersonality,
+                numRounds: $numRounds
+            ) {
+                conversation { role name content }
+                questions { assistant question }
+                finalOutput
+            }
+        }
+        """
+        re_mutation = """
+        mutation RunExec($input: RunExecutionInput!) {
+            runExecution(input: $input) {
+                mode
+                status
+                stopReason
+                finalOutput
+                errorMessage
+                events { eventType summary }
+            }
+        }
+        """
+        rc_vars = {
+            "conversation": [{"role": "user", "name": "User", "content": "Evaluate plan"}],
+            "assistantPersonalities": ["Strategist", "Mediator"],
+            "leadPersonality": "Strategist",
+            "numRounds": 1,
+        }
+
+        def _re_vars(model=None):
+            payload = {
+                "mode": "collaborative",
+                "taskPrompt": "Evaluate plan",
+                "assistantPersonalities": ["Strategist", "Mediator"],
+                "leadPersonality": "Strategist",
+                "numRounds": 1,
+            }
+            if model is not None:
+                payload["model"] = model
+            return {"input": payload}
+
+        # 1. APS_ALLOWED_MODELS restriction across both mutations
+        with patch.dict(os.environ, {"APS_ALLOWED_MODELS": "gpt-4o-mini"}, clear=False):
+            def _disallowed_rc(*args, **kwargs):
+                provider_client.consume_provider_call("forbidden-model-xyz")
+                return ([], [], "should-not-succeed")
+
+            with patch("conversation_manager.run_conversation", side_effect=_disallowed_rc):
+                rc_res = self.schema.execute_sync(rc_mutation, variable_values=rc_vars)
+            self.assertIsNotNone(rc_res.errors)
+
+            re_res = self.schema.execute_sync(re_mutation, variable_values=_re_vars(model="forbidden-model-xyz"))
+            self.assertIsNone(re_res.errors)
+            self.assertEqual(re_res.data["runExecution"]["status"], "error")
+            self.assertEqual(re_res.data["runExecution"]["stopReason"], "disallowed_model")
+
+        # 2. APS_PROVIDER_MAX_CALLS=1 enforcement across both mutations
+        with patch.dict(os.environ, {"APS_PROVIDER_MAX_CALLS": "1"}, clear=False):
+            def _budget_rc(*args, **kwargs):
+                provider_client.consume_provider_call("gpt-4o-mini")
+                provider_client.consume_provider_call("gpt-4o-mini")
+                return ([], [], "should-not-succeed")
+
+            with patch("conversation_manager.run_conversation", side_effect=_budget_rc):
+                rc_res = self.schema.execute_sync(rc_mutation, variable_values=rc_vars)
+                re_res = self.schema.execute_sync(re_mutation, variable_values=_re_vars())
+
+            self.assertIsNotNone(rc_res.errors)
+            self.assertIsNone(re_res.errors)
+            self.assertEqual(re_res.data["runExecution"]["status"], "budget_exhausted")
+            self.assertEqual(re_res.data["runExecution"]["stopReason"], "budget_exhausted")
+
+        # 3. Timeout enforcement across both mutations
+        with patch.dict(os.environ, {"APS_PROVIDER_TIMEOUT_SECONDS": "0.05"}, clear=False):
+            def _timeout_rc(*args, **kwargs):
+                time.sleep(0.08)
+                provider_client.consume_provider_call("gpt-4o-mini")
+                return ([], [], "should-not-succeed")
+
+            with patch("conversation_manager.run_conversation", side_effect=_timeout_rc):
+                rc_res = self.schema.execute_sync(rc_mutation, variable_values=rc_vars)
+                re_res = self.schema.execute_sync(re_mutation, variable_values=_re_vars())
+
+            self.assertIsNotNone(rc_res.errors)
+            self.assertIsNone(re_res.errors)
+            self.assertEqual(re_res.data["runExecution"]["status"], "timeout")
+            self.assertEqual(re_res.data["runExecution"]["stopReason"], "timeout")
+
+        # 4. Escaping absolute filenames (Windows, POSIX, and real temp file) must never be read from disk
+        with tempfile.TemporaryDirectory() as tmpdir:
+            escaped_file = os.path.join(tmpdir, "escape.txt")
+            with open(escaped_file, "w", encoding="utf-8") as fh:
+                fh.write("ESCAPED_DISK_SECRET_SENTINEL")
+
+            for candidate_escape in ("C:\\escape.txt", "/tmp/escape.txt", escaped_file):
+                fake_tuple = ([{"role": "assistant", "name": "Strategist", "content": "Done"}], [], candidate_escape)
+                with patch("conversation_manager.run_conversation", return_value=fake_tuple):
+                    rc_res = self.schema.execute_sync(rc_mutation, variable_values=rc_vars)
+                    re_res = self.schema.execute_sync(re_mutation, variable_values=_re_vars())
+
+                self.assertIsNone(rc_res.errors)
+                self.assertIsNone(re_res.errors)
+                self.assertNotIn("ESCAPED_DISK_SECRET_SENTINEL", rc_res.data["runConversation"]["finalOutput"])
+                self.assertNotIn("ESCAPED_DISK_SECRET_SENTINEL", re_res.data["runExecution"]["finalOutput"])
+
+        # 5. Zero secret/Bearer/path leaks across serialized JSON (including events[].summary)
+        secret_err = (
+            "Failed sk-sentinel-secret-999 Bearer sentinel-bearer-tok "
+            "token=sentinel-kv-888 C:\\Users\\alice\\secret.txt /tmp/leak.txt"
+        )
+        with patch("conversation_manager.run_conversation", side_effect=RuntimeError(secret_err)):
+            rc_res = self.schema.execute_sync(rc_mutation, variable_values=rc_vars)
+            re_res = self.schema.execute_sync(re_mutation, variable_values=_re_vars())
+
+        self.assertIsNotNone(rc_res.errors)
+        rc_serialized = json.dumps([e.message for e in rc_res.errors])
+        re_serialized = json.dumps(re_res.data)
+        for serialized in (rc_serialized, re_serialized):
+            for forbidden in ("sk-sentinel-secret-999", "sentinel-bearer-tok", "sentinel-kv-888", "C:\\Users\\alice", "/tmp/leak.txt"):
+                self.assertNotIn(forbidden, serialized)
+
+        # Verify _build_run_execution_response sanitizes pre-built RunEvent.summary values too
+        unsanitized_result = RunResult(
+            mode="collaborative",
+            status="error",
+            stop_reason="runtime_error",
+            final_output="",
+            events=[RunEvent(event_type="run_error", mode="collaborative", summary=secret_err)],
+            error=ErrorResult(error_type="RuntimeError", error_message=secret_err),
+        )
+        with patch("execution_modes.execute_run", return_value=unsanitized_result):
+            sanitized_res = self.schema.execute_sync(re_mutation, variable_values=_re_vars())
+        sanitized_json = json.dumps(sanitized_res.data)
+        for forbidden in ("sk-sentinel-secret-999", "sentinel-bearer-tok", "sentinel-kv-888", "C:\\Users\\alice", "/tmp/leak.txt"):
+            self.assertNotIn(forbidden, sanitized_json)
 
 if __name__ == "__main__":
     unittest.main()
