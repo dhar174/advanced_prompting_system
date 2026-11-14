@@ -47,7 +47,7 @@ def test_problem_statement_normalization_string(conversation_case):
     with patch('conversation_manager.define_problem', return_value="def") as spy, \
          patch('conversation_manager.get_assistant_response', return_value={"role": "assistant", "content": "ok"}), \
          patch('conversation_manager.cast_binary_vote', return_value=conversation_manager.BinaryVote(vote=True)), \
-         patch('conversation_manager.finalize_output', return_value="out.txt"):
+         patch('conversation_manager.finalize_output_result', return_value=conversation_manager.ConversationOutput(kind='text', content='out.txt')):
         conversation_manager.run_conversation("String problem", ["A"], "A", num_rounds=1)
         assert spy.called
         assert spy.call_args[0][0].endswith("String problem")
@@ -56,7 +56,7 @@ def test_problem_statement_normalization_list(conversation_case):
     with patch('conversation_manager.define_problem', return_value="def") as spy, \
          patch('conversation_manager.get_assistant_response', return_value={"role": "assistant", "content": "ok"}), \
          patch('conversation_manager.cast_binary_vote', return_value=conversation_manager.BinaryVote(vote=True)), \
-         patch('conversation_manager.finalize_output', return_value="out.txt"):
+         patch('conversation_manager.finalize_output_result', return_value=conversation_manager.ConversationOutput(kind='text', content='out.txt')):
         conversation_manager.run_conversation([{"content": "List dict problem"}], ["A"], "A", num_rounds=1)
         assert spy.called
         assert spy.call_args[0][0].endswith("List dict problem")
@@ -65,7 +65,7 @@ def test_problem_statement_normalization_dict(conversation_case):
     with patch('conversation_manager.define_problem', return_value="def") as spy, \
          patch('conversation_manager.get_assistant_response', return_value={"role": "assistant", "content": "ok"}), \
          patch('conversation_manager.cast_binary_vote', return_value=conversation_manager.BinaryVote(vote=True)), \
-         patch('conversation_manager.finalize_output', return_value="out.txt"):
+         patch('conversation_manager.finalize_output_result', return_value=conversation_manager.ConversationOutput(kind='text', content='out.txt')):
         conversation_manager.run_conversation({"content": "Dict problem"}, ["A"], "A", num_rounds=1)
         assert spy.called
         assert spy.call_args[0][0].endswith("Dict problem")

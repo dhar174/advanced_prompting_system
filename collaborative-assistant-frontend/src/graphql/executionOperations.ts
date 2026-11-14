@@ -75,11 +75,13 @@ export const RUN_EXECUTION = gql`
         fileExtension
       }
       conversation {
+        planStepNumber
         role
         name
         content
       }
       questions {
+        planStepNumber
         assistant
         question
       }

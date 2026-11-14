@@ -291,6 +291,41 @@ class _ChatCompletions:
             full_prompt=prompt_text,
         )
 
+        if scenario == "two_step_metadata_failure" and "SECOND_STEP_OUTPUT" in prompt_text:
+            if kwargs.get("tools") or "<step>" in prompt_text:
+                message = SimpleNamespace(content="", tool_calls=None,
+                    refusal="Output unavailable" if kwargs.get("tools") else None)
+                return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")])
+
+        if scenario == "partial_conversation_failure" and "Please generate the final output content based on the final decision" in prompt_text:
+            raise RuntimeError("sk-review-secret /private/review-path")
+
+        if scenario.startswith("review_takeover"):
+            lower_prompt = prompt_text.lower()
+            if "Take a different approach" in prompt_text:
+                content = ("<thinking>Alternative</thinking><step>SOLO_TAKEOVER_STEP</step>"
+                    "<reflection>Solo takeover assessment</reflection><reward>0.9</reward>"
+                    "<answer>SOLO_TAKEOVER_ANSWER</answer><final_reward>0.9</final_reward>")
+                return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=None), finish_reason="stop")])
+            if "evaluate the following step" in lower_prompt:
+                score = "0.0" if scenario.endswith("zero") else "0.3"
+                content = f"<reflection>Measured discarded candidate.</reflection><reward>{score}</reward>"
+                return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=None), finish_reason="stop")])
+            if "<step>" in prompt_text and "finalizing the final output of a step" not in lower_prompt:
+                return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="", tool_calls=None), finish_reason="stop")])
+
+        second_failure = ("SECOND_STEP_OUTPUT" in prompt_text or getattr(self._parent, "review_second_step_failed", False))
+        if scenario in ("two_step_metadata_partial_failure", "two_step_metadata_provider_failure") and second_failure:
+            if scenario.endswith("provider_failure") and "Please generate the final output content based on the final decision" in prompt_text:
+                raise RuntimeError("sk-review-secret /private/review-path")
+            if kwargs.get("tools"):
+                self._parent.review_second_step_failed = True
+                return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="", tool_calls=None, refusal="Unavailable"), finish_reason="stop")])
+            if "<step>" in prompt_text:
+                content = ("<thinking>Partial work</thinking><step>PARTIAL_SECOND</step><reflection>Unfinished</reflection><reward>0.5</reward>"
+                           if scenario.endswith("partial_failure") else "")
+                return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=None), finish_reason="stop")])
+
         # Tool calling inside conversation_manager.finalize_output
         tools = kwargs.get("tools")
         if tools:
@@ -315,6 +350,18 @@ class _ChatCompletions:
             filename = self._parent.output_filename or filename
             if filename:
                 args_dict["filename"] = filename
+            if scenario.startswith("two_step_metadata") and scenario.endswith("_artifacts"):
+                tool_name = "generate_text_output"
+                args_dict["filename"] = f"nested-candidate-{2 if 'SECOND_STEP_OUTPUT' in prompt_text else 1}.txt"
+            if scenario.startswith("review_takeover"):
+                tool_name = "generate_text_output"
+                args_dict = {"final_decision": "DISCARDED_OUTPUT", "filename": "discarded-debate.txt"}
+            elif scenario == "review_owned_artifact":
+                tool_name = "generate_text_output"
+                args_dict = {"final_decision": "OWNED_RESULT_BYTES", "filename": self._parent.output_filename or "owned-result.txt"}
+            elif scenario == "review_path_text":
+                tool_name = "generate_simple_concise_answer_message"
+                args_dict = {"final_decision": self._parent.output_filename, "filename": "unused.txt"}
             tool_call = SimpleNamespace(
                 id="call_e2e_1",
                 function=SimpleNamespace(name=tool_name, arguments=json.dumps(args_dict)),
@@ -396,6 +443,24 @@ class _ChatCompletions:
             suffix = f" {fmt_tag}" if fmt_tag else ""
             content = f"Deterministic collaborative contribution aligned with task requirements.{suffix}"
 
+        if scenario == "review_sc_evaluation_refused":
+            content = re.sub(r"<final_reward>.*?</final_reward>", "", content)
+        if scenario == "partial_conversation_failure":
+            content += " PARTIAL_HISTORY"
+        if scenario.startswith("review_takeover"):
+            content += " DISCARDED_HISTORY"
+
+        if scenario.startswith("two_step_metadata"):
+            # Deliberately prefer genuine nested output over competing solo candidates.
+            # The production selector/judges still execute; only provider replies differ.
+            second_step = "SECOND_STEP_OUTPUT" in prompt_text
+            rejected = "_rejected" in scenario and second_step
+            if "evaluate the following step" in lower:
+                score = "0.61" if rejected else "0.96"
+                content = f"<reflection>Measured fixture evaluation.</reflection><reward>{score}</reward>"
+            marker_number = 2 if "SECOND_STEP_OUTPUT" in prompt_text else 1
+            content += f" STEP{marker_number}_HISTORY"
+
         if scenario.startswith("two_step"):
             markers = re.findall(r"(?:FIRST|SECOND)_STEP_OUTPUT", prompt_text)
             marker = markers[-1] if markers else "FIRST_STEP_OUTPUT"
@@ -463,7 +528,11 @@ class _BetaCompletions:
                 Arguments=["Structured approach satisfies requirements."],
                 Direct_Replies=cm.DirectReply(
                     assistant_name="Strategist",
-                    reply="Are there additional edge-case deployment constraints to prioritize?",
+                    reply=(f"STEP{2 if 'SECOND_STEP_OUTPUT' in prompt_text else 1}_QUESTION"
+                           if scenario.startswith("two_step_metadata")
+                           else "DISCARDED_QUESTION" if scenario.startswith("review_takeover")
+                           else "PARTIAL_QUESTION" if scenario == "partial_conversation_failure"
+                           else "Are there additional edge-case deployment constraints to prioritize?"),
                 ),
                 Decisions=["Proceed with consensus deliverable."],
                 Recommended_Actions=["Review generated summary and export artifacts."],
@@ -507,7 +576,9 @@ class _BetaCompletions:
         elif response_format is ap.CompletionStatus:
             parsed = ap.CompletionStatus(completion=True)
         elif response_format is ap.FinalReviewScore:
-            parsed = ap.FinalReviewScore(score=0.93)
+            if scenario in ("review_final_judge_refused", "review_sc_evaluation_refused"):
+                return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=None, content=None, refusal="Unavailable"), finish_reason="stop")])
+            parsed = ap.FinalReviewScore(score=1.5 if scenario == "review_final_judge_range" else 0.93)
         elif response_format is ap.PromptSuggestions:
             parsed = ap.PromptSuggestions(prompt_modifications=["Keep answer concise and well-structured."])
         elif response_format is ap.response_choices:

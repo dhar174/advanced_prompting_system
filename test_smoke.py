@@ -9,6 +9,7 @@ Fast, reliable checks with zero external network or OpenAI calls:
 6. GraphQL runConversation returns the schema shape expected by the frontend.
 """
 
+from test_collaboration_results import typed_fixture
 import pytest
 import unittest
 from unittest.mock import patch, mock_open, MagicMock
@@ -57,7 +58,7 @@ class TestSmokeSuite(unittest.TestCase):
              patch("conversation_manager.cast_binary_vote", return_value=BinaryVote(vote=True, reason="OK")), \
              patch("conversation_manager.get_assistant_response", return_value={"role": "assistant", "content": "Done"}), \
              patch("conversation_manager.analyze_final_output", return_value="Checked output"), \
-             patch("conversation_manager.finalize_output", return_value="path/to/final_output.txt"), \
+             patch("conversation_manager.finalize_output_result", return_value=conversation_manager.ConversationOutput(kind="text", content="path/to/final_output.txt")), \
              patch("builtins.open", mock_open()):
             production_tuple = conversation_manager.run_conversation(
                 problem_statement="Test statement",
@@ -72,8 +73,8 @@ class TestSmokeSuite(unittest.TestCase):
         self.assertIsInstance(production_tuple[1], list)
         self.assertEqual(production_tuple[2], "path/to/final_output.txt")
 
-    def test_5_invoke_collaborative_reasoning_consumes_tuple(self):
-        """5. AdvancedPromptEngineer.invoke_collaborative_reasoning consumes 3-tuple properly."""
+    def test_5_invoke_collaborative_reasoning_consumes_typed_result(self):
+        """5. The nested adapter consumes the typed result without guessing string semantics."""
         from advanced_prompting import (
             AdvancedPromptEngineer,
             PromptEngineeringConfig,
@@ -112,19 +113,19 @@ class TestSmokeSuite(unittest.TestCase):
         production_tuple = (dummy_history, dummy_questions, dummy_path)
 
         mock_output_obj = MagicMock()
-        with patch("conversation_manager.run_conversation", return_value=production_tuple):
+        with patch("conversation_manager.run_conversation_result", return_value=typed_fixture(production_tuple)):
             with patch.object(
                 engineer,
-                "convert_conversation_output_to_final_step_output",
+                "convert_conversation_result_to_final_step_output",
                 return_value=mock_output_obj,
             ) as mock_converter:
                 result = engineer.invoke_collaborative_reasoning(
                     task=task,
                     plan_step=plan_step,
                 )
-                # Verify that ONLY the path (dummy_path) was passed to converter, NOT the tuple!
+                # The internal converter receives the explicit typed result; test 4 checks legacy tuples.
                 mock_converter.assert_called_once()
-                self.assertEqual(mock_converter.call_args[0][0], dummy_path)
+                self.assertEqual(mock_converter.call_args[0][0].output.content, dummy_path)
                 self.assertEqual(result, mock_output_obj)
 
     def test_6_graphql_schema_contract(self):
@@ -152,7 +153,7 @@ class TestSmokeSuite(unittest.TestCase):
             [],
             "Final output string",
         )
-        with patch("conversation_manager.run_conversation", return_value=mock_result):
+        with patch("conversation_manager.run_conversation_result", return_value=typed_fixture(mock_result)):
             res = schema.execute_sync(query, variable_values=variables)
 
         self.assertIsNone(res.errors)

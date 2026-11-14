@@ -7,6 +7,7 @@ import os
 import time
 from unittest.mock import patch
 
+from test_collaboration_results import typed_fixture
 import pytest
 
 import app as app_module
@@ -457,7 +458,7 @@ def test_http_graphql_mutations_enforce_policy_and_redact_json(tmp_path, monkeyp
         provider_client.consume_provider_call("forbidden-model-xyz")
         return ([], [], "should-not-succeed")
 
-    with patch("conversation_manager.run_conversation", side_effect=_disallowed):
+    with patch("conversation_manager.run_conversation_result", side_effect=_disallowed):
         resp = _post_mutation(model_override="forbidden-model-xyz")
     assert resp.status_code == 200
     body = resp.get_json()
@@ -474,7 +475,7 @@ def test_http_graphql_mutations_enforce_policy_and_redact_json(tmp_path, monkeyp
         provider_client.consume_provider_call("gpt-4o-mini")
         return ([], [], "should-not-succeed")
 
-    with patch("conversation_manager.run_conversation", side_effect=_budget):
+    with patch("conversation_manager.run_conversation_result", side_effect=_budget):
         resp = _post_mutation()
     assert resp.status_code == 200
     body = resp.get_json()
@@ -492,7 +493,7 @@ def test_http_graphql_mutations_enforce_policy_and_redact_json(tmp_path, monkeyp
         provider_client.consume_provider_call("gpt-4o-mini")
         return ([], [], "should-not-succeed")
 
-    with patch("conversation_manager.run_conversation", side_effect=_timeout):
+    with patch("conversation_manager.run_conversation_result", side_effect=_timeout):
         resp = _post_mutation()
     assert resp.status_code == 200
     body = resp.get_json()
@@ -508,8 +509,8 @@ def test_http_graphql_mutations_enforce_policy_and_redact_json(tmp_path, monkeyp
     escaped_file.write_text("ESCAPED_HTTP_FILE_SENTINEL", encoding="utf-8")
     for escape_target in ("C:\\escape.txt", "/tmp/escape.txt", str(escaped_file)):
         with patch(
-            "conversation_manager.run_conversation",
-            return_value=([{"role": "assistant", "name": "Strategist", "content": "Ok"}], [], escape_target),
+            "conversation_manager.run_conversation_result",
+            return_value=typed_fixture(([{"role": "assistant", "name": "Strategist", "content": "Ok"}], [], escape_target)),
         ):
             resp = _post_mutation()
         assert resp.status_code == 200
@@ -521,7 +522,7 @@ def test_http_graphql_mutations_enforce_policy_and_redact_json(tmp_path, monkeyp
         "Crash sk-http-secret-111 Bearer http-bearer-leak "
         "token=http-kv-leak C:\\escape.txt /tmp/escape.txt"
     )
-    with patch("conversation_manager.run_conversation", side_effect=RuntimeError(secret_boom)):
+    with patch("conversation_manager.run_conversation_result", side_effect=RuntimeError(secret_boom)):
         resp = _post_mutation()
     assert resp.status_code == 200
     raw_json = resp.get_data(as_text=True)

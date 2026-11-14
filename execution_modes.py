@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Authoritative domain models (safe DAG: assistant_personalities/output_generator/conversation_manager -> execution_modes -> schema)
 from assistant_personalities import assistant_personalities as PERSONALITY_CATALOG
-from conversation_manager import ErrorResult, OutputType
+from conversation_manager import ConversationResult, ErrorResult, OutputType, resolve_conversation_output
 from output_generator import (
     ArtifactRef,
     artifact_run_scope,
@@ -719,7 +719,7 @@ class RunResult(BaseModel):
         default_factory=list,
         description="Complete transcript of debate rounds or synthesized pipeline execution.",
     )
-    questions: List[Dict[str, str]] = Field(
+    questions: List[Dict[str, Any]] = Field(
         default_factory=list,
         description="Clarifying or follow-up questions formulated during execution.",
     )
@@ -957,6 +957,28 @@ def _normalize_conversation_history(history: List[Any]) -> List[Dict[str, Any]]:
 # 8. Execution Handlers
 # ============================================================================
 
+def _pipeline_transcript(task_prompt, complexity_score, initial_budget, plan_steps, records):
+    conversation = [
+        {"role": "user", "name": "User", "content": task_prompt},
+        {"role": "assistant", "name": "Planner", "content": f"Task complexity assessed at {complexity_score:.2f}. Generated {len(plan_steps)} plan steps with initial budget {initial_budget}."},
+    ]
+    questions = []
+    diagnostics = {step.step_number: step for step in plan_steps}
+    numbers = sorted(set(diagnostics) | {record.plan_step_number for record in records})
+    for number in numbers:
+        for record in sorted((record for record in records if record.plan_step_number == number), key=lambda record: record.step_number):
+            for entry in _normalize_conversation_history(record.result.conversation):
+                conversation.append({**entry, "plan_step_number": number})
+            for question in record.result.questions:
+                questions.append({"assistant": str(question.get("assistant", "")),
+                    "question": str(question.get("question") or question.get("reply") or ""), "plan_step_number": number})
+        step = diagnostics.get(number)
+        if step is not None and step.completed:
+            conversation.append({"role": "assistant", "name": step.step_name or f"Step {number}",
+                                 "content": step.step_output or step.step_description, "plan_step_number": number})
+    return conversation, questions
+
+
 def _execute_tree_of_thought(
     request: RunRequest,
     correlation_id: str,
@@ -1037,7 +1059,7 @@ def _execute_collaborative(
     Execute collaborative debate mode via conversation_manager.run_conversation.
     Extracts attributions, questions, OutputType, artifacts, and timeline telemetry.
     """
-    from conversation_manager import run_conversation
+    from conversation_manager import run_conversation_result as run_conversation
 
     cfg = provider_config or get_provider_config()
     resolved_model = validate_provider_model(request.model, cfg)
@@ -1104,14 +1126,20 @@ def _execute_collaborative(
         )
     )
     with scope_cm:
-        raw_history, raw_questions, raw_final_output = run_conversation(**rc_kwargs)
+        conversation_result = run_conversation(**rc_kwargs)
+        if not isinstance(conversation_result, ConversationResult):
+            raise ValueError("Expected a typed conversation result.")
+        conversation_result.output = resolve_conversation_output(conversation_result.output)
+        raw_history, raw_questions, raw_final_output = conversation_result.legacy_tuple()
 
     # 4. Check for ErrorResult from run_conversation
     if isinstance(raw_final_output, ErrorResult):
+        empty_output = raw_final_output.error_type == "EmptyOutput"
+        failure_reason = "empty_output" if empty_output else "provider_error"
         error_obj, error_event = _build_safe_error_artifacts(
             raw_final_output,
             mode="collaborative",
-            stop_reason="provider_error",
+            stop_reason=failure_reason,
             correlation_id=correlation_id,
             error_type=raw_final_output.error_type,
             summary_prefix="Collaborative deliberation returned error",
@@ -1121,12 +1149,12 @@ def _execute_collaborative(
         return RunResult(
             mode="collaborative",
             effective_mode="collaborative",
-            status="error",
-            stop_reason="provider_error",
+            status="incomplete" if empty_output else "error",
+            stop_reason=failure_reason,
             final_output="",
             output_type=OutputType(output_type="Simple Concise Answer", file_extension=".txt"),
             conversation=_normalize_conversation_history(raw_history or []),
-            questions=[],
+            questions=[{"assistant": str(q.get("assistant", "")), "question": str(q.get("question") or q.get("reply") or "")} for q in raw_questions],
             diagnostics=RunDiagnostics(duration_ms=duration_ms, correlation_id=correlation_id),
             events=events,
             artifacts=list_run_artifacts(run_id=correlation_id),
@@ -1173,40 +1201,12 @@ def _execute_collaborative(
                 "question": str(q.get("question") or q.get("reply") or ""),
             })
 
-    # 7. Output Type resolution and strictly run-scoped artifact content reading
-    final_output_str = str(raw_final_output or "")
-    file_path = ""
-    candidate_path = final_output_str.strip()
-    run_artifacts = list_run_artifacts(run_id=correlation_id)
-
-    if candidate_path and is_tracked_artifact(candidate_path, run_id=correlation_id):
-        abs_candidate = os.path.realpath(os.path.abspath(candidate_path))
-        cwd = os.path.realpath(os.path.abspath(os.getcwd()))
-        is_safe_subpath = os.path.commonpath([abs_candidate, cwd]) == cwd
-        if not is_safe_subpath:
-            try:
-                import tempfile
-                td = os.path.realpath(os.path.abspath(tempfile.gettempdir()))
-                is_safe_subpath = os.path.commonpath([abs_candidate, td]) == td
-            except Exception:
-                is_safe_subpath = False
-        if not is_safe_subpath:
-            try:
-                from output_generator import get_artifacts_base_dir
-                art_base = get_artifacts_base_dir()
-                is_safe_subpath = os.path.commonpath([abs_candidate, art_base]) == art_base
-            except Exception:
-                is_safe_subpath = False
-
-        if is_safe_subpath and os.path.isfile(abs_candidate):
-            file_path = abs_candidate
-            preview = read_tracked_artifact(abs_candidate, run_id=correlation_id)
-            if preview is not None and preview.strip():
-                final_output_str = preview
-            elif abs_candidate.lower().endswith(".pdf"):
-                final_output_str = f"Generated PDF artifact: {os.path.basename(abs_candidate)}"
-
-    resolved_output_type = _infer_output_type(content=final_output_str, file_path=file_path)
+    # The producer classified the output; ordinary text never becomes file authority.
+    final_output_str = conversation_result.output.content
+    refs = conversation_result.output.artifacts
+    file_path = refs[0].path if refs else ""
+    run_artifacts = list(refs)
+    resolved_output_type = conversation_result.output.output_type
 
     has_output = bool(final_output_str.strip()) or bool(run_artifacts)
     final_status: RunStatus = "completed" if has_output else "incomplete"
@@ -1339,7 +1339,7 @@ def _execute_advanced_pipeline(
     complexity_factor = getattr(config, "complexity_factor", 5)
     raw_adjusted_budget = int(initial_budget + complexity_score * complexity_factor)
     adjusted_budget = min(raw_adjusted_budget, request.max_steps) if request.max_steps > 0 else raw_adjusted_budget
-    final_reward = float(getattr(interaction, "final_reward", 0.0) if getattr(interaction, "final_reward", None) is not None else 0.0)
+    final_reward = float(interaction.final_reward) if getattr(interaction, "final_reward", None) is not None else None
 
     events.append(_create_run_event(
         event_type="complexity_assessed",
@@ -1433,7 +1433,12 @@ def _execute_advanced_pipeline(
             ))
 
     # Also capture attributions from collaborative sub-rounds if executed
-    last_collab_history = getattr(engineer, "last_conversation_history", None) or []
+    collaboration_records = sorted(getattr(interaction, "collaboration_results", []) or [],
+                                   key=lambda record: (record.plan_step_number, record.step_number))
+    failed_collaboration_records = sorted(getattr(interaction, "failed_collaboration_results", []) or [],
+                                          key=lambda record: (record.plan_step_number, record.step_number))
+    transcript_records = collaboration_records + failed_collaboration_records
+    last_collab_history = [entry for record in transcript_records for entry in record.result.conversation]
     for entry in last_collab_history:
         if isinstance(entry, dict) and entry.get("role") == "assistant":
             name = entry.get("name", "Assistant")
@@ -1510,14 +1515,29 @@ def _execute_advanced_pipeline(
         if plan_step_diagnostics
         else False
     )
-    run_artifacts = list_run_artifacts(run_id=correlation_id)
+    attempted_artifact_ids = getattr(engineer, "_collaboration_artifact_ids", set())
+    accepted_artifact_ids = {ref.artifact_id for record in collaboration_records for ref in record.result.output.artifacts}
+    run_artifacts = [ref for ref in list_run_artifacts(run_id=correlation_id)
+                     if ref.artifact_id not in attempted_artifact_ids or ref.artifact_id in accepted_artifact_ids]
 
     final_output_str = ""
     final_status: RunStatus
     stop_reason: str
     error_obj: Optional[ErrorResult] = None
 
-    _non_complete_reasons = ("budget_exhausted", "timeout", "cancelled", "incomplete")
+    conversation_transcript, questions = _pipeline_transcript(task_prompt, complexity_score, initial_budget,
+                                                              plan_step_diagnostics, transcript_records)
+
+    _non_complete_reasons = ("budget_exhausted", "timeout", "cancelled", "incomplete", "error")
+
+    upstream_error = getattr(interaction, "error_result", None)
+    if upstream_error is not None or interaction_status == "error":
+        upstream_error = upstream_error or RuntimeError("No valid candidate was available to continue execution.")
+        error_obj, error_event = _build_safe_error_artifacts(upstream_error,
+            mode="advanced_pipeline", stop_reason=interaction_stop_reason or "conversation_error",
+            correlation_id=correlation_id, error_type=getattr(upstream_error, "error_type", type(upstream_error).__name__))
+        error_event.details["partial_plan_steps"] = sorted({record.plan_step_number for record in failed_collaboration_records})
+        events.append(error_event)
 
     if answer_text:
         final_output_str = str(raw_answer)
@@ -1538,10 +1558,10 @@ def _execute_advanced_pipeline(
         else:
             candidate_status = (
                 interaction_status
-                if interaction_status in ("budget_exhausted", "timeout", "cancelled")
+                if interaction_status in ("budget_exhausted", "timeout", "cancelled", "error")
                 else (
                     effective_term_reason
-                    if effective_term_reason in ("budget_exhausted", "timeout", "cancelled")
+                    if effective_term_reason in ("budget_exhausted", "timeout", "cancelled", "error")
                     else "error"
                 )
             )
@@ -1568,8 +1588,8 @@ def _execute_advanced_pipeline(
                 stop_reason=stop_reason,
                 final_output="",
                 output_type=OutputType(output_type="Simple Concise Answer", file_extension=".txt"),
-                conversation=_normalize_conversation_history(request.conversation),
-                questions=[],
+                conversation=conversation_transcript,
+                questions=questions,
                 diagnostics=RunDiagnostics(
                     complexity_score=complexity_score,
                     initial_budget=initial_budget,
@@ -1622,8 +1642,8 @@ def _execute_advanced_pipeline(
             stop_reason="empty_pipeline",
             final_output="",
             output_type=OutputType(output_type="Simple Concise Answer", file_extension=".txt"),
-            conversation=_normalize_conversation_history(request.conversation),
-            questions=[],
+            conversation=conversation_transcript,
+            questions=questions,
             diagnostics=RunDiagnostics(
                 complexity_score=complexity_score,
                 initial_budget=initial_budget,
@@ -1640,6 +1660,11 @@ def _execute_advanced_pipeline(
             usage={"available": False, "reason": "Provider token usage tracking not reported by client calls"},
             error=error_obj,
         )
+
+    if final_status == "error" and error_obj is None:
+        error_obj, error_event = _build_safe_error_artifacts(RuntimeError("Execution stopped without a valid result."),
+            mode="advanced_pipeline", stop_reason=stop_reason, correlation_id=correlation_id)
+        events.append(error_event)
 
     resolved_output_type: Optional[OutputType] = None
     if task_obj and hasattr(task_obj, "output_type") and isinstance(task_obj.output_type, OutputType):
@@ -1662,29 +1687,10 @@ def _execute_advanced_pipeline(
         },
     ))
 
-    # 8. Synthesize readable chat transcript for UI
-    conversation_transcript: List[Dict[str, Any]] = [
-        {"role": "user", "name": "User", "content": task_prompt},
-        {
-            "role": "assistant",
-            "name": "Planner",
-            "content": f"Task complexity assessed at {complexity_score:.2f}. Generated {len(plan_step_diagnostics)} plan steps with initial budget {initial_budget} (adjusted to {adjusted_budget}).",
-        },
-    ]
-
-    for ps in plan_step_diagnostics:
-        if ps.completed or ps.step_output:
-            conversation_transcript.append({
-                "role": "assistant",
-                "name": ps.step_name or f"Step {ps.step_number}",
-                "content": ps.step_output or ps.step_description,
-            })
-
-    conversation_transcript.append({
-        "role": "assistant",
-        "name": "Finalizer",
-        "content": final_output_str,
-    })
+    # Partial work remains visible, but a stopped run never claims finalization.
+    if final_output_str:
+        conversation_transcript.append({"role": "assistant",
+            "name": "Finalizer" if final_status == "completed" else "Partial Output", "content": final_output_str})
 
     duration_ms = (time.perf_counter() - start_time) * 1000
     diagnostics = RunDiagnostics(
@@ -1707,7 +1713,7 @@ def _execute_advanced_pipeline(
         final_output=final_output_str,
         output_type=resolved_output_type,
         conversation=conversation_transcript,
-        questions=[],
+        questions=questions,
         diagnostics=diagnostics,
         events=events,
         artifacts=run_artifacts,
