@@ -957,6 +957,28 @@ def _normalize_conversation_history(history: List[Any]) -> List[Dict[str, Any]]:
 # 8. Execution Handlers
 # ============================================================================
 
+def _pipeline_transcript(task_prompt, complexity_score, initial_budget, plan_steps, records):
+    conversation = [
+        {"role": "user", "name": "User", "content": task_prompt},
+        {"role": "assistant", "name": "Planner", "content": f"Task complexity assessed at {complexity_score:.2f}. Generated {len(plan_steps)} plan steps with initial budget {initial_budget}."},
+    ]
+    questions = []
+    diagnostics = {step.step_number: step for step in plan_steps}
+    numbers = sorted(set(diagnostics) | {record.plan_step_number for record in records})
+    for number in numbers:
+        for record in sorted((record for record in records if record.plan_step_number == number), key=lambda record: record.step_number):
+            for entry in _normalize_conversation_history(record.result.conversation):
+                conversation.append({**entry, "plan_step_number": number})
+            for question in record.result.questions:
+                questions.append({"assistant": str(question.get("assistant", "")),
+                    "question": str(question.get("question") or question.get("reply") or ""), "plan_step_number": number})
+        step = diagnostics.get(number)
+        if step is not None and step.completed:
+            conversation.append({"role": "assistant", "name": step.step_name or f"Step {number}",
+                                 "content": step.step_output or step.step_description, "plan_step_number": number})
+    return conversation, questions
+
+
 def _execute_tree_of_thought(
     request: RunRequest,
     correlation_id: str,
@@ -1132,7 +1154,7 @@ def _execute_collaborative(
             final_output="",
             output_type=OutputType(output_type="Simple Concise Answer", file_extension=".txt"),
             conversation=_normalize_conversation_history(raw_history or []),
-            questions=[],
+            questions=[{"assistant": str(q.get("assistant", "")), "question": str(q.get("question") or q.get("reply") or "")} for q in raw_questions],
             diagnostics=RunDiagnostics(duration_ms=duration_ms, correlation_id=correlation_id),
             events=events,
             artifacts=list_run_artifacts(run_id=correlation_id),
@@ -1413,7 +1435,10 @@ def _execute_advanced_pipeline(
     # Also capture attributions from collaborative sub-rounds if executed
     collaboration_records = sorted(getattr(interaction, "collaboration_results", []) or [],
                                    key=lambda record: (record.plan_step_number, record.step_number))
-    last_collab_history = [entry for record in collaboration_records for entry in record.result.conversation]
+    failed_collaboration_records = sorted(getattr(interaction, "failed_collaboration_results", []) or [],
+                                          key=lambda record: (record.plan_step_number, record.step_number))
+    transcript_records = collaboration_records + failed_collaboration_records
+    last_collab_history = [entry for record in transcript_records for entry in record.result.conversation]
     for entry in last_collab_history:
         if isinstance(entry, dict) and entry.get("role") == "assistant":
             name = entry.get("name", "Assistant")
@@ -1500,12 +1525,18 @@ def _execute_advanced_pipeline(
     stop_reason: str
     error_obj: Optional[ErrorResult] = None
 
+    conversation_transcript, questions = _pipeline_transcript(task_prompt, complexity_score, initial_budget,
+                                                              plan_step_diagnostics, transcript_records)
+
     _non_complete_reasons = ("budget_exhausted", "timeout", "cancelled", "incomplete", "error")
 
-    if interaction_status == "error" and getattr(interaction, "error_result", None) is not None:
-        error_obj, error_event = _build_safe_error_artifacts(interaction.error_result,
+    upstream_error = getattr(interaction, "error_result", None)
+    if upstream_error is not None or interaction_status == "error":
+        upstream_error = upstream_error or RuntimeError("No valid candidate was available to continue execution.")
+        error_obj, error_event = _build_safe_error_artifacts(upstream_error,
             mode="advanced_pipeline", stop_reason=interaction_stop_reason or "conversation_error",
-            correlation_id=correlation_id, error_type=interaction.error_result.error_type)
+            correlation_id=correlation_id, error_type=getattr(upstream_error, "error_type", type(upstream_error).__name__))
+        error_event.details["partial_plan_steps"] = sorted({record.plan_step_number for record in failed_collaboration_records})
         events.append(error_event)
 
     if answer_text:
@@ -1557,8 +1588,8 @@ def _execute_advanced_pipeline(
                 stop_reason=stop_reason,
                 final_output="",
                 output_type=OutputType(output_type="Simple Concise Answer", file_extension=".txt"),
-                conversation=_normalize_conversation_history(request.conversation),
-                questions=[],
+                conversation=conversation_transcript,
+                questions=questions,
                 diagnostics=RunDiagnostics(
                     complexity_score=complexity_score,
                     initial_budget=initial_budget,
@@ -1611,8 +1642,8 @@ def _execute_advanced_pipeline(
             stop_reason="empty_pipeline",
             final_output="",
             output_type=OutputType(output_type="Simple Concise Answer", file_extension=".txt"),
-            conversation=_normalize_conversation_history(request.conversation),
-            questions=[],
+            conversation=conversation_transcript,
+            questions=questions,
             diagnostics=RunDiagnostics(
                 complexity_score=complexity_score,
                 initial_budget=initial_budget,
@@ -1629,6 +1660,11 @@ def _execute_advanced_pipeline(
             usage={"available": False, "reason": "Provider token usage tracking not reported by client calls"},
             error=error_obj,
         )
+
+    if final_status == "error" and error_obj is None:
+        error_obj, error_event = _build_safe_error_artifacts(RuntimeError("Execution stopped without a valid result."),
+            mode="advanced_pipeline", stop_reason=stop_reason, correlation_id=correlation_id)
+        events.append(error_event)
 
     resolved_output_type: Optional[OutputType] = None
     if task_obj and hasattr(task_obj, "output_type") and isinstance(task_obj.output_type, OutputType):
@@ -1651,38 +1687,10 @@ def _execute_advanced_pipeline(
         },
     ))
 
-    # 8. Synthesize readable chat transcript for UI
-    conversation_transcript: List[Dict[str, Any]] = [
-        {"role": "user", "name": "User", "content": task_prompt},
-        {
-            "role": "assistant",
-            "name": "Planner",
-            "content": f"Task complexity assessed at {complexity_score:.2f}. Generated {len(plan_step_diagnostics)} plan steps with initial budget {initial_budget} (adjusted to {adjusted_budget}).",
-        },
-    ]
-
-    for ps in plan_step_diagnostics:
-        if ps.completed or ps.step_output:
-            conversation_transcript.append({
-                "role": "assistant",
-                "name": ps.step_name or f"Step {ps.step_number}",
-                "content": ps.step_output or ps.step_description,
-            })
-
-    questions = []
-    for record in collaboration_records:
-        for entry in record.result.conversation:
-            conversation_transcript.append({**entry, "plan_step_number": record.plan_step_number})
-        for question in record.result.questions:
-            questions.append({"assistant": str(question.get("assistant", "")),
-                              "question": str(question.get("question") or question.get("reply") or ""),
-                              "plan_step_number": record.plan_step_number})
-
-    conversation_transcript.append({
-        "role": "assistant",
-        "name": "Finalizer",
-        "content": final_output_str,
-    })
+    # Partial work remains visible, but a stopped run never claims finalization.
+    if final_output_str:
+        conversation_transcript.append({"role": "assistant",
+            "name": "Finalizer" if final_status == "completed" else "Partial Output", "content": final_output_str})
 
     duration_ms = (time.perf_counter() - start_time) * 1000
     diagnostics = RunDiagnostics(

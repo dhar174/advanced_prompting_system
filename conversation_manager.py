@@ -221,9 +221,12 @@ class ConversationOutput(BaseModel):
             raise ValueError("A successful conversation output requires content and no error.")
         elif (self.kind == "artifact") != bool(self.artifacts):
             raise ValueError("Only artifact outputs carry registered artifact references.")
+        if self.kind == "artifact" and len(self.artifacts) != 1:
+            raise ValueError("An artifact output requires exactly one registered reference.")
         return self
 
     def legacy_value(self):
+        self.validate_kind()
         if self.kind == "failure":
             return self.error
         if self.kind == "artifact":
@@ -240,6 +243,33 @@ class ConversationResult(BaseModel):
 
     def legacy_tuple(self):
         return (copy.deepcopy(self.conversation), copy.deepcopy(self.questions), self.output.legacy_value())
+
+
+class _ConversationProgress:
+    """Per-invocation live lists, used only to retain diagnostics on ordinary failure."""
+    def __init__(self):
+        self.conversation = []
+        self.questions = []
+
+
+def _normalized_questions(questions):
+    normalized = []
+    for question in questions:
+        if isinstance(question, dict):
+            text = question.get("question") or question.get("reply")
+            if isinstance(text, str) and text.strip():
+                normalized.append({**copy.deepcopy(question), "assistant": str(question.get("assistant", "Assistant")), "question": text})
+    return normalized
+
+
+def conversation_output_annotation(output: ConversationOutput) -> str:
+    if output.kind == "failure":
+        return "Output failed: the requested deliverable was not generated."
+    if output.kind == "artifact":
+        ref = output.artifacts[0]
+        return f"Generated artifact: {ref.filename[:120]} ({ref.mime_type[:80]}, {ref.size_bytes} bytes)."
+    preview = output.content[:1000]
+    return f"Final Output: {preview}" + ("…" if len(output.content) > 1000 else "")
 
 
 class ConversationResultError(ConversationManagerError):
@@ -1609,7 +1639,8 @@ def _finalize_output_result_impl(final_decision: str, output_type: OutputType):
                 response.choices[0].message.tool_calls[0].function.arguments
             )
             tool_query_string = tool_args.get("final_decision", final_decision)
-            if (tool_query_string is None or (isinstance(tool_query_string, str) and not tool_query_string.strip())
+            if (tool_query_string is None or (isinstance(tool_query_string, (dict, list)) and not tool_query_string)
+                    or (isinstance(tool_query_string, str) and not tool_query_string.strip())
                     or not isinstance(tool_query_string, (str, dict, list))
                     or (tool_function_name not in ("generate_json_output", "generate_csv_output")
                         and not isinstance(tool_query_string, str))):
@@ -2781,6 +2812,7 @@ def run_conversation_result(
     max_calls: Optional[int] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
 ):
+    progress = _ConversationProgress()
     artifact_scope = contextlib.nullcontext() if get_active_run_id() else artifact_run_scope(None)
     with artifact_scope, _conversation_run_scope(
         model=model,
@@ -2796,9 +2828,11 @@ def run_conversation_result(
                 lead_personality=lead_personality,
                 num_rounds=num_rounds,
                 context=context,
+                _progress=progress,
             )
         except LLMCallError:
-            return ConversationResult(output=failure_output("ProviderError", "The provider could not complete the conversation."))
+            return ConversationResult(output=failure_output("ProviderError", "The provider could not complete the conversation."),
+                conversation=copy.deepcopy(progress.conversation), questions=_normalized_questions(progress.questions))
 
 
 def _run_conversation_impl(
@@ -2807,6 +2841,7 @@ def _run_conversation_impl(
     lead_personality,
     num_rounds=3,
     context=None,
+    _progress=None,
 ):
     raw_user_prompt, prior_turns = _extract_prompt_and_prior_turns(problem_statement)
 
@@ -2862,6 +2897,9 @@ def _run_conversation_impl(
     mediator_name = "Mediator" if "Mediator" in run_personalities else lead_personality
     questions_asked = []
     all_questions_asked: List[Dict[str, str]] = []
+    if _progress is not None:
+        _progress.conversation = conversation_history
+        _progress.questions = all_questions_asked
     output_type = None
 
     final_output = None
@@ -2878,7 +2916,7 @@ def _run_conversation_impl(
 
             if rnd > 1:
                 # delete conversation summary from conversation history from previous round
-                conversation_history = [
+                conversation_history[:] = [
                     msg
                     for msg in conversation_history
                     if "Full Conversation Summary:" not in msg["content"]
@@ -3555,7 +3593,7 @@ def _run_conversation_impl(
                             "role": "system",
                             "name": lead_personality,
                             "round": rnd,
-                            "content": f"Final Output: {final_output.content}",
+                            "content": conversation_output_annotation(final_output),
                             }
                     )
                     try:
@@ -3721,7 +3759,7 @@ def _run_conversation_impl(
                             "role": "system",
                             "name": lead_personality,
                             "round": rnd,
-                            "content": f"Final Output: {final_output.content}",
+                            "content": conversation_output_annotation(final_output),
                             }
                     )
                     try:
@@ -3805,7 +3843,7 @@ def _run_conversation_impl(
                             "role": "system",
                             "name": lead_personality,
                             "round": rnd,
-                            "content": f"Final Output: {final_output.content}",
+                            "content": conversation_output_annotation(final_output),
                             }
                     )
                 elif mediator_decision is not None and mediator_decision.keep_output:
@@ -3871,7 +3909,7 @@ def _run_conversation_impl(
                             "role": "system",
                             "name": lead_personality,
                             "round": rnd,
-                            "content": f"Final Output: {final_output.content}",
+                            "content": conversation_output_annotation(final_output),
                         }
                     )
     try:
@@ -3889,10 +3927,5 @@ def _run_conversation_impl(
     # print("Conversation History in manager: ", conversation_history, "Type: ", type(conversation_history), "Type Content: ", type(conversation_history[0]["content"]))
     if not isinstance(final_output, ConversationOutput):
         final_output = failure_output("EmptyOutput", "The conversation returned no usable output.", locals().get("output_type"))
-    questions = []
-    for question in all_questions_asked:
-        if isinstance(question, dict):
-            text = question.get("question") or question.get("reply")
-            if isinstance(text, str) and text.strip():
-                questions.append({**copy.deepcopy(question), "assistant": str(question.get("assistant", "Assistant")), "question": text})
-    return ConversationResult(output=final_output, conversation=copy.deepcopy(conversation_history), questions=questions)
+    return ConversationResult(output=final_output, conversation=copy.deepcopy(conversation_history),
+                              questions=_normalized_questions(all_questions_asked))

@@ -651,8 +651,10 @@ def test_http_nested_failure_preserves_prior_selected_metadata(live_graphql_clie
     assert result["stopReason"] == "conversation_error", result
     assert result["diagnostics"]["planSteps"][0]["completed"]
     assert not result["diagnostics"]["planSteps"][1]["completed"]
-    assert {q["planStepNumber"] for q in result["questions"]} == {1}
+    assert {q["planStepNumber"] for q in result["questions"]} == {1, 2}
     assert "STEP1_HISTORY" in json.dumps(result)
+    assert "STEP2_HISTORY" in json.dumps(result)
+    assert any(event["eventType"] == "run_error" for event in result["events"])
     assert result["diagnostics"]["finalReward"] is None
     assert 0 < ledger.total_calls < 200
 

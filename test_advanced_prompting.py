@@ -1641,7 +1641,7 @@ class TestPR39EngineAndSelfConsistency(unittest.TestCase):
             lambda plan_step, task_obj: f"PROMPT_STEP_{plan_step.step_number}:{plan_step.step_name}"
         )
         engineer.condense_plan = lambda p: "condensed"
-        engineer.dynamic_confidence_exploration = lambda ict, task_obj, pstep: ict
+        engineer.dynamic_confidence_exploration = lambda ict, task_obj, pstep, **kwargs: ict
         engineer.refine_prompt = lambda interaction, task, complexity, prompt: prompt
 
         def _fake_step_out(step, task_obj, plan_step, prev_steps):
