@@ -308,7 +308,7 @@ class _ChatCompletions:
                     "<answer>SOLO_TAKEOVER_ANSWER</answer><final_reward>0.9</final_reward>")
                 return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=None), finish_reason="stop")])
             if "evaluate the following step" in lower_prompt:
-                score = "0.0" if scenario.endswith("zero") else "0.3"
+                score = "0.9" if "Proposed reasoning steps:" in prompt_text else "0.0" if scenario.endswith("zero") else "0.3"
                 content = f"<reflection>Measured discarded candidate.</reflection><reward>{score}</reward>"
                 return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=None), finish_reason="stop")])
             if "<step>" in prompt_text and "finalizing the final output of a step" not in lower_prompt:
@@ -325,6 +325,11 @@ class _ChatCompletions:
                 content = ("<thinking>Partial work</thinking><step>PARTIAL_SECOND</step><reflection>Unfinished</reflection><reward>0.5</reward>"
                            if scenario.endswith("partial_failure") else "")
                 return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=None), finish_reason="stop")])
+
+        if scenario.startswith("revision_") and "<step>" in prompt_text:
+            lower_prompt = prompt_text.lower()
+            if "finalizing the final output of a step" not in lower_prompt and "evaluate the following step" not in lower_prompt:
+                return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="", tool_calls=None), finish_reason="stop")])
 
         # Tool calling inside conversation_manager.finalize_output
         tools = kwargs.get("tools")
@@ -445,6 +450,8 @@ class _ChatCompletions:
 
         if scenario == "review_sc_evaluation_refused":
             content = re.sub(r"<final_reward>.*?</final_reward>", "", content)
+        if scenario.startswith("revision_"):
+            content += " ORIGINAL_REVISION"
         if scenario == "partial_conversation_failure":
             content += " PARTIAL_HISTORY"
         if scenario.startswith("review_takeover"):
@@ -561,7 +568,11 @@ class _BetaCompletions:
                 if scenario == "xss_output"
                 else "Verified deterministic consensus deliverable for offline execution."
             )
-            parsed = cm.FinalOutput(final_output=final_text, output_type=out_type, version=1)
+            if scenario.startswith("revision_"):
+                if scenario == "revision_provider_failure":
+                    raise RuntimeError("sk-revision-secret /private/revision-path")
+                final_text = "ACCEPTED_PARTIAL" if scenario == "revision_partial_policy" else "ACCEPTED_REVISION" if scenario == "revision_accept" else "REJECTED_REVISION"
+            parsed = cm.FinalOutput(final_output=final_text, output_type=out_type, version=999 if scenario.startswith("revision_") else 1)
         elif response_format is cm.FinalOutputAnalysis:
             out_type = _detect_requested_output_type(prompt_text)
             parsed = cm.FinalOutputAnalysis(
@@ -573,6 +584,14 @@ class _BetaCompletions:
                 changes_needed_to_align=[],
                 is_complete=True,
             )
+            if scenario.startswith("revision_"):
+                accepted = "Actual Output: ACCEPTED_REVISION" in prompt_text
+                parsed.requirements[0].met = accepted
+                parsed.is_complete = accepted
+                parsed.changes_needed_to_align = [] if accepted else ["Complete the required behavior"]
+                if scenario == "revision_partial_policy":
+                    parsed.requirements = [cm.OutputRequirements(requirement="First requirement", met="Actual Output: ACCEPTED_PARTIAL" in prompt_text),
+                                           cm.OutputRequirements(requirement="Second requirement", met=False)]
         elif response_format is ap.CompletionStatus:
             parsed = ap.CompletionStatus(completion=True)
         elif response_format is ap.FinalReviewScore:

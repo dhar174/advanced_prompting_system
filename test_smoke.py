@@ -57,7 +57,7 @@ class TestSmokeSuite(unittest.TestCase):
         with patch("conversation_manager.define_problem", return_value="Test problem statement"), \
              patch("conversation_manager.cast_binary_vote", return_value=BinaryVote(vote=True, reason="OK")), \
              patch("conversation_manager.get_assistant_response", return_value={"role": "assistant", "content": "Done"}), \
-             patch("conversation_manager.analyze_final_output", return_value="Checked output"), \
+             patch("conversation_manager.analyze_final_output_result", side_effect=lambda *a: conversation_manager.OutputRevisionResult(accepted=conversation_manager.FinalOutput(final_output="Checked output",output_type=a[5],version=1),attempt_version=1,stop_reason="completed")), \
              patch("conversation_manager.finalize_output_result", return_value=conversation_manager.ConversationOutput(kind="text", content="path/to/final_output.txt")), \
              patch("builtins.open", mock_open()):
             production_tuple = conversation_manager.run_conversation(

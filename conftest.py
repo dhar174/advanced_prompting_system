@@ -44,7 +44,7 @@ def conversation_case(monkeypatch):
     monkeypatch.setattr(cm, 'extract_information', lambda text, memory, *a: memory)
     monkeypatch.setattr(cm, 'analyze_to_do_list', lambda memory, *a: memory)
     monkeypatch.setattr(cm, 'summarize_conversation', lambda *a: 'Fixture summary')
-    monkeypatch.setattr(cm, 'analyze_final_output', lambda *a: 'Checked fixture output')
+    monkeypatch.setattr(cm, 'analyze_final_output_result', lambda *a: cm.OutputRevisionResult(accepted=cm.FinalOutput(final_output='Checked fixture output', output_type=a[5], version=1), attempt_version=1, stop_reason='completed'))
     finalize = Mock(return_value=cm.ConversationOutput(kind='text', content='fixture-output.txt'))
     monkeypatch.setattr(cm, 'finalize_output_result', finalize)
     calls = []

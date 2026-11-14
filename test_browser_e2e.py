@@ -593,6 +593,38 @@ def test_browser_authenticated_catalog_modes_feedback_and_logout(browser_page, s
     assert page_errors == []
 
 
+@pytest.mark.parametrize("scenario", ["revision_accept", "revision_reject"])
+def test_browser_revision_acceptance_and_preserved_rejection(browser_page, scenario):
+    page, server, blocked_urls, page_errors, _ = browser_page
+    def inject(route):
+        headers = dict(route.request.headers)
+        if route.request.method == "POST":
+            headers["x-aps-e2e-scenario"] = scenario
+        route.continue_(headers=headers)
+    page.route("**/graphql", inject)
+    page.locator("#num-rounds").fill("1")
+    page.get_by_role("button", name="Start New Conversation").click()
+    page.locator('textarea[name="prompt"]').fill("Design a verification strategy and risk analysis.")
+    with page.expect_response(lambda response: response.url.endswith("/graphql")
+        and "runExecution" in (response.request.post_data or "")) as received:
+        page.get_by_test_id("send-message-button").click()
+    result = received.value.json()["data"]["runExecution"]
+    if scenario == "revision_accept":
+        assert result["status"] == "completed", result
+        expect(page.get_by_role("heading", name="Final Output:")).to_be_visible(timeout=20000)
+        assert "ACCEPTED_REVISION" in result["finalOutput"]
+    else:
+        assert result["status"] == "error", result
+        expect(page.get_by_role("alert").first).to_contain_text("Execution Failed", timeout=15000)
+        assert any(turn.get("name") == "Partial Output" and "ORIGINAL_REVISION" in turn["content"] for turn in result["conversation"])
+        assert "REJECTED_REVISION" not in json.dumps(result)
+        expect(page.get_by_text("ORIGINAL_REVISION", exact=False).last).to_be_visible()
+        expect(page.get_by_role("heading", name="Final Output:")).not_to_be_visible()
+    assert 0 < server.ledger.total_calls <= 200
+    assert any(entry.response_format == "FinalOutput" for entry in server.ledger.entries)
+    assert blocked_urls == [] and page_errors == []
+
+
 def test_browser_evidence_manifest_preserves_prior_scenarios(evidence_session):
     manifest = verify_manifest(evidence_session.root)
     modes = {mode for scenario in manifest["scenarios"] for mode in scenario["modes"]}

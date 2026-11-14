@@ -23,6 +23,7 @@ def interaction_with_record(task, plan_number, number, score, marker):
 @pytest.mark.parametrize("old_score", [0.0, 0.3])
 def test_exploration_atomically_replaces_equal_length_candidate(monkeypatch, old_score):
     engineer, task, plan_step = parts()
+    monkeypatch.setattr(engineer, "judge_step", lambda st, t: ap.Reflection(content="Independent assessment", reward=0.9, step_number=st.step_number))
     base = interaction_with_record(task, 1, 1, 0.8, "PRIOR_ACCEPTED")
     candidate = interaction_with_record(task, plan_step.step_number, 12, old_score, "DISCARDED_DEBATE")
     candidate.steps = base.steps + candidate.steps
@@ -45,6 +46,7 @@ def test_exploration_atomically_replaces_equal_length_candidate(monkeypatch, old
 @pytest.mark.parametrize("score", [None, 0.3, 0.2, float("nan"), 1.5])
 def test_exploration_rejection_preserves_entire_candidate(monkeypatch, score):
     engineer, task, step = parts()
+    monkeypatch.setattr(engineer, "judge_step", lambda st, t: ap.Reflection(content="Independent rejection", reward=score, step_number=st.step_number) if score is not None else SimpleNamespace(reward=None))
     candidate = interaction_with_record(task, step.step_number, 12, 0.3, "ACCEPTED")
     response = f"<thinking>Alternative</thinking><step>Rejected</step><reflection>Rejected</reflection><reward>0.9</reward><answer>Rejected answer</answer><final_reward>{score}</final_reward>"
     monkeypatch.setattr(engineer, "call_openai", lambda **kwargs: response)
@@ -170,6 +172,7 @@ def test_mid_conversation_provider_failure_retains_accumulated_turns(monkeypatch
 
 def test_multi_step_exploration_rebases_each_shared_reflection_once(monkeypatch):
     engineer, task, step = parts()
+    monkeypatch.setattr(engineer, "judge_step", lambda st, t: ap.Reflection(content="Independent assessment", reward=0.9, step_number=st.step_number))
     candidate = interaction_with_record(task, step.step_number, 12, 0.3, "OLD")
     response = ("<thinking>Alternative</thinking><step>First</step><reflection>First review</reflection><reward>0.9</reward>"
                 "<step>Second</step><reflection>Second review</reflection><reward>0.9</reward>"
