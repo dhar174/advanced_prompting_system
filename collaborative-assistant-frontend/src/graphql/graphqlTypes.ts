@@ -16,12 +16,14 @@ export interface QuestionInputType {
 }
 
 export interface ConversationType {
+  planStepNumber?: number | null;
   role: string;
   name?: string | null;
   content: string;
 }
 
 export interface QuestionType {
+  planStepNumber?: number | null;
   assistant: string;
   question: string;
 }

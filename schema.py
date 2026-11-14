@@ -37,6 +37,7 @@ class QuestionInput:
 class Question:
     assistant: str
     question: str
+    plan_step_number: Optional[int] = None
 
 # Define the Conversation output type (this stays as a type, not input)
 @strawberry.type
@@ -44,6 +45,7 @@ class Conversation:
     role: str
     name: Optional[str] = None
     content: str
+    plan_step_number: Optional[int] = None
 
 # Define the Feedback output type
 @strawberry.type
@@ -218,6 +220,7 @@ def _build_run_execution_response(run_result: Any) -> RunExecutionResponse:
             role=entry.get("role", "assistant"),
             name=entry.get("name") or "",
             content=entry.get("content", ""),
+            plan_step_number=entry.get("plan_step_number"),
         )
         for entry in run_result.conversation
     ]
@@ -226,6 +229,7 @@ def _build_run_execution_response(run_result: Any) -> RunExecutionResponse:
         Question(
             assistant=q.get("assistant", ""),
             question=q.get("question") or q.get("reply") or "",
+            plan_step_number=q.get("plan_step_number"),
         )
         for q in run_result.questions
     ]
@@ -537,6 +541,7 @@ class Mutation:
                 role=entry.get("role", "assistant"),
                 name=entry.get("name") or "",
                 content=entry.get("content", ""),
+            plan_step_number=entry.get("plan_step_number"),
             )
             for entry in result.conversation
         ]
@@ -545,6 +550,7 @@ class Mutation:
             Question(
                 assistant=q.get("assistant", ""),
                 question=q.get("question") or q.get("reply") or "",
+            plan_step_number=q.get("plan_step_number"),
             )
             for q in result.questions
         ]

@@ -719,7 +719,7 @@ class RunResult(BaseModel):
         default_factory=list,
         description="Complete transcript of debate rounds or synthesized pipeline execution.",
     )
-    questions: List[Dict[str, str]] = Field(
+    questions: List[Dict[str, Any]] = Field(
         default_factory=list,
         description="Clarifying or follow-up questions formulated during execution.",
     )
@@ -1312,7 +1312,7 @@ def _execute_advanced_pipeline(
     complexity_factor = getattr(config, "complexity_factor", 5)
     raw_adjusted_budget = int(initial_budget + complexity_score * complexity_factor)
     adjusted_budget = min(raw_adjusted_budget, request.max_steps) if request.max_steps > 0 else raw_adjusted_budget
-    final_reward = float(getattr(interaction, "final_reward", 0.0) if getattr(interaction, "final_reward", None) is not None else 0.0)
+    final_reward = float(interaction.final_reward) if getattr(interaction, "final_reward", None) is not None else None
 
     events.append(_create_run_event(
         event_type="complexity_assessed",
@@ -1406,7 +1406,9 @@ def _execute_advanced_pipeline(
             ))
 
     # Also capture attributions from collaborative sub-rounds if executed
-    last_collab_history = getattr(engineer, "last_conversation_history", None) or []
+    collaboration_records = sorted(getattr(interaction, "collaboration_results", []) or [],
+                                   key=lambda record: (record.plan_step_number, record.step_number))
+    last_collab_history = [entry for record in collaboration_records for entry in record.result.conversation]
     for entry in last_collab_history:
         if isinstance(entry, dict) and entry.get("role") == "assistant":
             name = entry.get("name", "Assistant")
@@ -1653,6 +1655,15 @@ def _execute_advanced_pipeline(
                 "content": ps.step_output or ps.step_description,
             })
 
+    questions = []
+    for record in collaboration_records:
+        for entry in record.result.conversation:
+            conversation_transcript.append({**entry, "plan_step_number": record.plan_step_number})
+        for question in record.result.questions:
+            questions.append({"assistant": str(question.get("assistant", "")),
+                              "question": str(question.get("question") or question.get("reply") or ""),
+                              "plan_step_number": record.plan_step_number})
+
     conversation_transcript.append({
         "role": "assistant",
         "name": "Finalizer",
@@ -1680,7 +1691,7 @@ def _execute_advanced_pipeline(
         final_output=final_output_str,
         output_type=resolved_output_type,
         conversation=conversation_transcript,
-        questions=[],
+        questions=questions,
         diagnostics=diagnostics,
         events=events,
         artifacts=run_artifacts,

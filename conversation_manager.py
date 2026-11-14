@@ -231,7 +231,8 @@ class ConversationResult(BaseModel):
 
 
 class ConversationResultError(ConversationManagerError):
-    def __init__(self, output: ConversationOutput):
+    def __init__(self, output: ConversationOutput, result: Optional[ConversationResult] = None):
+        self.result = (result or ConversationResult(output=output)).model_copy(deep=True)
         self.output = output.model_copy(deep=True)
         super().__init__(output.error.error_message if output.error else "Conversation result is unavailable.")
 

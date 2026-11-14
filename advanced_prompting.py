@@ -20,7 +20,7 @@ import random
 
 from tqdm import tqdm
 from conversation_manager import (
-    ConversationResult, ConversationOutput, ConversationResultError, artifact_conversation_output,
+    ConversationResult, ConversationOutput, ConversationResultError, artifact_conversation_output, failure_output,
     output_type_determination,
     OutputType,
     RunBudgetExceededError,
@@ -1762,6 +1762,12 @@ class Task:
         )
 
 
+class CollaborationRecord(BaseModel):
+    plan_step_number: int
+    step_number: int
+    result: ConversationResult
+
+
 class Interaction:
     """A class representing an interaction session with steps, reflections, and outcomes.
 
@@ -1789,6 +1795,7 @@ class Interaction:
         status: Optional[str] = None,
         stop_reason: Optional[str] = None,
         step_answers: Optional[Dict[int, str]] = None,
+        collaboration_results: Optional[List[CollaborationRecord]] = None,
     ):
         self.task = task
         self.steps = steps
@@ -1801,6 +1808,15 @@ class Interaction:
         self.status = status
         self.stop_reason = stop_reason
         self.step_answers = dict(step_answers) if step_answers is not None else {}
+        self.collaboration_results = [CollaborationRecord.model_validate(record).model_copy(deep=True)
+                                      for record in (collaboration_results or [])]
+
+    def commit_collaboration_results(self, candidate: Interaction) -> None:
+        """Publish copied metadata only at the selected-candidate commit boundary."""
+        records = {(r.plan_step_number, r.step_number): r for r in self.collaboration_results}
+        for record in candidate.collaboration_results:
+            records[(record.plan_step_number, record.step_number)] = record.model_copy(deep=True)
+        self.collaboration_results = [records[key] for key in sorted(records)]
 
     def __repr__(self):
         return f"Interaction(task={self.task}, steps={self.steps}, reflections={self.reflections}, answer={self.answer}, final_reward={self.final_reward})"
@@ -1835,6 +1851,7 @@ class Interaction:
             "reflections": self.reflections,
             "answer": self.answer,
             "final_reward": self.final_reward,
+            "collaboration_results": [record.model_dump() for record in self.collaboration_results],
         }
 
     @classmethod
@@ -1845,6 +1862,7 @@ class Interaction:
             reflections=data["reflections"],
             answer=data["answer"],
             final_reward=data["final_reward"],
+            collaboration_results=data.get("collaboration_results", []),
         )
 
     def sum_rewards(self):
@@ -2405,7 +2423,7 @@ class AdvancedPromptEngineer:
         )
         
         if not isinstance(result, ConversationResult):
-            raise ConversationResultError(ConversationOutput(kind="failure", error=__import__("conversation_manager").ErrorResult(error_type="InvalidResult", error_message="The conversation returned an invalid result.")))
+            raise ConversationResultError(failure_output("InvalidResult", "The conversation returned an invalid result."))
         self.last_conversation_history = copy.deepcopy(result.conversation)
         self.last_questions_asked = copy.deepcopy(result.questions)
         return self.convert_conversation_result_to_final_step_output(result, plan_step, task, step_number=step_number)
@@ -2486,7 +2504,7 @@ class AdvancedPromptEngineer:
             # Revalidate authority at the read boundary, not merely at production time.
             output = artifact_conversation_output(output.artifacts[0].path, output.output_type) if output.artifacts else ConversationOutput(kind="failure")
         if output.kind == "failure" or not output.content.strip():
-            raise ConversationResultError(output)
+            raise ConversationResultError(output, result)
         created_step = Step(description=output.content, step_number=step_number if step_number is not None else plan_step.step_number,
                             remaining_budget=0, plan_step_number=plan_step.step_number)
         return FinalStepOutput(final_output=output.content, output_type=output.output_type, version=1,
@@ -4719,28 +4737,29 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
 
         if self.should_use_multi_agent_reasoning(plan_step, task):
             print_saver.print_and_store(f"Using multi-agent reasoning for plan step: {plan_step.step_name} (ID: {plan_step_num})")
-            final_step_output = self.invoke_collaborative_reasoning(task, plan_step)
-            step = getattr(final_step_output, 'step', None) or Step(
-                description=plan_step.step_description or "",
-                step_number=step_number,
-                plan_step_number=plan_step_num,
-                thoughts="",
-                reflection=None,
-                remaining_budget=0,
-            )
-            reflection = Reflection(
-                content="Multi-agent collaborative reasoning completed.",
-                reward=1.0,
-                step_number=step.step_number,
-            )
-            return Interaction(
-                task=task,
-                steps=[step],
-                reflections=[reflection],
-                answer=getattr(final_step_output, 'final_output', "") or "",
-                final_reward=1.0,
-                step_outputs=[final_step_output] if final_step_output else [],
-            )
+            try:
+                final_step_output = self.invoke_collaborative_reasoning(task, plan_step, step_number=step_number)
+            except ConversationResultError as exc:
+                return Interaction(task=task, steps=[], reflections=[], answer="", final_reward=None,
+                                   status="error", stop_reason="conversation_error",
+                                   collaboration_results=[CollaborationRecord(plan_step_number=plan_step_num,
+                                       step_number=step_number, result=exc.result)])
+            step = final_step_output.step
+            reflection = self.judge_step(step, task)
+            measured = (not getattr(reflection, "_judge_error", False)
+                        and math.isfinite(reflection.reward) and 0.0 <= reflection.reward <= 1.0)
+            result = final_step_output.collaboration_result.model_copy(deep=True)
+            result.quality_score = reflection.reward if measured else None
+            if measured:
+                step.reflection = reflection
+            return Interaction(task=task, steps=[step], reflections=[reflection] if measured else [],
+                answer=final_step_output.final_output, final_reward=result.quality_score,
+                status=None if measured else "incomplete",
+                stop_reason=None if measured else "evaluation_unavailable",
+                step_outputs=[final_step_output],
+                collaboration_results=[CollaborationRecord(plan_step_number=plan_step_num,
+                    step_number=step_number, result=result)])
+
         else:
             print_saver.print_and_store(f"Using single-agent reasoning (self-consistency) for plan step: {plan_step.step_name} (ID: {plan_step_num})")
             
@@ -8572,8 +8591,13 @@ Task: {task}
                     all_interactions = [
                         ict for ict in all_interactions if ict.answer is not None
                     ]
+                eligible = [candidate for candidate in all_interactions
+                            if not (candidate.collaboration_results and candidate.status in ("error", "incomplete"))]
+                if not eligible:
+                    termination_reason = "conversation_error"
+                    break
                 best_interaction = max(
-                    all_interactions,
+                    eligible,
                     key=lambda x: x.sum_rewards() if x.sum_rewards() else 0.0,
                 )
 
@@ -8707,6 +8731,7 @@ Task: {task}
                         for refl in best_interaction.reflections or []:
                             if refl not in main_interaction.reflections:
                                 main_interaction.reflections.append(refl)
+                        main_interaction.commit_collaboration_results(best_interaction)
                         if best_interaction.answer and str(best_interaction.answer).strip():
                             main_interaction.step_answers[curr_num] = str(
                                 best_interaction.answer

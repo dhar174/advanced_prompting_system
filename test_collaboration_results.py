@@ -100,3 +100,60 @@ def test_deleted_registered_artifact_does_not_become_answer():
         Path(path).unlink()
         with pytest.raises(cm.ConversationResultError):
             engineer.convert_conversation_output_to_final_step_output(path, step, task)
+
+
+@pytest.mark.parametrize("score", [0.61, 1.0])
+def test_nested_candidate_uses_actual_judged_content(monkeypatch, score):
+    engineer, task, step = parts()
+    outcome = cm.ConversationResult(output=cm.ConversationOutput(kind="text", content="ACTUAL_NESTED_OUTPUT"),
+        conversation=[{"role":"assistant", "content":"SELECTED_HISTORY"}],
+        questions=[{"assistant":"Strategist", "question":"SELECTED_QUESTION"}])
+    monkeypatch.setattr(cm, "run_conversation_result", lambda **kw: outcome)
+    def judge(candidate, judged_task):
+        assert candidate.description == "ACTUAL_NESTED_OUTPUT"
+        return ap.Reflection(content="Actual evaluation", reward=score, step_number=candidate.step_number)
+    monkeypatch.setattr(engineer, "judge_step", judge)
+    result = engineer.collaborative_reasoning_main(task, step, ap.Interaction(task, [], []), task.output_type, 1, 12)
+    assert result.final_reward == score
+    assert result.steps[0].step_number == 12
+    assert result.reflections[0].content == "Actual evaluation"
+    assert result.collaboration_results[0].result.quality_score == score
+
+
+def test_nested_evaluator_failure_preserves_unmeasured_partial_output(monkeypatch):
+    engineer, task, step = parts()
+    monkeypatch.setattr(cm, "run_conversation_result", lambda **kw: cm.ConversationResult(output=cm.ConversationOutput(kind="text", content="Useful partial")))
+    reflection = ap.Reflection(content="Error", reward=0.0, step_number=12)
+    reflection._judge_error = True
+    monkeypatch.setattr(engineer, "judge_step", lambda *a: reflection)
+    result = engineer.collaborative_reasoning_main(task, step, ap.Interaction(task, [], []), task.output_type, 1, 12)
+    assert result.status == "incomplete"
+    assert result.stop_reason == "evaluation_unavailable"
+    assert result.final_reward is None
+    assert result.reflections == []
+    assert result.answer == "Useful partial"
+
+
+def test_nested_failure_cannot_be_a_perfect_answer(monkeypatch):
+    engineer, task, step = parts()
+    monkeypatch.setattr(cm, "run_conversation_result", lambda **kw: cm.ConversationResult(output=cm.failure_output("EmptyOutput", "No usable output.")))
+    result = engineer.collaborative_reasoning_main(task, step, ap.Interaction(task, [], []), task.output_type, 1, 12)
+    assert result.status == "error"
+    assert result.answer == ""
+    assert result.final_reward is None
+    assert result.steps == []
+
+
+def test_committed_metadata_is_copied_and_roundtrips():
+    _, task, _ = parts()
+    source = ap.Interaction(task, [], [], collaboration_results=[ap.CollaborationRecord(plan_step_number=7, step_number=12,
+        result=cm.ConversationResult(output=cm.ConversationOutput(kind="text", content="answer"),
+            questions=[{"assistant":"A", "question":"Selected"}]))])
+    accepted = ap.Interaction(task, [], [])
+    accepted.commit_collaboration_results(source)
+    source.collaboration_results[0].result.questions[0]["question"] = "REJECTED_MUTATION"
+    assert accepted.collaboration_results[0].result.questions[0]["question"] == "Selected"
+    restored = ap.Interaction.from_dict(accepted.to_dict())
+    assert restored.collaboration_results == accepted.collaboration_results
+    restored.collaboration_results[0].result.questions.clear()
+    assert accepted.collaboration_results[0].result.questions
