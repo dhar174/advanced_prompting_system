@@ -603,10 +603,10 @@ class TestPR1ConversationManagerFixes:
         )
         monkeypatch.setattr(
             conversation_manager,
-            "analyze_final_output",
-            lambda *a, **kw: SimpleNamespace(
-                is_complete=True, explanations=[], corrections_needed=[]
-            ),
+            "analyze_final_output_result",
+            lambda *a, **kw: conversation_manager.OutputRevisionResult(
+                accepted=conversation_manager.FinalOutput(final_output="Checked output",output_type=a[5],version=1),
+                attempt_version=1,stop_reason="completed"),
         )
 
         # Round 1 asks a question AND receives END vote -> must still preserve Round 1's question!
