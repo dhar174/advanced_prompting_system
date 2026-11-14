@@ -2,6 +2,10 @@
 
 Issue #35 remains open pending human acceptance. Tree of Thoughts (#36) remains gated; #20 and #22 remain outside this qualification.
 
+## Follow-up acceptance repairs
+
+[PR #62](https://github.com/dhar174/advanced_prompting_system/pull/62) addresses #48's typed collaboration result/ownership boundary and selected metadata. [Focused qualification](issue48-qualification.md) records its source, regression evidence, local results and container limitations. The original-scope acceptance blockers tracked under #44–#61 remain the governing roadmap; historical PR-review closure is not full issue #35 acceptance.
+
 ## Historical results and corrected claims
 
 The original Windows report recorded 243 backend tests, 126 frontend tests and six browser scenarios. These were historical results, not clean Linux/container certification. Linux run [43436229893](https://github.com/dhar174/advanced_prompting_system/actions/runs/43436229893) failed with one non-browser pass and five browser setup errors because installation and guarded execution used different Chromium caches. The previous answer-copy change could also stop after one plan step; the updated upstream engine retains step-local answers and requires plan completion.

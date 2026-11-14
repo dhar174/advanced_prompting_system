@@ -1,24 +1,37 @@
 # Project Progress & Baselines (`advanced_prompting_system`)
 
-## Verified Offline Baselines
-- **Backend + Integration + Browser E2E Suite (`./tools/run-offline.ps1 -PytestArgs '-q'`)**:
-  - **243 passed, 0 failed, 0 skipped** (43.38s on Python 3.12.2 Windows)
-  - Includes 9 unmocked HTTP `/graphql` integration tests (`test_graphql_integration.py`), 6 offline Chromium Playwright E2E tests (`test_browser_e2e.py`), plus full unit/contract/regression suites (`test_advanced_prompting.py`, `test_execution_modes.py`, `test_graphql_contract.py`, `test_issue35_pr1_regressions.py`, `test_pr34_regressions.py`, `test_voting_semantics.py`, `test_memory_management.py`, `test_message_handling.py`, `test_offline_runtime.py`, `test_import_integrity.py`, `test_retrieval.py`, `test_smoke.py`, etc.).
-- **Frontend Offline Test Suite (`./tools/run-frontend-offline.ps1 -Action test`)**:
-  - **126 passed, 0 failed** across 15 Vitest test files.
-  - Production TypeScript & Vite bundle build (`-Action build`): **PASS**.
-  - Frontend ESLint check (`-Action lint`): **PASS**.
-  - Node network denial guard (`-Action guard`): **PASS**.
-- **CI Workflow**: `.github/workflows/test.yml` runs `backend-test` (`--ignore=test_browser_e2e.py -q` on Python 3.11/3.12), `frontend-test` (Node 22), and `browser-e2e` (Chromium + `test_browser_e2e.py` + `py_compile` + ledger artifact upload).
+## Current Qualified Slice: Issue #48
 
-## Completed Milestones
-- [x] Issue #7: Protected all 7 file write functions in `output_generator.py` with `try/except (IOError, OSError, PermissionError)`.
-- [x] Issue #8: Resolved voting/consensus edge cases (`BinaryVote`, `ConfidenceVote`, `ErrorResult`, tie-breaker, low participation, emergency mediator decisions).
-- [x] PR #34 Phase 0–1 Offline Qualification (`ae00ecb`): Repaired all 10 review findings, established `LazyClient`, lazy `get_nlp_spacy()` fallbacks, `conftest.py` isolation, and `tools/run-offline.*` / `tools/run-frontend-offline.*` socket denial guards.
-- [x] Issue #35 Phase 2 Quarantine Resolution: Unquarantined and repaired all 24 legacy tests in `test_advanced_prompting.py` (48/48 passing offline).
-- [x] Track 1 & PR #38 Hardening (Issue #35 Phases 3–5 & Issue #21): Added `execution_modes.py`, Strawberry types, frontend `ReasoningDiagnosticsPanel.tsx` / `StructuredOutputRenderer.tsx` / `useRunExecution.ts`, and security hardening.
-- [x] Issue #35 Stacked Resolution (PR #39, PR #40, PR 3; resolving #9, #10, #11): Unmocked GraphQL HTTP integration (`test_graphql_integration.py`), offline Playwright Chromium E2E (`test_browser_e2e.py`), production `Dockerfile` / `wsgi.py` / `.env.example` / `pyproject.toml`, CI `browser-e2e` job, rewritten `README.md`, and `docs/issue35-qualification.md`. (Docker image build deferred locally due to host Docker Desktop daemon not running.)
+- Approved plan: [typed collaboration results](../docs/superpowers/plans/2026-11-14-issue48-typed-collaboration.md).
+- Qualified production source: `4c328b215e4bb38f7412d27945f59d75995a2514`, based on `619bd150ebbbed94e763a258579228a05b735273`.
+- [PR #62](https://github.com/dhar174/advanced_prompting_system/pull/62): draft/open, not merged. Implementation and verification do not close #48 or imply human acceptance of #35.
 
-## Open Work Items
-- [ ] Issue #36 (Tree of Thoughts): Keep `tree_of_thought` gated (`enabled=False`) until genuine Tree-of-Thoughts search is implemented.
-- [ ] Issues #20 & #22: Remain open outside Issue #35 closure scope.
+| Verification | Result at the qualified source |
+|---|---|
+| Full guarded Python 3.12.14 | 342 passed in 45.05s |
+| Full guarded Python 3.11.18 | 342 passed in 61.75s |
+| Browser checks included in each full count | Eight checks: six Chromium scenarios, non-browser ownership/CORS, manifest verification |
+| Frontend Vitest | 147 passed across 17 files |
+| Frontend network guard, lint, TypeScript/production build | Passed |
+| Focused final unit/real-HTTP checks | 68 passed |
+| [Exact-source push CI 43567823628](https://github.com/dhar174/advanced_prompting_system/actions/runs/43567823628) | All five jobs passed, including browser and production image |
+
+Local environments/assets were reused and frontend builds did not overlap the final browser runs. Two local tracked-source Docker builds failed at `npm ci` (including proxy retry); no local container qualification is claimed. Later indentation/documentation changes and the PR event have independent checks: inspect the actual final head before claiming its CI is green. See [qualification](../docs/issue48-qualification.md) and ignored `.qualification/issue48/progress.md` for the exact execution record.
+
+## Implemented and Verified in This Slice
+
+- [x] Typed text/artifact/failure producer and consumer contract, with lossless legacy tuple/finalizer/question projections.
+- [x] Active-owner artifact conversion and direct scope lifetime; actual evaluator quality with null for unknown; copied selected plan/step-linked histories/questions and additive nullable GraphQL `planStepNumber`.
+- [x] Explicit empty tool-payload failures, safe partial failure metadata, rejected-artifact filtering and versioned registered collisions preserving accepted bytes.
+- [x] Fresh independent whole-branch review: four blockers each reproduced RED→GREEN and repaired, plus further overwrite/error-contract regressions.
+
+## Historical Milestones, Not Current Acceptance Claims
+
+PR #34 stabilization, #35 Phase 2 quarantine repair, Track 1/#38, and the #39–#41 review-repair stack established useful guarded backend/API/browser infrastructure. Earlier snapshots of **243 backend / 126 frontend** and **294 backend / 147 frontend** are historical counts, not the current #48 baseline or evidence that all original #35 requirements were met. The original-scope audit found additional defects despite green suites.
+
+## Remaining Work and Acceptance
+
+- [ ] Human review/integration of draft PR #62; #48 remains open until the corresponding human review/merge decision.
+- [ ] Issue #35 remains open with follow-ups #44–#61. Next priorities: #49 and #51, then #50; other API/UI/configuration/evidence follow-ups remain outside this slice.
+- [ ] Original-scope human acceptance remains outstanding. A narrow no-introduced-blocker review is not full-issue acceptance.
+- [ ] #36 ToT stays gated. Backend cancellation/durable resume remain unsupported; no paid/live calls, deployment or merge was authorized or performed here.

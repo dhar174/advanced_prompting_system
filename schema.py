@@ -541,7 +541,7 @@ class Mutation:
                 role=entry.get("role", "assistant"),
                 name=entry.get("name") or "",
                 content=entry.get("content", ""),
-            plan_step_number=entry.get("plan_step_number"),
+                plan_step_number=entry.get("plan_step_number"),
             )
             for entry in result.conversation
         ]
@@ -550,7 +550,7 @@ class Mutation:
             Question(
                 assistant=q.get("assistant", ""),
                 question=q.get("question") or q.get("reply") or "",
-            plan_step_number=q.get("plan_step_number"),
+                plan_step_number=q.get("plan_step_number"),
             )
             for q in result.questions
         ]
