@@ -677,3 +677,19 @@ def test_http_nested_writer_cannot_overwrite_foreign_registered_artifact(live_gr
     assert any(entry.response_format == "ExtractFormat" for entry in ledger.entries)
     assert any("generate the output in the following format" in prompt for prompt in ledger.captured_prompts)
     assert ledger.total_calls <= 200
+
+
+def test_http_rejected_nested_artifact_is_not_published(live_graphql_client, monkeypatch):
+    client, _provider, ledger, _tmp_path = live_graphql_client
+    monkeypatch.setenv("APS_PROVIDER_MAX_CALLS", "200")
+    with scenario_scope("two_step_metadata_rejected_artifacts"):
+        response = _post_graphql(client, RUN_EXECUTION_MUTATION, {"input":{"mode":"advanced_pipeline", "taskPrompt":"Complete two required deliverables", "agents":2, "maxSteps":2, "initialBudget":2}})
+    body = response.get_json()
+    assert response.status_code == 200 and "errors" not in body, body
+    result = body["data"]["runExecution"]
+    assert result["status"] == "completed", result
+    names = {artifact["filename"] for artifact in result["artifacts"]}
+    assert "nested-candidate-1.txt" in names
+    assert "nested-candidate-2.txt" not in names
+    assert any(ref.filename == "nested-candidate-2.txt" for ref in list_run_artifacts(result["artifacts"][0]["runId"]))
+    assert ledger.total_calls <= 200

@@ -19,6 +19,7 @@ import random
 
 
 from tqdm import tqdm
+from output_generator import artifact_run_scope, get_active_run_id
 from conversation_manager import (
     ErrorResult as ConversationErrorResult,
     ConversationResult, ConversationOutput, ConversationResultError, artifact_conversation_output, failure_output, resolve_conversation_output,
@@ -1964,6 +1965,7 @@ class AdvancedPromptEngineer:
         self.config = config
         self.knowledge_base = {}  # For Retrieval-Augmented Generation
         self.task_object = None
+        self._collaboration_artifact_ids: set[str] = set()
         self.last_conversation_history = None
         self.last_questions_asked = None
         self._last_sc_termination: Dict[str, Any] = {"reason": None, "calls": 0}
@@ -2400,6 +2402,11 @@ class AdvancedPromptEngineer:
         return OutputType(output_type="Text File", file_extension=".txt")
 
     def invoke_collaborative_reasoning(self, task: Task, plan_step: PlanStep, *, step_number: Optional[int] = None) -> FinalStepOutput:
+        scope = contextlib.nullcontext() if get_active_run_id() else artifact_run_scope(None)
+        with scope:
+            return self._invoke_collaborative_reasoning(task, plan_step, step_number=step_number)
+
+    def _invoke_collaborative_reasoning(self, task: Task, plan_step: PlanStep, *, step_number: Optional[int] = None) -> FinalStepOutput:
         """
         Invokes collaborative reasoning for a given task and plan step.
         This involves selecting personalities, running a conversation, and converting the output.
@@ -2429,6 +2436,7 @@ class AdvancedPromptEngineer:
         
         if not isinstance(result, ConversationResult):
             raise ConversationResultError(failure_output("InvalidResult", "The conversation returned an invalid result."))
+        self._collaboration_artifact_ids.update(ref.artifact_id for ref in result.output.artifacts)
         self.last_conversation_history = copy.deepcopy(result.conversation)
         self.last_questions_asked = copy.deepcopy(result.questions)
         return self.convert_conversation_result_to_final_step_output(result, plan_step, task, step_number=step_number)
@@ -8277,6 +8285,11 @@ Task: {task}
             raise RuntimeError(f"Error in merging interactions: {e}")
 
     def main(self, task: str) -> Interaction:
+        scope = contextlib.nullcontext() if get_active_run_id() else artifact_run_scope(None)
+        with scope:
+            return self._main_impl(task)
+
+    def _main_impl(self, task: str) -> Interaction:
         """
         Integrates all components to process the task and generate the final answer.
         """

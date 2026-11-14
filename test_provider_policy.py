@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from test_collaboration_results import typed_fixture
 import pytest
 
 import execution_modes
@@ -379,8 +380,8 @@ def test_public_error_sanitization_blocks_secrets_and_paths_in_all_modes(monkeyp
     )
     monkeypatch.setattr(
         conversation_manager,
-        "run_conversation",
-        lambda *args, **kwargs: ([], [], err_obj),
+        "run_conversation_result",
+        lambda *args, **kwargs: typed_fixture(([], [], err_obj)),
     )
     res_collab = execute_run(
         RunRequest(mode="collaborative", task_prompt="Trigger collaborative error sanitization")

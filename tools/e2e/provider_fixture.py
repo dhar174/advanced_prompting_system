@@ -321,6 +321,9 @@ class _ChatCompletions:
             filename = self._parent.output_filename or filename
             if filename:
                 args_dict["filename"] = filename
+            if scenario.startswith("two_step_metadata") and scenario.endswith("_artifacts"):
+                tool_name = "generate_text_output"
+                args_dict["filename"] = f"nested-candidate-{2 if 'SECOND_STEP_OUTPUT' in prompt_text else 1}.txt"
             tool_call = SimpleNamespace(
                 id="call_e2e_1",
                 function=SimpleNamespace(name=tool_name, arguments=json.dumps(args_dict)),
@@ -406,7 +409,7 @@ class _ChatCompletions:
             # Deliberately prefer genuine nested output over competing solo candidates.
             # The production selector/judges still execute; only provider replies differ.
             second_step = "SECOND_STEP_OUTPUT" in prompt_text
-            rejected = scenario.endswith("_rejected") and second_step
+            rejected = "_rejected" in scenario and second_step
             if "evaluate the following step" in lower:
                 score = "0.61" if rejected else "0.96"
                 content = f"<reflection>Measured fixture evaluation.</reflection><reward>{score}</reward>"

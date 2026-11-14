@@ -9,6 +9,7 @@ import os
 import time
 from types import SimpleNamespace
 
+from test_collaboration_results import typed_fixture
 import pytest
 
 import assistant_personalities
@@ -592,8 +593,8 @@ class TestPR1ConversationManagerFixes:
         )
         monkeypatch.setattr(
             conversation_manager,
-            "finalize_output",
-            lambda *a, **kw: "Final consensus output",
+            "finalize_output_result",
+            lambda *a, **kw: conversation_manager.ConversationOutput(kind="text", content="Final consensus output"),
         )
         monkeypatch.setattr(
             conversation_manager,
@@ -789,22 +790,22 @@ class TestPR1ProviderConfigAndExecutionModes:
         def raise_cancel(*a, **kw):
             raise RunCancelledError("Client cancelled")
 
-        monkeypatch.setattr(conversation_manager, "run_conversation", raise_budget)
+        monkeypatch.setattr(conversation_manager, "run_conversation_result", raise_budget)
         res_budget = execute_run(RunRequest(mode="collaborative", task_prompt="Budget"))
         assert res_budget.status == "budget_exhausted"
         assert res_budget.stop_reason == "budget_exhausted"
 
-        monkeypatch.setattr(conversation_manager, "run_conversation", raise_timeout)
+        monkeypatch.setattr(conversation_manager, "run_conversation_result", raise_timeout)
         res_timeout = execute_run(RunRequest(mode="collaborative", task_prompt="Timeout"))
         assert res_timeout.status == "timeout"
         assert res_timeout.stop_reason == "timeout"
 
-        monkeypatch.setattr(conversation_manager, "run_conversation", raise_cancel)
+        monkeypatch.setattr(conversation_manager, "run_conversation_result", raise_cancel)
         res_cancel = execute_run(RunRequest(mode="collaborative", task_prompt="Cancel"))
         assert res_cancel.status == "cancelled"
         assert res_cancel.stop_reason == "cancelled"
 
-        monkeypatch.setattr(conversation_manager, "run_conversation", lambda *a, **kw: ([], [], ""))
+        monkeypatch.setattr(conversation_manager, "run_conversation_result", lambda *a, **kw: typed_fixture(([], [], "")))
         res_incomplete = execute_run(RunRequest(mode="collaborative", task_prompt="Empty"))
         assert res_incomplete.status == "incomplete"
         assert res_incomplete.stop_reason == "empty_output"

@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from test_collaboration_results import typed_fixture
 import pytest
 
 import conversation_manager
@@ -186,9 +187,9 @@ class TestReusedAndParallelRunIsolation:
     def test_execute_run_colliding_and_reused_correlation_ids_cannot_cross_read(self, monkeypatch):
         def run_owner_creating_artifact(*args, **kwargs):
             path = output_generator.generate_json_output({"secret": "tenant-a-only"}, "out.json")
-            return ([{"role": "assistant", "content": "Done"}], [], path)
+            return typed_fixture(([{"role": "assistant", "content": "Done"}], [], path), artifact=True)
 
-        monkeypatch.setattr(conversation_manager, "run_conversation", run_owner_creating_artifact)
+        monkeypatch.setattr(conversation_manager, "run_conversation_result", run_owner_creating_artifact)
         res_a = execute_run(
             RunRequest(
                 mode="collaborative",
@@ -206,8 +207,8 @@ class TestReusedAndParallelRunIsolation:
         # Probe 1: colliding label "tenant:a" returns owner_path as output string
         monkeypatch.setattr(
             conversation_manager,
-            "run_conversation",
-            Mock(return_value=([{"role": "assistant", "content": "Done"}], [], owner_path)),
+            "run_conversation_result",
+            Mock(return_value=typed_fixture(([{"role": "assistant", "content": "Done"}], [], owner_path))),
         )
         res_colon = execute_run(
             RunRequest(

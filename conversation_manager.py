@@ -2,6 +2,7 @@
 
 import contextlib
 import copy
+import uuid
 import contextvars
 from datetime import datetime
 import time
@@ -31,7 +32,7 @@ from function_definitions import (
     GenerateCSVOutput,
 )
 from output_generator import (
-    ArtifactRef, artifact_run_scope, get_active_run_id, get_tracked_artifact_ref, read_tracked_artifact,
+    ArtifactRef, artifact_run_scope, get_active_run_id, get_tracked_artifact_ref, read_tracked_artifact, resolve_output_filepath,
     generate_simple_concise_answer_message,
     generate_json_output,
     generate_pdf_output,
@@ -1608,6 +1609,11 @@ def _finalize_output_result_impl(final_decision: str, output_type: OutputType):
                 response.choices[0].message.tool_calls[0].function.arguments
             )
             tool_query_string = tool_args.get("final_decision", final_decision)
+            if (tool_query_string is None or (isinstance(tool_query_string, str) and not tool_query_string.strip())
+                    or not isinstance(tool_query_string, (str, dict, list))
+                    or (tool_function_name not in ("generate_json_output", "generate_csv_output")
+                        and not isinstance(tool_query_string, str))):
+                return failure_output("EmptyOutput", "The provider returned an empty or invalid output payload.", output_type)
             filename = tool_args.get("filename", f"final_output{output_type.file_extension}")
 
             # Step 3: Call the function and retrieve results. Append the results to the messages list.
@@ -1627,6 +1633,11 @@ def _finalize_output_result_impl(final_decision: str, output_type: OutputType):
             print(f"filename: {filename}")
             if tool_function_name in function_mapping:
                 # Call the appropriate function with arguments
+                if tool_function_name != "generate_simple_concise_answer_message":
+                    resolved = resolve_output_filepath(filename)
+                    if get_tracked_artifact_ref(resolved) is not None:
+                        stem, extension = os.path.splitext(resolved)
+                        filename = f"{stem}_{uuid.uuid4().hex}{extension}"
                 filepath = function_mapping[tool_function_name](
                     final_decision=tool_query_string, filename=filename
                 )
@@ -2778,13 +2789,16 @@ def run_conversation_result(
         max_calls=max_calls,
         cancel_check=cancel_check,
     ):
-        return _run_conversation_impl(
-            problem_statement=problem_statement,
-            selected_personalities=selected_personalities,
-            lead_personality=lead_personality,
-            num_rounds=num_rounds,
-            context=context,
-        )
+        try:
+            return _run_conversation_impl(
+                problem_statement=problem_statement,
+                selected_personalities=selected_personalities,
+                lead_personality=lead_personality,
+                num_rounds=num_rounds,
+                context=context,
+            )
+        except LLMCallError:
+            return ConversationResult(output=failure_output("ProviderError", "The provider could not complete the conversation."))
 
 
 def _run_conversation_impl(
@@ -3880,5 +3894,5 @@ def _run_conversation_impl(
         if isinstance(question, dict):
             text = question.get("question") or question.get("reply")
             if isinstance(text, str) and text.strip():
-                questions.append({"assistant": str(question.get("assistant", "Assistant")), "question": text})
+                questions.append({**copy.deepcopy(question), "assistant": str(question.get("assistant", "Assistant")), "question": text})
     return ConversationResult(output=final_output, conversation=copy.deepcopy(conversation_history), questions=questions)

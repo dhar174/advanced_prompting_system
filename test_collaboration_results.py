@@ -13,9 +13,17 @@ from output_generator import (
 
 def typed_fixture(value, *, artifact=False, output_type=None):
     """Adapt explicit test data at a mapping-test boundary, never production inference."""
+    if not isinstance(value, tuple) or len(value) != 3:
+        return value  # Deliberately malformed typed-runner fixtures must fail closed.
     history, questions, content = value
-    if isinstance(content, cm.ErrorResult):
+    history, questions = history or [], questions or []
+    if any(not isinstance(entry, dict) for entry in history):
+        output = cm.failure_output("InvalidHistory", "Conversation history contains an invalid message.")
+        history = [entry for entry in history if isinstance(entry, dict)]
+    elif isinstance(content, cm.ErrorResult):
         output = cm.failure_output(content.error_type, content.error_message)
+    elif not isinstance(content, str) or not content.strip():
+        output = cm.failure_output("EmptyOutput", "The conversation returned no usable output.")
     elif artifact:
         output = cm.artifact_conversation_output(content, output_type)
     else:
@@ -30,9 +38,9 @@ def parts():
     return ap.AdvancedPromptEngineer(ap.PromptEngineeringConfig()), task, step
 
 
-def provider_reply(monkeypatch, *, content=None, tool=None, filename="result.txt", refusal=None):
+def provider_reply(monkeypatch, *, content=None, tool=None, filename="result.txt", refusal=None, payload="OWNED_CONTENT"):
     import json
-    calls = [] if tool is None else [SimpleNamespace(id="tool1", function=SimpleNamespace(name=tool, arguments=json.dumps({"final_decision": "OWNED_CONTENT", "filename": filename})))]
+    calls = [] if tool is None else [SimpleNamespace(id="tool1", function=SimpleNamespace(name=tool, arguments=json.dumps({"final_decision": payload, "filename": filename})))]
     message = SimpleNamespace(content=content, tool_calls=calls, refusal=refusal)
     monkeypatch.setattr(cm, "client", SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kwargs: SimpleNamespace(choices=[SimpleNamespace(message=message)])))))
 
@@ -255,3 +263,65 @@ def test_nested_candidate_copies_the_accepted_base_for_comparable_scoring(monkey
     result.reflections[0].content = "Candidate reflection mutation"
     assert accepted.steps[0].description == "Prior output"
     assert accepted.reflections[0].content == "Prior accepted"
+
+
+@pytest.mark.parametrize("payload", [None, "", " \n "])
+def test_empty_pdf_tool_payload_is_failure_before_writing(monkeypatch, payload):
+    from output_generator import list_run_artifacts
+    provider_reply(monkeypatch, tool="generate_pdf_output", filename="empty.pdf", payload=payload)
+    with artifact_run_scope("empty-payload"):
+        output = cm.finalize_output_result("A valid task", cm.OutputType(output_type="PDF File", file_extension=".pdf"))
+        assert output.kind == "failure"
+        assert list_run_artifacts() == []
+
+
+def test_direct_nested_adapter_keeps_artifact_scope_until_conversion(monkeypatch):
+    import provider_client
+    from tools.e2e.provider_fixture import FakeProviderClient, install_fake_provider
+    fake = FakeProviderClient()
+    install_fake_provider(fake, monkeypatch)
+    engineer, task, step = parts()
+    step.description = step.step_description = "[FORMAT:TXT] Design a strategy and analysis"
+    assert get_active_run_id() is None
+    with provider_client.provider_execution_scope(default_model="gpt-4o-mini", max_calls=100, timeout_seconds=10):
+        result = engineer.invoke_collaborative_reasoning(task, step)
+    assert result.final_output.strip()
+    assert result.collaboration_result.output.kind == "artifact"
+    assert get_active_run_id() is None
+    assert 0 < fake.ledger.total_calls <= 100
+
+
+def test_legacy_conversation_questions_keep_reply_and_attribution(monkeypatch):
+    from tools.e2e.provider_fixture import FakeProviderClient, install_fake_provider
+    fake = FakeProviderClient()
+    install_fake_provider(fake, monkeypatch)
+    history, questions, output = cm.run_conversation("Write a concise response", ["Strategist", "Mediator"], "Strategist", num_rounds=1, max_calls=100)
+    assert history and questions and output
+    assert all({"assistant", "question", "reply", "asking_assistant"} <= set(q) for q in questions)
+    assert all(q["reply"] == q["question"] for q in questions)
+    assert 0 < fake.ledger.total_calls <= 100
+
+
+def test_typed_writer_preserves_previous_artifact_versions(monkeypatch):
+    from pathlib import Path
+    with artifact_run_scope("versions"):
+        provider_reply(monkeypatch, tool="generate_text_output", filename="same.txt", payload="ACCEPTED_BYTES")
+        first = cm.finalize_output_result("task", cm.OutputType(output_type="Text File", file_extension=".txt"))
+        provider_reply(monkeypatch, tool="generate_text_output", filename="same.txt", payload="REJECTED_BYTES")
+        second = cm.finalize_output_result("task", cm.OutputType(output_type="Text File", file_extension=".txt"))
+        assert first.artifacts[0].path != second.artifacts[0].path
+        assert Path(first.artifacts[0].path).read_text() == "ACCEPTED_BYTES"
+        assert Path(second.artifacts[0].path).read_text() == "REJECTED_BYTES"
+
+
+def test_conversation_runtime_failure_is_typed_and_cleans_its_scopes(monkeypatch):
+    import provider_client
+    def failed_conversation(**kwargs):
+        raise cm.LLMCallError("sk-fixture-secret /private/sensitive-path")
+    monkeypatch.setattr(cm, "_run_conversation_impl", failed_conversation)
+    result = cm.run_conversation_result("task", ["Strategist"], "Strategist", max_calls=1)
+    assert result.output.kind == "failure"
+    assert "sk-fixture-secret" not in result.model_dump_json()
+    assert "/private/sensitive-path" not in result.model_dump_json()
+    assert get_active_run_id() is None
+    assert provider_client.get_active_execution_context() is None

@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 from unittest.mock import MagicMock, Mock, patch
 
+from test_collaboration_results import typed_fixture
 import pytest
 from pydantic import ValidationError
 
@@ -60,8 +61,8 @@ class TestCollaborativeErrorAndTupleFidelity:
 
         monkeypatch.setattr(
             conversation_manager,
-            "run_conversation",
-            Mock(return_value=(history, questions, error_result)),
+            "run_conversation_result",
+            Mock(return_value=typed_fixture((history, questions, error_result))),
         )
 
         req = RunRequest(mode="collaborative", task_prompt="Analyze system load.")
@@ -89,8 +90,8 @@ class TestCollaborativeErrorAndTupleFidelity:
 
         monkeypatch.setattr(
             conversation_manager,
-            "run_conversation",
-            Mock(return_value=error_result),
+            "run_conversation_result",
+            Mock(return_value=typed_fixture(error_result)),
         )
 
         req = RunRequest(mode="collaborative", task_prompt="Analyze system load.")
@@ -99,7 +100,7 @@ class TestCollaborativeErrorAndTupleFidelity:
         assert res.status == "error"
         assert res.error is not None
         assert res.error.error_type == "ValueError"
-        assert "unpack" in res.error.error_message.lower()
+        assert "conversation result" in res.error.error_message.lower()
         assert any(e.event_type == "run_error" for e in res.events)
 
     def test_run_conversation_returns_2tuple(self, monkeypatch):
@@ -108,8 +109,8 @@ class TestCollaborativeErrorAndTupleFidelity:
 
         monkeypatch.setattr(
             conversation_manager,
-            "run_conversation",
-            Mock(return_value=([], [])),
+            "run_conversation_result",
+            Mock(return_value=typed_fixture(([], []))),
         )
 
         req = RunRequest(mode="collaborative", task_prompt="Analyze system load.")
@@ -126,8 +127,8 @@ class TestCollaborativeErrorAndTupleFidelity:
 
         monkeypatch.setattr(
             conversation_manager,
-            "run_conversation",
-            Mock(return_value=([], [], "output", "extra_element")),
+            "run_conversation_result",
+            Mock(return_value=typed_fixture(([], [], "output", "extra_element"))),
         )
 
         req = RunRequest(mode="collaborative", task_prompt="Analyze system load.")
@@ -144,8 +145,8 @@ class TestCollaborativeErrorAndTupleFidelity:
 
         monkeypatch.setattr(
             conversation_manager,
-            "run_conversation",
-            Mock(return_value=(None, None, None)),
+            "run_conversation_result",
+            Mock(return_value=typed_fixture((None, None, None))),
         )
 
         req = RunRequest(mode="collaborative", task_prompt="Analyze system load.")
@@ -169,14 +170,15 @@ class TestCollaborativeErrorAndTupleFidelity:
         ]
         monkeypatch.setattr(
             conversation_manager,
-            "run_conversation",
-            Mock(return_value=(history, [], "Final success")),
+            "run_conversation_result",
+            Mock(return_value=typed_fixture((history, [], "Final success"))),
         )
 
         req = RunRequest(mode="collaborative", task_prompt="Query")
         res = execute_run(req)
 
-        assert res.status == "completed"
+        assert res.status == "error"
+        assert res.error.error_type == "InvalidHistory"
         # Verify valid messages are retained and normalizer did not crash on ErrorResult
         assert any(m["role"] == "user" for m in res.conversation)
         assert any(m["name"] == "Analyst" for m in res.conversation)
@@ -300,7 +302,7 @@ class TestPipelineNegativeRewardsAndNoneAttributes:
         res = execute_run(req)
 
         assert res.status == "incomplete"
-        assert res.diagnostics.final_reward == 0.0  # None coerced to 0.0
+        assert res.diagnostics.final_reward is None  # Unknown quality stays unknown
         assert len(res.diagnostics.reflections) == 1
         r = res.diagnostics.reflections[0]
         assert r.step_number == 1
@@ -435,10 +437,10 @@ class TestRunEventFidelityAndSerialization:
         # Mock collaborative
         monkeypatch.setattr(
             conversation_manager,
-            "run_conversation",
-            Mock(return_value=([
+            "run_conversation_result",
+            Mock(return_value=typed_fixture(([
                 {"role": "assistant", "name": "Analyst", "content": "Contribution", "round": 1}
-            ], [], "Final output")),
+            ], [], "Final output"))),
         )
 
         # Mock advanced pipeline
@@ -479,7 +481,7 @@ class TestRunEventFidelityAndSerialization:
         # 3. Advanced pipeline mode events
         res_pipeline = execute_run(RunRequest(mode="advanced_pipeline", task_prompt="Pipeline test"))
         # 4. Error mode events
-        monkeypatch.setattr(conversation_manager, "run_conversation", Mock(side_effect=RuntimeError("Simulated boom")))
+        monkeypatch.setattr(conversation_manager, "run_conversation_result", Mock(side_effect=RuntimeError("Simulated boom")))
         res_error = execute_run(RunRequest(mode="collaborative", task_prompt="Error test"))
 
         all_events: List[RunEvent] = res_gated.events + res_collab.events + res_pipeline.events + res_error.events
@@ -499,10 +501,10 @@ class TestRunEventFidelityAndSerialization:
 
         monkeypatch.setattr(
             conversation_manager,
-            "run_conversation",
-            Mock(return_value=([
+            "run_conversation_result",
+            Mock(return_value=typed_fixture(([
                 {"role": "assistant", "name": "Analyst", "content": "Contribution", "round": 1}
-            ], [], "Final output")),
+            ], [], "Final output"))),
         )
 
         task_obj = Task(
@@ -539,7 +541,7 @@ class TestRunEventFidelityAndSerialization:
         res_collab = execute_run(RunRequest(mode="collaborative", task_prompt="Collab test"))
         res_pipeline = execute_run(RunRequest(mode="advanced_pipeline", task_prompt="Pipeline test"))
 
-        monkeypatch.setattr(conversation_manager, "run_conversation", Mock(side_effect=RuntimeError("Simulated error")))
+        monkeypatch.setattr(conversation_manager, "run_conversation_result", Mock(side_effect=RuntimeError("Simulated error")))
         res_error = execute_run(RunRequest(mode="collaborative", task_prompt="Error test"))
 
         all_results = [res_gated, res_collab, res_pipeline, res_error]

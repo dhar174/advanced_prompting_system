@@ -1,3 +1,4 @@
+from test_collaboration_results import typed_fixture
 import pytest
 from unittest.mock import MagicMock, patch
 from conversation_manager import (
@@ -205,11 +206,11 @@ def test_advanced_prompting_metadata_retention():
     )
 
     sample_history = [{"role": "assistant", "name": "Architect", "content": "Schema drafted"}]
-    sample_questions = ["Does the schema support multi-tenancy?"]
+    sample_questions = [{"assistant":"Architect", "question":"Does the schema support multi-tenancy?"}]
     sample_path = "output/step_1.txt"
 
-    with patch("conversation_manager.run_conversation", return_value=(sample_history, sample_questions, sample_path)):
-        with patch.object(engineer, "convert_conversation_output_to_final_step_output", return_value=MagicMock()):
+    with patch("conversation_manager.run_conversation_result", return_value=typed_fixture((sample_history, sample_questions, sample_path))):
+        with patch.object(engineer, "convert_conversation_result_to_final_step_output", return_value=MagicMock()):
             engineer.invoke_collaborative_reasoning(task, plan_step)
             # Verify metadata retention
             assert engineer.last_conversation_history == sample_history
@@ -431,10 +432,10 @@ def test_advanced_prompting_invalid_run_conversation_shapes():
     ]
 
     for invalid_val in invalid_returns:
-        with patch("conversation_manager.run_conversation", return_value=invalid_val):
-            with pytest.raises(ValueError) as exc_info:
+        with patch("conversation_manager.run_conversation_result", return_value=typed_fixture(invalid_val)):
+            with pytest.raises(__import__("conversation_manager").ConversationResultError) as exc_info:
                 engineer.invoke_collaborative_reasoning(task, plan_step)
-            assert "Expected run_conversation to return a 3-tuple" in str(exc_info.value)
+            assert "invalid result" in str(exc_info.value)
 
 
 def test_advanced_prompting_empty_metadata_retention():
@@ -462,8 +463,8 @@ def test_advanced_prompting_empty_metadata_retention():
         output_type=None,
     )
 
-    with patch("conversation_manager.run_conversation", return_value=([], [], "output/path.txt")):
-        with patch.object(engineer, "convert_conversation_output_to_final_step_output", return_value=MagicMock()):
+    with patch("conversation_manager.run_conversation_result", return_value=typed_fixture(([], [], "output/path.txt"))):
+        with patch.object(engineer, "convert_conversation_result_to_final_step_output", return_value=MagicMock()):
             engineer.invoke_collaborative_reasoning(task, plan_step)
             assert engineer.last_conversation_history == []
             assert engineer.last_questions_asked == []

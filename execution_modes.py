@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Authoritative domain models (safe DAG: assistant_personalities/output_generator/conversation_manager -> execution_modes -> schema)
 from assistant_personalities import assistant_personalities as PERSONALITY_CATALOG
-from conversation_manager import ErrorResult, OutputType, resolve_conversation_output
+from conversation_manager import ConversationResult, ErrorResult, OutputType, resolve_conversation_output
 from output_generator import (
     ArtifactRef,
     artifact_run_scope,
@@ -1105,15 +1105,19 @@ def _execute_collaborative(
     )
     with scope_cm:
         conversation_result = run_conversation(**rc_kwargs)
+        if not isinstance(conversation_result, ConversationResult):
+            raise ValueError("Expected a typed conversation result.")
         conversation_result.output = resolve_conversation_output(conversation_result.output)
         raw_history, raw_questions, raw_final_output = conversation_result.legacy_tuple()
 
     # 4. Check for ErrorResult from run_conversation
     if isinstance(raw_final_output, ErrorResult):
+        empty_output = raw_final_output.error_type == "EmptyOutput"
+        failure_reason = "empty_output" if empty_output else "provider_error"
         error_obj, error_event = _build_safe_error_artifacts(
             raw_final_output,
             mode="collaborative",
-            stop_reason="provider_error",
+            stop_reason=failure_reason,
             correlation_id=correlation_id,
             error_type=raw_final_output.error_type,
             summary_prefix="Collaborative deliberation returned error",
@@ -1123,8 +1127,8 @@ def _execute_collaborative(
         return RunResult(
             mode="collaborative",
             effective_mode="collaborative",
-            status="error",
-            stop_reason="provider_error",
+            status="incomplete" if empty_output else "error",
+            stop_reason=failure_reason,
             final_output="",
             output_type=OutputType(output_type="Simple Concise Answer", file_extension=".txt"),
             conversation=_normalize_conversation_history(raw_history or []),
@@ -1486,7 +1490,10 @@ def _execute_advanced_pipeline(
         if plan_step_diagnostics
         else False
     )
-    run_artifacts = list_run_artifacts(run_id=correlation_id)
+    attempted_artifact_ids = getattr(engineer, "_collaboration_artifact_ids", set())
+    accepted_artifact_ids = {ref.artifact_id for record in collaboration_records for ref in record.result.output.artifacts}
+    run_artifacts = [ref for ref in list_run_artifacts(run_id=correlation_id)
+                     if ref.artifact_id not in attempted_artifact_ids or ref.artifact_id in accepted_artifact_ids]
 
     final_output_str = ""
     final_status: RunStatus
