@@ -2,7 +2,15 @@
 
 [PR #62](https://github.com/dhar174/advanced_prompting_system/pull/62) addresses the nested result/ownership and metadata blockers from [issue #48](https://github.com/dhar174/advanced_prompting_system/issues/48). Issue #35 acceptance remains outstanding. This does not qualify the separate #49–#61 backlog or genuine ToT (#36).
 
-## Verified source and behavior
+## Review-fix qualification (supersedes the historical counts below)
+
+Antigravity's ten inline comments and review summary, plus Codex's overlapping inline finding, are addressed in `8d0a9065b83c68ec81ced8ec6218553d451552ab`. The [comment disposition matrix](issue48-review-disposition.md) records fixes, regressions, and the distinction between real HTTP/service evidence and defensive unit coverage. Fresh independent review found no remaining blockers.
+
+The guarded full suites now pass **389 tests on each of Python 3.11.18 and 3.12.14**. Frontend network guard, **147 tests**, lint and production build pass. These are local results for the review-fix source; exact PR-head CI, including the tracked-source non-root production image, must be checked separately through [PR checks](https://github.com/dhar174/advanced_prompting_system/pull/62/checks). Historical workflow links and counts below describe the earlier implementation and are not evidence for a later head.
+
+Solo takeover atomically replaces current-step state while retaining prior accepted records. Measured zero can explore; unknown or invalid quality remains unknown. Ordinary conversation failures retain actual partial diagnostics, terminal errors always expose safe errors/events, and per-step transcripts carry ordered identities. Final evaluation failures preserve useful work as incomplete without a main-level retry; explicit policy stops remain distinct. Reused engineer instances reset bookkeeping without replenishing their caller's provider allowance.
+
+## Historical verified source and behavior
 
 The local full-suite source is `4c328b215e4bb38f7412d27945f59d75995a2514`, based on main `619bd150ebbbed94e763a258579228a05b735273`. Subsequent output-mapping indentation/documentation changes are qualified separately by the PR's exact-head checks. The [source-head workflow](https://github.com/dhar174/advanced_prompting_system/actions/runs/43567823628) and [PR checks](https://github.com/dhar174/advanced_prompting_system/pull/62/checks) distinguish final-head CI from these local results.
 
@@ -27,7 +35,7 @@ The local full-suite source is `4c328b215e4bb38f7412d27945f59d75995a2514`, based
 
 A fresh independent whole-branch reviewer found four blocking gaps: direct artifact lifetime, rejected-artifact publication, empty PDF tool payloads, and dropped legacy question fields. Each has a witnessed failing-before/passing-after regression. A further overwrite regression protects earlier registered output versions. Final focused unit/HTTP qualification passes 68 cases.
 
-## Local verification
+## Historical local verification
 
 | Check | Actual result |
 |---|---|
