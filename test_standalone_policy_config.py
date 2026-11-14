@@ -78,3 +78,8 @@ def test_extremely_large_environment_integer_fails_as_value_error(monkeypatch):
     monkeypatch.setenv('APS_PROVIDER_MAX_CALLS','9'*400)
     with pytest.raises(ValueError):
         em.get_provider_config()
+
+
+def test_extremely_large_constructor_timeout_fails_as_value_error():
+    with pytest.raises(ValueError):
+        ap.PromptEngineeringConfig(timeout_seconds=10**400)

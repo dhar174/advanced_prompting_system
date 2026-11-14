@@ -87,8 +87,9 @@ In development, you can also run the Vite dev server (`npm run dev` on `http://l
 
 `AdvancedPromptEngineer.main(task)` establishes one provider policy before planning.
 Without overrides, `APS_PROVIDER_MAX_CALLS` defaults to 40 provider calls and
-`APS_PROVIDER_TIMEOUT_SECONDS` to a 120-second cooperative deadline. Explicit constructor limits can tighten those
-ceilings; larger limits fail before dispatch. `max_calls=0` performs no outbound
+`APS_PROVIDER_TIMEOUT_SECONDS` to a 120-second cooperative deadline. Explicit
+constructor limits can tighten those ceilings; larger limits fail before dispatch.
+`max_calls=0` performs no outbound
 work. An omitted model inherits `APS_DEFAULT_MODEL`; an explicit model must be
 permitted by `APS_ALLOWED_MODELS`.
 

@@ -100,8 +100,8 @@ def validate_provider_model(requested_model: Optional[str], config: Optional[Pro
 def validate_standalone_limits(max_calls=None, timeout_seconds=None) -> None:
     if max_calls is not None and (type(max_calls) is not int or not 0 <= max_calls <= 200):
         raise ValueError("max_calls must be an integer from 0 through 200")
-    if timeout_seconds is not None and (type(timeout_seconds) not in (int, float)
-            or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 600):
+    if timeout_seconds is not None and (not _finite_number(timeout_seconds)
+            or not 0 < timeout_seconds <= 600):
         raise ValueError("timeout_seconds must be finite, positive and at most 600")
 
 
