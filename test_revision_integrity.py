@@ -121,3 +121,16 @@ def test_failed_revision_retains_partial_and_never_dispatches_writer(conversatio
     assert result.output.kind == 'failure' and result.output.error.error_type == 'RevisionLimit'
     assert any(turn.get('name')=='Partial Output' and turn['content']=='USEFUL_PARTIAL' for turn in result.conversation)
     conversation_case[0].assert_not_called()
+
+
+def test_policy_stop_carries_last_accepted_revision_without_promoting_success(monkeypatch):
+    first=analysis()
+    # First correction improves a requirement but completeness remains false.
+    improved=analysis(met=True)
+    install_replies(monkeypatch,[first,output('ACCEPTED_PARTIAL'),improved])
+    with provider_execution_scope(max_calls=3):
+        with pytest.raises(RunBudgetExceededError) as caught:
+            analyze(current_version=1,max_version=5)
+    result=caught.value.revision_result
+    assert result.accepted.final_output=='ACCEPTED_PARTIAL'
+    assert result.accepted.version==2 and result.stop_reason=='budget_exhausted'

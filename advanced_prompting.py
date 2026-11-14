@@ -1445,7 +1445,9 @@ class PromptEngineeringConfig:
         self.backtrack = backtrack
         self.agents = agents
         self.complexity_factor = complexity_factor
-        self.max_sc_calls = max(int(max_sc_calls), 1)
+        if type(max_sc_calls) is not int or max_sc_calls < 0:
+            raise ValueError("max_sc_calls must be a nonnegative integer")
+        self.max_sc_calls = max_sc_calls
 
 
 # CompnentType represents a category of different final output component types, ie. whether the output is its own standalone file, a part of a larger file, or a response to a prompt.
@@ -4319,16 +4321,19 @@ class AdvancedPromptEngineer:
         if (score is None or not math.isfinite(score) or not 0.0 <= score <= 1.0
                 or score >= self.config.confidence_thresholds[1] or not self.config.backtrack):
             return interaction
+        current_steps = [step for step in interaction.steps if step.plan_step_number == plan_step.step_number]
+        if not current_steps:
+            return interaction
+        prior_step = current_steps[-1]
+        replacement_allowance = len(current_steps) + self._local_allowance(prior_step.remaining_budget, "remaining_budget")
         prompt = f"Take a different approach to solve the following task.\n\nTask: {task.refined_description}\n\nPlan Step: {plan_step.step_description}"
         messages = [{"role": "system", "content": "Explore an alternative approach using structured thinking, step, reflection, reward, answer and final_reward tags."},
                     {"role": "user", "content": prompt}]
         response = self.call_openai(messages=messages, temperature=min(2.0, max(0.01, self.config.temperature * 2)))
-        current_steps = [step for step in interaction.steps if step.plan_step_number == plan_step.step_number]
-        prior_step = current_steps[-1] if current_steps else Step(plan_step_number=plan_step.step_number)
         if self._parse_and_validate_revision(response, prior_step) is None:
             return interaction
         proposed = self.parse_response(response, task, plan_step_number=plan_step.step_number)
-        if not proposed.steps or not (proposed.answer or "").strip():
+        if not proposed.steps or len(proposed.steps) > replacement_allowance or not (proposed.answer or "").strip():
             return interaction
         evaluation_step = Step(description="Proposed reasoning steps:\n" + "\n".join(step.description for step in proposed.steps)
             + "\nProposed answer:\n" + proposed.answer, step_number=prior_step.step_number,
@@ -4364,9 +4369,10 @@ class AdvancedPromptEngineer:
         for offset, step in enumerate(proposed.steps):
             step.step_number = start + offset
             step.plan_step_number = plan_step.step_number
+            step.remaining_budget = replacement_allowance - offset - 1
             if step.reflection is not None:
                 step.reflection.step_number = step.step_number
-        return Interaction(task=task, steps=base.steps + copy.deepcopy(proposed.steps),
+        return Interaction(task=copy.deepcopy(task), steps=base.steps + copy.deepcopy(proposed.steps),
             reflections=base.reflections + copy.deepcopy(proposed.reflections),
             answer=proposed.answer, final_reward=new_score,
             step_outputs=base.step_outputs + copy.deepcopy(proposed.step_outputs),
@@ -4684,10 +4690,8 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
                                 agent_thinking[-1] = accepted_rev["thinking"]
                             else:
                                 agent_thinking.append(accepted_rev["thinking"])
-                        if accepted_rev.get("agent_response"):
-                            latest_agent_response = accepted_rev["agent_response"]
-                        if accepted_rev.get("raw_reward") is not None:
-                            latest_reward = accepted_rev["raw_reward"]
+                        latest_agent_response = accepted_rev.get("agent_response") or accepted_rev.get("answer")
+                        latest_reward = accepted_rev["reward"]
                         response = accepted_rev["response"]
 
                 if latest_agent_response or len(agent_steps) >= step_budget:
@@ -7901,6 +7905,7 @@ Task: {task}
                         current_step.reflection = reflection
                         _reflections.append(reflection)
                     backtracks = 0
+                    accepted_revision_reward = None
                     former_score = float(getattr(current_step.reflection, "reward", 0.0) or 0.0)
                     while (
                         (
@@ -7943,6 +7948,7 @@ Task: {task}
                             decrement_count=False,
                         )
                         if accepted_rev is not None:
+                            accepted_revision_reward = accepted_rev["reward"]
                             print_saver.print_and_store(
                                 f"Revision in self-consistency: {accepted_rev['response']} for step {step_num}."
                             )
@@ -7997,11 +8003,9 @@ Task: {task}
                                     except (TypeError, ValueError):
                                         parsed_final_reward = None
                                 candidate_interaction.final_reward = (
-                                    parsed_final_reward
-                                    if parsed_final_reward is not None
-                                    else self.judge_final_answer(
-                                        task, candidate_interaction
-                                    ).final_reward
+                                    accepted_revision_reward if accepted_revision_reward is not None else (
+                                        parsed_final_reward if parsed_final_reward is not None else
+                                        self.judge_final_answer(task, candidate_interaction).final_reward)
                                 )
                                 print_saver.print_and_store(
                                     f"Final answer for reasoning path: {candidate_interaction.answer} with reward: {candidate_interaction.final_reward}."
@@ -8933,6 +8937,12 @@ Task: {task}
                             break
         except self._termination_exception_types() as exc:
             termination_reason = self._classify_policy_termination(exc)
+            partial = getattr(exc, "conversation_result", None)
+            if partial is not None:
+                main_interaction.failed_collaboration_results = [CollaborationRecord(plan_step_number=curr_num,
+                    step_number=next_sc_step_num, result=partial)]
+                main_interaction.error_result = partial.output.error.model_copy(deep=True)
+                main_interaction.final_reward = None
 
         if self._is_whole_plan_complete(plan):
             synthesized_answer = self._synthesize_plan_answer(plan, main_interaction)

@@ -2377,7 +2377,7 @@ class OutputRevisionResult(BaseModel):
     accepted: FinalOutput
     analysis: Optional[FinalOutputAnalysis] = None
     attempt_version: int
-    stop_reason: Literal["completed", "revision_limit", "evaluation_unavailable", "provider_error"]
+    stop_reason: Literal["completed", "revision_limit", "evaluation_unavailable", "provider_error", "budget_exhausted", "timeout", "cancelled"]
     error: Optional[ErrorResult] = None
 
 
@@ -2415,6 +2415,10 @@ def analyze_final_output_result(final_output, lead_personality, assistants_list,
                 "provider_error": "The provider could not revise this output.",
             }.get(reason, "Output revision could not complete.")) if error_type else None)
 
+    def retain_policy_stop(exc):
+        reason = "cancelled" if type(exc).__name__ == "RunCancelledError" else "timeout" if "Timeout" in type(exc).__name__ else "budget_exhausted"
+        exc.revision_result = outcome(reason, type(exc).__name__)
+
     def assess(text, requirements=None):
         messages = [{"role": "system", "content": "Evaluate the actual output against the user's task. Return the complete requirement checklist and format, alignment and completeness checks. Keep supplied requirement descriptions exactly; never drop or rename them."},
             {"role": "user", "content": f"Original Prompt: {original_prompt}\nProblem Statement: {problem_statement}\nExpected Output Type: {output_type.output_type} ({output_type.file_extension})\nActual Output: {text}"}]
@@ -2429,7 +2433,8 @@ def analyze_final_output_result(final_output, lead_personality, assistants_list,
             result = message.parsed.model_copy(deep=True)
             _revision_checks(result)
             return result
-        except (ProviderPolicyError, DisallowedModelError):
+        except (ProviderPolicyError, DisallowedModelError) as exc:
+            retain_policy_stop(exc)
             raise
         except Exception:
             return None
@@ -2446,9 +2451,13 @@ def analyze_final_output_result(final_output, lead_personality, assistants_list,
     sample = output_type_samples[match_output_type_to_sample(output_type.output_type)]
     while attempt < max_version:
         attempt += 1
-        proposed = final_output_correction(accepted.final_output, output_type, accepted_analysis,
-            sample["sample_final_output"], sample["sample_original_prompt"], sample["sample_problem_statement"],
-            sample["sample_output_analysis"], sample["sample_corrected_output"], attempt)
+        try:
+            proposed = final_output_correction(accepted.final_output, output_type, accepted_analysis,
+                sample["sample_final_output"], sample["sample_original_prompt"], sample["sample_problem_statement"],
+                sample["sample_output_analysis"], sample["sample_corrected_output"], attempt)
+        except (ProviderPolicyError, DisallowedModelError) as exc:
+            retain_policy_stop(exc)
+            raise
         if isinstance(proposed, ErrorResult):
             if proposed.error_type == "ProviderError":
                 return outcome("provider_error", "ProviderError")
@@ -2803,6 +2812,13 @@ def run_conversation_result(
                 context=context,
                 _progress=progress,
             )
+        except ProviderPolicyError as exc:
+            revision = getattr(exc, "revision_result", None)
+            if revision is not None:
+                progress.conversation.append({"role": "assistant", "name": "Partial Output", "content": revision.accepted.final_output})
+                exc.conversation_result = ConversationResult(output=failure_output(type(exc).__name__, "Execution stopped during output revision."),
+                    conversation=copy.deepcopy(progress.conversation), questions=_normalized_questions(progress.questions))
+            raise
         except LLMCallError:
             return ConversationResult(output=failure_output("ProviderError", "The provider could not complete the conversation."),
                 conversation=copy.deepcopy(progress.conversation), questions=_normalized_questions(progress.questions))

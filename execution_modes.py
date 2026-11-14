@@ -1809,6 +1809,10 @@ def execute_run(request: RunRequest) -> RunResult:
         elif getattr(request, "task_prompt", None):
             fallback_conv = [{"role": "user", "name": "User", "content": request.task_prompt}]
 
+        partial = getattr(e, "conversation_result", None)
+        if isinstance(partial, ConversationResult):
+            fallback_conv = _normalize_conversation_history(partial.conversation)
+
         return RunResult(
             mode=getattr(request, "mode", "collaborative"),
             effective_mode=getattr(request, "mode", "collaborative"),
@@ -1817,7 +1821,7 @@ def execute_run(request: RunRequest) -> RunResult:
             final_output="",
             output_type=OutputType(output_type="Simple Concise Answer", file_extension=".txt"),
             conversation=fallback_conv,
-            questions=[],
+            questions=partial.questions if isinstance(partial, ConversationResult) else [],
             diagnostics=RunDiagnostics(
                 duration_ms=duration_ms,
                 correlation_id=correlation_id,

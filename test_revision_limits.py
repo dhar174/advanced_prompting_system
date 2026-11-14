@@ -125,3 +125,50 @@ def test_parallel_candidate_snapshots_do_not_share_input_or_policy(monkeypatch):
     assert [r.step_outputs[0].payload[0]['value'] for r,_ in results]==['FIRST','SECOND']
     assert base.step_outputs[0].payload[0]['value']=='ACCEPTED'
     assert all(calls==1 for _,calls in results)
+
+
+def test_dynamic_accepted_candidate_is_deep_and_counts_remain_controller_owned(monkeypatch):
+    from test_pr62_review_regressions import interaction_with_record
+    engineer,task,step=parts()
+    candidate=interaction_with_record(task,step.step_number,12,0.3,'OLD')
+    monkeypatch.setattr(engineer,'call_openai',lambda **kw:'<count>999999</count><thinking>Alternative</thinking><step>NEW</step><reflection>Claimed</reflection><reward>1</reward><answer>New answer</answer><final_reward>1</final_reward>')
+    monkeypatch.setattr(engineer,'judge_step',lambda st,t:ap.Reflection(content='Independent',reward=0.9,step_number=st.step_number))
+    result=engineer.dynamic_confidence_exploration(candidate,task,step)
+    assert result is not candidate
+    assert result.steps[0].remaining_budget==1
+    result.task.plan.steps[0].step_name='Mutation'
+    assert candidate.task.plan.steps[0].step_name!='Mutation'
+
+
+@pytest.mark.parametrize('route',['solo','legacy_team'])
+def test_accepted_revision_keeps_measured_reward_instead_of_authored_tags(monkeypatch,route):
+    engineer,task,step=parts()
+    engineer.config.n=1
+    engineer.config.agents=1
+    responses=iter(['<thinking>Old</thinking><step>Old</step><reflection>Low</reflection><reward>0.3</reward>',
+        '<thinking>New</thinking><step>Revised</step><reflection>Claimed perfect</reflection><reward>1.0</reward><answer>New answer</answer><final_reward>1.0</final_reward>'])
+    monkeypatch.setattr(engineer,'call_openai',lambda **kw:next(responses))
+    monkeypatch.setattr(engineer,'choose_best_response',lambda responses,**kw:responses[0])
+    monkeypatch.setattr(engineer,'judge_step',lambda st,t:ap.Reflection(content='Measured',reward=0.61,step_number=st.step_number))
+    monkeypatch.setattr(engineer,'judge_step_completion',lambda *args:(True,1))
+    if route=='solo':
+        result=run_sc(engineer,task,step,backtrack_limit=1,consistency_multiplier=1)
+    else:
+        result=engineer.collaborative_reasoning(task,'Solve',ap.Interaction(task,[],[]),task.output_type,1,12,step.step_number,backtrack_limit=1)[0]
+    assert result.steps[-1].reflection.reward==0.61
+    assert result.final_reward==0.61
+    assert result.answer=='New answer'
+
+
+def test_zero_configured_sc_allowance_is_not_coerced_to_one(monkeypatch):
+    engineer,task,step=parts()
+    engineer.config=ap.PromptEngineeringConfig(max_sc_calls=0)
+    monkeypatch.setattr(engineer,'call_openai',lambda **kw:pytest.fail('Zero configured allowance dispatched'))
+    result=run_sc(engineer,task,step,max_calls=None)
+    assert result.status=='budget_exhausted'
+
+
+@pytest.mark.parametrize('value',[-1,1.5,True])
+def test_invalid_configured_sc_allowance_rejected(value):
+    with pytest.raises(ValueError):
+        ap.PromptEngineeringConfig(max_sc_calls=value)

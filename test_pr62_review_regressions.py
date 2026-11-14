@@ -46,7 +46,7 @@ def test_exploration_atomically_replaces_equal_length_candidate(monkeypatch, old
 @pytest.mark.parametrize("score", [None, 0.3, 0.2, float("nan"), 1.5])
 def test_exploration_rejection_preserves_entire_candidate(monkeypatch, score):
     engineer, task, step = parts()
-    monkeypatch.setattr(engineer, "judge_step", lambda st, t: SimpleNamespace(reward=score))
+    monkeypatch.setattr(engineer, "judge_step", lambda st, t: ap.Reflection(content="Independent rejection", reward=score, step_number=st.step_number) if score is not None else SimpleNamespace(reward=None))
     candidate = interaction_with_record(task, step.step_number, 12, 0.3, "ACCEPTED")
     response = f"<thinking>Alternative</thinking><step>Rejected</step><reflection>Rejected</reflection><reward>0.9</reward><answer>Rejected answer</answer><final_reward>{score}</final_reward>"
     monkeypatch.setattr(engineer, "call_openai", lambda **kwargs: response)
