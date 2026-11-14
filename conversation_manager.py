@@ -19,7 +19,7 @@ import json
 
 from assistant_personalities import assistant_personalities, assistant_instructions
 from schema import ConversationInput
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from function_definitions import (
     GenerateSimpleConciseAnswerMessage,
     GenerateJSONOutput,
@@ -211,6 +211,17 @@ class ConversationOutput(BaseModel):
     output_type: OutputType = Field(default_factory=lambda: OutputType(output_type="Simple Concise Answer", file_extension=".txt"))
     error: Optional[ErrorResult] = None
 
+    @model_validator(mode="after")
+    def validate_kind(self):
+        if self.kind == "failure":
+            if self.error is None or self.content or self.artifacts:
+                raise ValueError("A failed conversation output must contain only an error.")
+        elif self.error is not None or not self.content.strip():
+            raise ValueError("A successful conversation output requires content and no error.")
+        elif (self.kind == "artifact") != bool(self.artifacts):
+            raise ValueError("Only artifact outputs carry registered artifact references.")
+        return self
+
     def legacy_value(self):
         if self.kind == "failure":
             return self.error
@@ -247,8 +258,12 @@ def artifact_conversation_output(filepath: str, output_type: Optional[OutputType
     ref = get_tracked_artifact_ref(filepath)
     if ref is None or ref.run_id != get_active_run_id():
         return failure_output("ArtifactUnavailable", "Conversation artifact is unavailable for this run.", output_type)
-    if not os.path.isfile(ref.path) or os.path.getsize(ref.path) == 0:
-        return failure_output("ArtifactUnavailable", "Conversation artifact is missing or empty.", output_type)
+    try:
+        available = os.path.isfile(ref.path) and os.path.getsize(ref.path) > 0
+    except OSError:
+        available = False
+    if not available:
+        return failure_output("ArtifactUnavailable", "Conversation artifact is missing or unreadable.", output_type)
     inferred = output_type or OutputType(output_type="PDF File" if ref.mime_type == "application/pdf" else "Text File", file_extension=os.path.splitext(ref.filename)[1])
     if ref.mime_type == "application/pdf":
         try:
@@ -263,6 +278,19 @@ def artifact_conversation_output(filepath: str, output_type: Optional[OutputType
         if content is None or not content.strip():
             return failure_output("ArtifactUnavailable", "Conversation artifact could not be read or is empty.", inferred)
     return ConversationOutput(kind="artifact", content=content, artifacts=[ref], output_type=inferred)
+
+
+def resolve_conversation_output(output: ConversationOutput) -> ConversationOutput:
+    if output.kind != "artifact":
+        return output.model_copy(deep=True)
+    if len(output.artifacts) != 1:
+        return failure_output("ArtifactUnavailable", "Conversation artifact reference is invalid.", output.output_type)
+    requested = output.artifacts[0]
+    owned = get_tracked_artifact_ref(requested.path)
+    if (owned is None or requested.run_id != get_active_run_id()
+            or requested.artifact_id != owned.artifact_id or requested.run_id != owned.run_id):
+        return failure_output("ArtifactUnavailable", "Conversation artifact is unavailable for this run.", output.output_type)
+    return artifact_conversation_output(requested.path, output.output_type)
 
 
 # Default fallback values for type safety

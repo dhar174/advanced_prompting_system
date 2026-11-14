@@ -157,3 +157,101 @@ def test_committed_metadata_is_copied_and_roundtrips():
     assert restored.collaboration_results == accepted.collaboration_results
     restored.collaboration_results[0].result.questions.clear()
     assert accepted.collaboration_results[0].result.questions
+
+
+@pytest.mark.parametrize("value", [{"kind":"text", "content":""}, {"kind":"artifact"},
+    {"kind":"failure"}, {"kind":"failure", "content":"Not an answer", "error":{"error_type":"x", "error_message":"Failed"}}])
+def test_output_contract_rejects_contradictory_or_empty_success(value):
+    with pytest.raises(ValueError):
+        cm.ConversationOutput.model_validate(value)
+
+
+def test_explicit_foreign_reference_cannot_be_rebound_to_current_owner():
+    engineer, task, step = parts()
+    with artifact_run_scope("ref-owner"):
+        path = generate_text_file_output("Owner succeeds", "ref.txt")
+        output = cm.artifact_conversation_output(path)
+        assert engineer.convert_conversation_result_to_final_step_output(cm.ConversationResult(output=output), step, task).final_output == "Owner succeeds"
+        output.artifacts[0] = output.artifacts[0].model_copy(update={"run_id":"foreign-owner"})
+        with pytest.raises(cm.ConversationResultError):
+            engineer.convert_conversation_result_to_final_step_output(cm.ConversationResult(output=output), step, task)
+
+
+def test_artifact_stat_failure_is_an_explicit_safe_failure(monkeypatch):
+    with artifact_run_scope("stat"):
+        path = generate_text_file_output("owned", "stat.txt")
+        def failed_stat(*a):
+            raise PermissionError("sk-test-secret /private/sensitive-path")
+        monkeypatch.setattr(cm.os.path, "getsize", failed_stat)
+        output = cm.artifact_conversation_output(path)
+        assert output.kind == "failure"
+        assert "sk-test-secret" not in output.model_dump_json()
+        assert "/private/sensitive-path" not in output.model_dump_json()
+
+
+@pytest.mark.parametrize("labels", [("tenant/a", "tenant:a"), ("same", "same")])
+def test_nested_foreign_owner_denial_after_registered_success(labels):
+    from output_generator import get_artifact_registry, resolve_output_filepath
+    engineer, task, step = parts()
+    with artifact_run_scope(labels[0]) as owner:
+        path = generate_text_file_output("OWNER_SENTINEL", "owned.txt")
+        ref = get_tracked_artifact_ref(path)
+        assert engineer.convert_conversation_output_to_final_step_output(path, step, task).final_output == "OWNER_SENTINEL"
+    with artifact_run_scope(labels[1]) as foreign:
+        assert owner != foreign
+        assert get_artifact_registry().list_artifacts(owner) == []
+        with pytest.raises(PermissionError):
+            resolve_output_filepath(path)
+        with pytest.raises(cm.ConversationResultError):
+            engineer.convert_conversation_output_to_final_step_output(path, step, task)
+        from pathlib import Path
+        import hashlib
+        assert hashlib.sha256(Path(path).read_bytes()).hexdigest() == ref.sha256
+
+
+def test_symlink_and_empty_registered_files_are_not_answers(tmp_path):
+    from pathlib import Path
+    from output_generator import track_generated_artifact
+    engineer, task, step = parts()
+    with artifact_run_scope("symlink"):
+        path = generate_text_file_output("OWNER_CONTENT", "owned.txt")
+        link = tmp_path / "link.txt"
+        link.symlink_to(path)
+        with pytest.raises(cm.ConversationResultError):
+            engineer.convert_conversation_output_to_final_step_output(str(link), step, task)
+        Path(path).write_text("")
+        track_generated_artifact(path)
+        with pytest.raises(cm.ConversationResultError):
+            engineer.convert_conversation_output_to_final_step_output(path, step, task)
+
+
+def test_parallel_nested_reads_keep_distinct_registered_owners():
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    barrier = threading.Barrier(2)
+    def run(label):
+        engineer, task, step = parts()
+        with artifact_run_scope("reused") as owner:
+            path = generate_text_file_output(label, "parallel.txt")
+            barrier.wait(timeout=5)
+            return owner, engineer.convert_conversation_output_to_final_step_output(path, step, task).final_output
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(run, ["FIRST_RUN", "SECOND_RUN"]))
+    assert results[0][0] != results[1][0]
+    assert [r[1] for r in results] == ["FIRST_RUN", "SECOND_RUN"]
+
+
+def test_nested_candidate_copies_the_accepted_base_for_comparable_scoring(monkeypatch):
+    engineer, task, step = parts()
+    prior_reflection = ap.Reflection(content="Prior accepted", reward=0.61, step_number=1)
+    prior_step = ap.Step(description="Prior output", step_number=1, plan_step_number=1, remaining_budget=0, reflection=prior_reflection)
+    accepted = ap.Interaction(task, [prior_step], [prior_reflection])
+    monkeypatch.setattr(cm, "run_conversation_result", lambda **kw: cm.ConversationResult(output=cm.ConversationOutput(kind="text", content="Next output")))
+    monkeypatch.setattr(engineer, "judge_step", lambda candidate, task: ap.Reflection(content="New evaluation", reward=0.95, step_number=candidate.step_number))
+    result = engineer.collaborative_reasoning_main(task, step, accepted, task.output_type, 1, 12)
+    assert result.sum_rewards() == pytest.approx(1.56)
+    assert [s.step_number for s in result.steps] == [1, 12]
+    result.steps[0].description = "Candidate mutation"
+    result.reflections[0].content = "Candidate reflection mutation"
+    assert accepted.steps[0].description == "Prior output"
+    assert accepted.reflections[0].content == "Prior accepted"

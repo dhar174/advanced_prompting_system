@@ -291,6 +291,12 @@ class _ChatCompletions:
             full_prompt=prompt_text,
         )
 
+        if scenario == "two_step_metadata_failure" and "SECOND_STEP_OUTPUT" in prompt_text:
+            if kwargs.get("tools") or "<step>" in prompt_text:
+                message = SimpleNamespace(content="", tool_calls=None,
+                    refusal="Output unavailable" if kwargs.get("tools") else None)
+                return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")])
+
         # Tool calling inside conversation_manager.finalize_output
         tools = kwargs.get("tools")
         if tools:
@@ -396,6 +402,17 @@ class _ChatCompletions:
             suffix = f" {fmt_tag}" if fmt_tag else ""
             content = f"Deterministic collaborative contribution aligned with task requirements.{suffix}"
 
+        if scenario.startswith("two_step_metadata"):
+            # Deliberately prefer genuine nested output over competing solo candidates.
+            # The production selector/judges still execute; only provider replies differ.
+            second_step = "SECOND_STEP_OUTPUT" in prompt_text
+            rejected = scenario.endswith("_rejected") and second_step
+            if "evaluate the following step" in lower:
+                score = "0.61" if rejected else "0.96"
+                content = f"<reflection>Measured fixture evaluation.</reflection><reward>{score}</reward>"
+            marker_number = 2 if "SECOND_STEP_OUTPUT" in prompt_text else 1
+            content += f" STEP{marker_number}_HISTORY"
+
         if scenario.startswith("two_step"):
             markers = re.findall(r"(?:FIRST|SECOND)_STEP_OUTPUT", prompt_text)
             marker = markers[-1] if markers else "FIRST_STEP_OUTPUT"
@@ -463,7 +480,9 @@ class _BetaCompletions:
                 Arguments=["Structured approach satisfies requirements."],
                 Direct_Replies=cm.DirectReply(
                     assistant_name="Strategist",
-                    reply="Are there additional edge-case deployment constraints to prioritize?",
+                    reply=(f"STEP{2 if 'SECOND_STEP_OUTPUT' in prompt_text else 1}_QUESTION"
+                           if scenario.startswith("two_step_metadata")
+                           else "Are there additional edge-case deployment constraints to prioritize?"),
                 ),
                 Decisions=["Proceed with consensus deliverable."],
                 Recommended_Actions=["Review generated summary and export artifacts."],

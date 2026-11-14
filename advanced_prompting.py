@@ -20,7 +20,8 @@ import random
 
 from tqdm import tqdm
 from conversation_manager import (
-    ConversationResult, ConversationOutput, ConversationResultError, artifact_conversation_output, failure_output,
+    ErrorResult as ConversationErrorResult,
+    ConversationResult, ConversationOutput, ConversationResultError, artifact_conversation_output, failure_output, resolve_conversation_output,
     output_type_determination,
     OutputType,
     RunBudgetExceededError,
@@ -1796,6 +1797,7 @@ class Interaction:
         stop_reason: Optional[str] = None,
         step_answers: Optional[Dict[int, str]] = None,
         collaboration_results: Optional[List[CollaborationRecord]] = None,
+        error_result: Optional[ConversationErrorResult] = None,
     ):
         self.task = task
         self.steps = steps
@@ -1808,6 +1810,7 @@ class Interaction:
         self.status = status
         self.stop_reason = stop_reason
         self.step_answers = dict(step_answers) if step_answers is not None else {}
+        self.error_result = error_result
         self.collaboration_results = [CollaborationRecord.model_validate(record).model_copy(deep=True)
                                       for record in (collaboration_results or [])]
 
@@ -1852,6 +1855,7 @@ class Interaction:
             "answer": self.answer,
             "final_reward": self.final_reward,
             "collaboration_results": [record.model_dump() for record in self.collaboration_results],
+            "error_result": copy.deepcopy(self.error_result),
         }
 
     @classmethod
@@ -1863,6 +1867,7 @@ class Interaction:
             answer=data["answer"],
             final_reward=data["final_reward"],
             collaboration_results=data.get("collaboration_results", []),
+            error_result=data.get("error_result"),
         )
 
     def sum_rewards(self):
@@ -2499,10 +2504,8 @@ class AdvancedPromptEngineer:
         self, result: ConversationResult, plan_step: PlanStep, task: Task,
         *, step_number: Optional[int] = None,
     ) -> FinalStepOutput:
-        output = result.output
-        if output.kind == "artifact":
-            # Revalidate authority at the read boundary, not merely at production time.
-            output = artifact_conversation_output(output.artifacts[0].path, output.output_type) if output.artifacts else ConversationOutput(kind="failure")
+        output = resolve_conversation_output(result.output)
+        result = result.model_copy(deep=True, update={"output": output})
         if output.kind == "failure" or not output.content.strip():
             raise ConversationResultError(output, result)
         created_step = Step(description=output.content, step_number=step_number if step_number is not None else plan_step.step_number,
@@ -4752,7 +4755,8 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
             result.quality_score = reflection.reward if measured else None
             if measured:
                 step.reflection = reflection
-            return Interaction(task=task, steps=[step], reflections=[reflection] if measured else [],
+            return Interaction(task=task, steps=copy.deepcopy(existing_interaction.steps) + [step],
+                reflections=copy.deepcopy(existing_interaction.reflections) + ([reflection] if measured else []),
                 answer=final_step_output.final_output, final_reward=result.quality_score,
                 status=None if measured else "incomplete",
                 stop_reason=None if measured else "evaluation_unavailable",
@@ -8312,7 +8316,7 @@ Task: {task}
             task, refined_task, complexity, [], [], "", 0.0, plan, _output_type
         )
         main_interaction = Interaction(
-            task=task_object, steps=[], reflections=[], answer="", final_reward=0.0
+            task=task_object, steps=[], reflections=[], answer="", final_reward=None
         )
         print_saver.print_and_store("Assessed Complexity:" + str(complexity))
         assert complexity > 0.0, "Complexity assessment failed."
@@ -8576,6 +8580,19 @@ Task: {task}
                     for stp in agent_interaction.steps:
                         if stp.plan_step_number is None or stp.plan_step_number == 0:
                             stp.plan_step_number = curr_num
+
+                # A failed nested result cannot be replaced by a solo snapshot
+                # containing only previously accepted steps and no new work.
+                if (agent_interaction is not None and agent_interaction.status in ("error", "incomplete")
+                        and not (self_consistent_interaction.answer or "").strip()
+                        and not any(st.plan_step_number == curr_num for st in self_consistent_interaction.steps)):
+                    main_interaction.error_result = next((record.result.output.error
+                        for record in agent_interaction.collaboration_results if record.result.output.error), None)
+                    if main_interaction.error_result is None:
+                        main_interaction.error_result = ConversationErrorResult(error_type="EvaluationUnavailable",
+                            error_message="The conversation output could not be evaluated.")
+                    termination_reason = "conversation_error"
+                    break
 
                 # Step 7: Aggregate and Select Best Interaction
                 all_interactions = []
@@ -8856,7 +8873,7 @@ Task: {task}
             "calls": (getattr(self, "_last_sc_termination", {}) or {}).get("calls", 0),
         }
         main_interaction.answer = ""
-        main_interaction.status = termination_reason
+        main_interaction.status = "error" if termination_reason == "conversation_error" else termination_reason
         main_interaction.stop_reason = termination_reason
         return main_interaction
 

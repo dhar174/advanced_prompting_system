@@ -574,3 +574,106 @@ def test_http_pipeline_requires_all_plan_steps_before_whole_task_success(
         assert all(step["completed"] for step in steps), result
         assert all(sub["completed"] for step in steps for sub in step["subtasks"]), result
         assert "SECOND_STEP_OUTPUT" in result["finalOutput"], result
+
+
+def test_http_nested_metadata_survives_both_selected_steps(live_graphql_client, monkeypatch):
+    client, _provider, ledger, _tmp_path = live_graphql_client
+    monkeypatch.setenv("APS_PROVIDER_MAX_CALLS", "200")
+    query = RUN_EXECUTION_MUTATION.replace("conversation {", "conversation { planStepNumber").replace("questions {", "questions { planStepNumber")
+    with scenario_scope("two_step_metadata"):
+        response = _post_graphql(client, query, {"input": {"mode":"advanced_pipeline", "taskPrompt":"Complete two required deliverables", "agents":2, "maxSteps":2, "initialBudget":2}})
+    body = response.get_json()
+    assert response.status_code == 200 and "errors" not in body, body
+    result = body["data"]["runExecution"]
+    assert result["status"] == "completed", (result, ledger.total_calls, [(e.call_index,e.response_format) for e in ledger.entries[-4:]])
+    questions = result["questions"]
+    assert {q["planStepNumber"] for q in questions} == {1, 2}, questions
+    for number in (1, 2):
+        expected = f"STEP{number}_QUESTION"
+        assert any(q["question"] == expected and q["planStepNumber"] == number for q in questions), questions
+        assert any(f"STEP{number}_HISTORY" in message["content"] and message["planStepNumber"] == number for message in result["conversation"]), result
+    assert 0 < ledger.total_calls <= 200
+
+
+def test_http_rejected_nested_metadata_never_becomes_public(live_graphql_client, monkeypatch):
+    client, _provider, ledger, _tmp_path = live_graphql_client
+    monkeypatch.setenv("APS_PROVIDER_MAX_CALLS", "200")
+    query = RUN_EXECUTION_MUTATION.replace("questions {", "questions { planStepNumber")
+    with scenario_scope("two_step_metadata_rejected"):
+        response = _post_graphql(client, query, {"input":{"mode":"advanced_pipeline", "taskPrompt":"Complete two required deliverables", "agents":2, "maxSteps":2, "initialBudget":2}})
+    body = response.get_json()
+    assert response.status_code == 200 and "errors" not in body, body
+    result = body["data"]["runExecution"]
+    assert result["status"] == "completed", result
+    assert {q["planStepNumber"] for q in result["questions"]} == {1}, result
+    assert "STEP1_HISTORY" in json.dumps(result)
+    assert "STEP2_HISTORY" not in json.dumps(result)
+    assert "STEP2_QUESTION" not in json.dumps(result)
+    assert 0 < ledger.total_calls <= 200
+
+
+def test_http_nested_limit_is_shared_after_first_step(live_graphql_client, monkeypatch):
+    client, _provider, ledger, _tmp_path = live_graphql_client
+    monkeypatch.setenv("APS_PROVIDER_MAX_CALLS", "200")
+    query = RUN_EXECUTION_MUTATION.replace("questions {", "questions { planStepNumber")
+    variables = {"input":{"mode":"advanced_pipeline", "taskPrompt":"Complete two required deliverables", "agents":2, "maxSteps":2, "initialBudget":2}}
+    with scenario_scope("two_step_metadata"):
+        success = _post_graphql(client, query, variables).get_json()["data"]["runExecution"]
+    assert success["status"] == "completed", success
+    nested_second = next(entry.call_index for entry, prompt in zip(ledger.entries, ledger.captured_prompts)
+                         if entry.response_format == "ExtractFormat" and "SECOND_STEP_OUTPUT" in prompt)
+    ceiling = nested_second + 1
+    assert ceiling < ledger.total_calls
+    ledger.reset()
+    monkeypatch.setenv("APS_PROVIDER_MAX_CALLS", str(ceiling))
+    with scenario_scope("two_step_metadata"):
+        response = _post_graphql(client, query, variables)
+    result = response.get_json()["data"]["runExecution"]
+    assert result["status"] == "budget_exhausted", result
+    assert result["stopReason"] == "budget_exhausted", result
+    assert ledger.total_calls == ceiling
+    assert len({entry.correlation_id for entry in ledger.entries}) == 1
+    assert result["diagnostics"]["planSteps"][0]["completed"]
+    assert not result["diagnostics"]["planSteps"][1]["completed"]
+    assert {q["planStepNumber"] for q in result["questions"]} == {1}
+
+
+def test_http_nested_failure_preserves_prior_selected_metadata(live_graphql_client, monkeypatch):
+    client, _provider, ledger, _tmp_path = live_graphql_client
+    monkeypatch.setenv("APS_PROVIDER_MAX_CALLS", "200")
+    query = RUN_EXECUTION_MUTATION.replace("questions {", "questions { planStepNumber")
+    with scenario_scope("two_step_metadata_failure"):
+        response = _post_graphql(client, query, {"input":{"mode":"advanced_pipeline", "taskPrompt":"Complete two required deliverables", "agents":2, "maxSteps":2, "initialBudget":2}})
+    body = response.get_json()
+    assert response.status_code == 200 and "errors" not in body, body
+    result = body["data"]["runExecution"]
+    assert result["status"] == "error", result
+    assert result["stopReason"] == "conversation_error", result
+    assert result["diagnostics"]["planSteps"][0]["completed"]
+    assert not result["diagnostics"]["planSteps"][1]["completed"]
+    assert {q["planStepNumber"] for q in result["questions"]} == {1}
+    assert "STEP1_HISTORY" in json.dumps(result)
+    assert result["diagnostics"]["finalReward"] is None
+    assert 0 < ledger.total_calls < 200
+
+
+def test_http_nested_writer_cannot_overwrite_foreign_registered_artifact(live_graphql_client, monkeypatch):
+    from output_generator import artifact_run_scope, generate_text_file_output
+    import conversation_manager as cm
+    client, provider, ledger, tmp_path = live_graphql_client
+    monkeypatch.setenv("APS_PROVIDER_MAX_CALLS", "200")
+    with artifact_run_scope("foreign-owner"):
+        path = generate_text_file_output("FOREIGN_CONTENT_SENTINEL", "foreign.txt")
+        output = cm.artifact_conversation_output(path)
+        assert output.kind == "artifact" and output.content == "FOREIGN_CONTENT_SENTINEL"
+    provider.output_filename = path
+    response = _post_graphql(client, RUN_EXECUTION_MUTATION, {"input":{"mode":"advanced_pipeline", "taskPrompt":"[FORMAT:TXT] Design a strategy and analysis", "agents":2, "maxSteps":1, "initialBudget":1}})
+    body = response.get_json()
+    assert response.status_code == 200 and "errors" not in body, body
+    serialized = json.dumps(body)
+    assert "FOREIGN_CONTENT_SENTINEL" not in serialized
+    assert str(tmp_path) not in serialized
+    assert Path(path).read_text() == "FOREIGN_CONTENT_SENTINEL"
+    assert any(entry.response_format == "ExtractFormat" for entry in ledger.entries)
+    assert any("generate the output in the following format" in prompt for prompt in ledger.captured_prompts)
+    assert ledger.total_calls <= 200

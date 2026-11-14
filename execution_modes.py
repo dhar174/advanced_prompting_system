@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Authoritative domain models (safe DAG: assistant_personalities/output_generator/conversation_manager -> execution_modes -> schema)
 from assistant_personalities import assistant_personalities as PERSONALITY_CATALOG
-from conversation_manager import ErrorResult, OutputType
+from conversation_manager import ErrorResult, OutputType, resolve_conversation_output
 from output_generator import (
     ArtifactRef,
     artifact_run_scope,
@@ -1105,6 +1105,7 @@ def _execute_collaborative(
     )
     with scope_cm:
         conversation_result = run_conversation(**rc_kwargs)
+        conversation_result.output = resolve_conversation_output(conversation_result.output)
         raw_history, raw_questions, raw_final_output = conversation_result.legacy_tuple()
 
     # 4. Check for ErrorResult from run_conversation
@@ -1492,7 +1493,13 @@ def _execute_advanced_pipeline(
     stop_reason: str
     error_obj: Optional[ErrorResult] = None
 
-    _non_complete_reasons = ("budget_exhausted", "timeout", "cancelled", "incomplete")
+    _non_complete_reasons = ("budget_exhausted", "timeout", "cancelled", "incomplete", "error")
+
+    if interaction_status == "error" and getattr(interaction, "error_result", None) is not None:
+        error_obj, error_event = _build_safe_error_artifacts(interaction.error_result,
+            mode="advanced_pipeline", stop_reason=interaction_stop_reason or "conversation_error",
+            correlation_id=correlation_id, error_type=interaction.error_result.error_type)
+        events.append(error_event)
 
     if answer_text:
         final_output_str = str(raw_answer)
@@ -1513,10 +1520,10 @@ def _execute_advanced_pipeline(
         else:
             candidate_status = (
                 interaction_status
-                if interaction_status in ("budget_exhausted", "timeout", "cancelled")
+                if interaction_status in ("budget_exhausted", "timeout", "cancelled", "error")
                 else (
                     effective_term_reason
-                    if effective_term_reason in ("budget_exhausted", "timeout", "cancelled")
+                    if effective_term_reason in ("budget_exhausted", "timeout", "cancelled", "error")
                     else "error"
                 )
             )
