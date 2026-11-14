@@ -1440,83 +1440,28 @@ class TestAdvancedPromptingAdapterMethods(unittest.TestCase):
         # Only high task complexity
         self.assertFalse(self.engineer.should_use_multi_agent_reasoning(plan_step_short, task_complex)) # complexity > 7 (1)
 
-    @patch("advanced_prompting.os.path.exists")
-    @patch("builtins.open", new_callable=mock_open, read_data="dummy file content")
-    def test_convert_conversation_output_to_final_step_output_file_exists(self, mock_file_open_method, mock_os_exists_method):
-        mock_os_exists_method.return_value = True
-        
-        mocked_output_type = OutputType(output_type="Processed Text", file_extension=".txt")
-        
-        # Patch the instance method directly
-        with patch.object(self.engineer, 'determine_output_type_from_content', return_value=mocked_output_type) as mock_determine:
-            dummy_path = "dummy_output.txt"
-            self.mock_task.steps = [] 
+    def test_convert_conversation_output_to_final_step_output_file_exists(self):
+        from output_generator import artifact_run_scope, generate_text_file_output
+        with artifact_run_scope("adapter-unit"):
+            path = generate_text_file_output("dummy file content", "dummy.txt")
+            output = self.engineer.convert_conversation_output_to_final_step_output(path, self.mock_plan_step, self.mock_task)
+        self.assertEqual(output.final_output, "dummy file content")
+        self.assertEqual(output.step.plan_step_number, self.mock_plan_step.step_number)
 
-            final_step_output = self.engineer.convert_conversation_output_to_final_step_output(
-                dummy_path, self.mock_plan_step, self.mock_task
-            )
+    def test_convert_conversation_output_to_final_step_output_file_not_exists(self):
+        from conversation_manager import ConversationResultError
+        with self.assertRaises(ConversationResultError):
+            self.engineer.convert_conversation_output_to_final_step_output("nonexistent.txt", self.mock_plan_step, self.mock_task)
 
-            self.assertEqual(final_step_output.final_output, "dummy file content")
-            self.assertEqual(final_step_output.output_type, mocked_output_type)
-            self.assertEqual(final_step_output.associated_plan_step, self.mock_plan_step)
-            self.assertIsInstance(final_step_output.step, Step)
-            self.assertEqual(final_step_output.step.description, f"Converted output from conversation for: {self.mock_plan_step.description}")
-            self.assertEqual(final_step_output.step.step_number, 1) 
-            self.assertEqual(final_step_output.step.remaining_budget, 0) # As per implementation
-            self.assertEqual(final_step_output.step.plan_step_number, self.mock_plan_step.step_number)
-            mock_file_open_method.assert_called_once_with(dummy_path, 'r')
-            mock_determine.assert_called_once_with("dummy file content", dummy_path, self.mock_task)
-
-    @patch("advanced_prompting.os.path.exists")
-    def test_convert_conversation_output_to_final_step_output_file_not_exists(self, mock_os_exists_method):
-        mock_os_exists_method.return_value = False
-        
-        mocked_output_type = OutputType(output_type="Path Reference", file_extension="")
-        with patch.object(self.engineer, 'determine_output_type_from_content', return_value=mocked_output_type) as mock_determine:
-            dummy_path = "non_existent_output.txt"
-            self.mock_task.steps = []
-
-            final_step_output = self.engineer.convert_conversation_output_to_final_step_output(
-                dummy_path, self.mock_plan_step, self.mock_task
-            )
-
-            self.assertEqual(final_step_output.final_output, f"Output path: {dummy_path}")
-            self.assertEqual(final_step_output.output_type, mocked_output_type)
-            mock_determine.assert_called_once_with(f"Output path: {dummy_path}", dummy_path, self.mock_task)
-
-    @patch('advanced_prompting.AdvancedPromptEngineer.convert_conversation_output_to_final_step_output')
-    @patch('conversation_manager.run_conversation') 
-    @patch('advanced_prompting.AdvancedPromptEngineer.select_personalities_for_planstep')
-    def test_invoke_collaborative_reasoning(self, mock_select_personalities, mock_run_conversation, mock_convert_output):
-        mock_select_personalities.return_value = ["Strategist", "Educator"]
-        mock_run_conversation.return_value = (
-            [{"role": "assistant", "content": "example"}],
-            [],
-            "path/to/dummy_output.txt",
-        )
-        
-        # Define what the mocked convert_conversation_output_to_final_step_output should return
-        expected_final_step_output = FinalStepOutput(
-            final_output="converted_output_content",
-            output_type=self.mock_task.output_type, # Example OutputType
-            version=1,
-            component_type="response_to_prompt", # Example component type
-            associated_plan_step=self.mock_plan_step,
-            step=Step(description="Collaborative reasoning step", step_number=1, remaining_budget=0, plan_step_number=self.mock_plan_step.step_number) 
-        )
-        mock_convert_output.return_value = expected_final_step_output
-
-        result = self.engineer.invoke_collaborative_reasoning(self.mock_task, self.mock_plan_step)
-
-        mock_select_personalities.assert_called_once_with(self.mock_plan_step, self.mock_task)
-        mock_run_conversation.assert_called_once_with(
-            problem_statement=[{"content": f"Step {self.mock_plan_step.step_number}: {self.mock_plan_step.description}"}],
-            selected_personalities=["Strategist", "Educator"],
-            lead_personality="Strategist",
-            num_rounds=2
-        )
-        mock_convert_output.assert_called_once_with("path/to/dummy_output.txt", self.mock_plan_step, self.mock_task)
-        self.assertEqual(result, expected_final_step_output)
+    @patch('conversation_manager.run_conversation_result')
+    def test_invoke_collaborative_reasoning(self, runner):
+        from conversation_manager import ConversationOutput, ConversationResult
+        runner.return_value = ConversationResult(output=ConversationOutput(kind="text", content="converted output"),
+            conversation=[{"role":"assistant", "content":"actual discussion"}], questions=[])
+        result = self.engineer.invoke_collaborative_reasoning(self.mock_task, self.mock_plan_step, step_number=9)
+        self.assertEqual(result.final_output, "converted output")
+        self.assertEqual(result.step.step_number, 9)
+        self.assertEqual(result.collaboration_result.conversation[0]["content"], "actual discussion")
 
 
 class TestFinalizePlanStepOutput(unittest.TestCase):

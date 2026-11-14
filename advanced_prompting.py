@@ -20,6 +20,7 @@ import random
 
 from tqdm import tqdm
 from conversation_manager import (
+    ConversationResult, ConversationOutput, ConversationResultError, artifact_conversation_output,
     output_type_determination,
     OutputType,
     RunBudgetExceededError,
@@ -1630,6 +1631,7 @@ class Step(BaseModel):
 
 
 class FinalStepOutput(BaseModel):
+    collaboration_result: Optional[ConversationResult] = None
     final_output: str = Field(
         ..., title="Final output", description="The final output string"
     )
@@ -2374,12 +2376,12 @@ class AdvancedPromptEngineer:
         # Default fallback: Generic text file
         return OutputType(output_type="Text File", file_extension=".txt")
 
-    def invoke_collaborative_reasoning(self, task: Task, plan_step: PlanStep) -> FinalStepOutput:
+    def invoke_collaborative_reasoning(self, task: Task, plan_step: PlanStep, *, step_number: Optional[int] = None) -> FinalStepOutput:
         """
         Invokes collaborative reasoning for a given task and plan step.
         This involves selecting personalities, running a conversation, and converting the output.
         """
-        from conversation_manager import run_conversation # Import here to avoid circular dependencies at module level
+        from conversation_manager import run_conversation_result # Import here to avoid circular dependencies at module level
 
         # Ensure problem_description is a string, even if None
         problem_description = getattr(plan_step, 'description', None) or getattr(plan_step, 'step_description', '') or ""
@@ -2395,34 +2397,18 @@ class AdvancedPromptEngineer:
 
         # Call the conversation manager to run the multi-agent discussion
         # num_rounds is set to 2 as a default for this collaborative step.
-        result = run_conversation(
+        result = run_conversation_result(
             problem_statement=problem_statement_for_conversation,
             selected_personalities=selected_personalities,
             lead_personality=lead_personality,
             num_rounds=2 
         )
         
-        if (
-            not isinstance(result, tuple)
-            or len(result) != 3
-            or not isinstance(result[0], list)
-            or not isinstance(result[1], list)
-            or not (result[2] is None or isinstance(result[2], str))
-        ):
-            raise ValueError(
-                f"Expected run_conversation to return a 3-tuple (List[dict], List[dict], Optional[str]), got {type(result)} with values {result}"
-            )
-            
-        conversation_history, questions_asked, final_output_path = result
-        
-        # Retain conversation metadata for auditing / introspection (Issue #29 & #20)
-        self.last_conversation_history = conversation_history
-        self.last_questions_asked = questions_asked
-        
-        # Convert the path/result of the conversation into a standard FinalStepOutput
-        return self.convert_conversation_output_to_final_step_output(
-            final_output_path, plan_step, task
-        )
+        if not isinstance(result, ConversationResult):
+            raise ConversationResultError(ConversationOutput(kind="failure", error=__import__("conversation_manager").ErrorResult(error_type="InvalidResult", error_message="The conversation returned an invalid result.")))
+        self.last_conversation_history = copy.deepcopy(result.conversation)
+        self.last_questions_asked = copy.deepcopy(result.questions)
+        return self.convert_conversation_result_to_final_step_output(result, plan_step, task, step_number=step_number)
 
     def select_personalities_for_planstep(self, plan_step: PlanStep, task: Task) -> List[str]:
         """
@@ -2487,45 +2473,25 @@ class AdvancedPromptEngineer:
     def convert_conversation_output_to_final_step_output(
         self, final_output_path: str, plan_step: PlanStep, task: Task
     ) -> FinalStepOutput:
-        """
-        Converts the output from a conversation (e.g., a file path to the transcript)
-        into a FinalStepOutput object.
-        """
-        final_content = f"Output path: {final_output_path}" # Default if path is None or file doesn't exist
-        
-        if final_output_path and os.path.exists(final_output_path):
-            try:
-                with open(final_output_path, 'r') as f:
-                    final_content = f.read()
-                if not final_content.strip(): # Handle empty file case
-                    final_content = f"Successfully read empty file: {final_output_path}"
-            except Exception as e:
-                final_content = f"Error reading file {final_output_path}: {e}"
-        elif final_output_path is None:
-             final_content = "No output path provided by conversation."
-        
-        output_type = self.determine_output_type_from_content(final_content, final_output_path, task)
-        
-        # Calculate step_number ensuring task.steps is treated as a list
-        step_number_for_conversion_step = (len(task.steps) if isinstance(task.steps, list) else 0) + 1
-        
-        # The 'Step' created here is a synthetic step representing the conversion process itself.
-        # Its remaining_budget is set to 0 as it's an artifact, not a budgeted reasoning step.
-        created_step = Step(
-            description=f"Converted output from conversation for: {plan_step.description}",
-            step_number=step_number_for_conversion_step,
-            remaining_budget=0, 
-            plan_step_number=plan_step.step_number
-        )
-        
-        return FinalStepOutput(
-            final_output=final_content,
-            output_type=output_type,
-            version=1, # Default version for the first conversion
-            component_type="response_to_prompt", # Default, could be refined based on output_type
-            associated_plan_step=plan_step,
-            step=created_step
-        )
+        """Legacy artifact-only adapter; plain content uses the typed result boundary."""
+        result = ConversationResult(output=artifact_conversation_output(final_output_path))
+        return self.convert_conversation_result_to_final_step_output(result, plan_step, task)
+
+    def convert_conversation_result_to_final_step_output(
+        self, result: ConversationResult, plan_step: PlanStep, task: Task,
+        *, step_number: Optional[int] = None,
+    ) -> FinalStepOutput:
+        output = result.output
+        if output.kind == "artifact":
+            # Revalidate authority at the read boundary, not merely at production time.
+            output = artifact_conversation_output(output.artifacts[0].path, output.output_type) if output.artifacts else ConversationOutput(kind="failure")
+        if output.kind == "failure" or not output.content.strip():
+            raise ConversationResultError(output)
+        created_step = Step(description=output.content, step_number=step_number if step_number is not None else plan_step.step_number,
+                            remaining_budget=0, plan_step_number=plan_step.step_number)
+        return FinalStepOutput(final_output=output.content, output_type=output.output_type, version=1,
+                               component_type="response_to_prompt", associated_plan_step=plan_step, step=created_step,
+                               collaboration_result=result.model_copy(deep=True))
 
     def count_tokens(self, text: list[str]) -> int:
         """Count the number of tokens in the input text using the tiktoken library."""

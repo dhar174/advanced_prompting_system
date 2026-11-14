@@ -1,11 +1,12 @@
 # conversation_manager.py
 
 import contextlib
+import copy
 import contextvars
 from datetime import datetime
 import time
 
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union # Added Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Literal # Added Optional, Tuple, Union
 from jarowinkler import jarowinkler_similarity
 
 
@@ -30,6 +31,7 @@ from function_definitions import (
     GenerateCSVOutput,
 )
 from output_generator import (
+    ArtifactRef, artifact_run_scope, get_active_run_id, get_tracked_artifact_ref, read_tracked_artifact,
     generate_simple_concise_answer_message,
     generate_json_output,
     generate_pdf_output,
@@ -200,6 +202,67 @@ def normalize_message(value: Any, default_role: str = 'assistant', default_name:
 class OutputType(BaseModel):
     output_type: str = Field(..., description="The type of output to generate.")
     file_extension: str = Field(..., description="The file extension for the output.")
+
+class ConversationOutput(BaseModel):
+    """Explicit producer output; internal artifact paths are never display content."""
+    kind: Literal["text", "artifact", "failure"]
+    content: str = ""
+    artifacts: List[ArtifactRef] = Field(default_factory=list)
+    output_type: OutputType = Field(default_factory=lambda: OutputType(output_type="Simple Concise Answer", file_extension=".txt"))
+    error: Optional[ErrorResult] = None
+
+    def legacy_value(self):
+        if self.kind == "failure":
+            return self.error
+        if self.kind == "artifact":
+            return self.artifacts[0].path
+        return self.content
+
+
+class ConversationResult(BaseModel):
+    """Copied conversation metadata paired with an explicitly classified outcome."""
+    output: ConversationOutput
+    conversation: List[Dict[str, Any]] = Field(default_factory=list)
+    questions: List[Dict[str, Any]] = Field(default_factory=list)
+    quality_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
+    def legacy_tuple(self):
+        return (copy.deepcopy(self.conversation), copy.deepcopy(self.questions), self.output.legacy_value())
+
+
+class ConversationResultError(ConversationManagerError):
+    def __init__(self, output: ConversationOutput):
+        self.output = output.model_copy(deep=True)
+        super().__init__(output.error.error_message if output.error else "Conversation result is unavailable.")
+
+
+def failure_output(error_type: str, message: str, output_type: Optional[OutputType] = None) -> ConversationOutput:
+    return ConversationOutput(kind="failure", error=ErrorResult(error_type=error_type, error_message=message),
+                              output_type=output_type or OutputType(output_type="Simple Concise Answer", file_extension=".txt"))
+
+
+def artifact_conversation_output(filepath: str, output_type: Optional[OutputType] = None) -> ConversationOutput:
+    """Resolve only active-owner registered files; never open an arbitrary model string."""
+    ref = get_tracked_artifact_ref(filepath)
+    if ref is None or ref.run_id != get_active_run_id():
+        return failure_output("ArtifactUnavailable", "Conversation artifact is unavailable for this run.", output_type)
+    if not os.path.isfile(ref.path) or os.path.getsize(ref.path) == 0:
+        return failure_output("ArtifactUnavailable", "Conversation artifact is missing or empty.", output_type)
+    inferred = output_type or OutputType(output_type="PDF File" if ref.mime_type == "application/pdf" else "Text File", file_extension=os.path.splitext(ref.filename)[1])
+    if ref.mime_type == "application/pdf":
+        try:
+            with open(ref.path, "rb") as handle:
+                if not handle.read(5).startswith(b"%PDF-"):
+                    return failure_output("ArtifactUnavailable", "Conversation artifact is not a readable PDF.", inferred)
+        except OSError:
+            return failure_output("ArtifactUnavailable", "Conversation artifact could not be read.", inferred)
+        content = f"Generated PDF artifact: {ref.filename}"
+    else:
+        content = read_tracked_artifact(ref.path)
+        if content is None or not content.strip():
+            return failure_output("ArtifactUnavailable", "Conversation artifact could not be read or is empty.", inferred)
+    return ConversationOutput(kind="artifact", content=content, artifacts=[ref], output_type=inferred)
+
 
 # Default fallback values for type safety
 DEFAULT_OUTPUT_TYPE = OutputType(output_type="simple_text", file_extension="txt")
@@ -1449,7 +1512,20 @@ def test_finalize_output(final_decision: str, output_type: str):
         return f"Error in finalize_output: {str(e)} on line {e.__traceback__.tb_lineno}"
 
 
+def finalize_output_result(final_decision: str, output_type: OutputType) -> ConversationOutput:
+    scope = contextlib.nullcontext() if get_active_run_id() else artifact_run_scope(None)
+    with scope:
+        if isinstance(final_decision, ErrorResult) or not isinstance(final_decision, str) or not final_decision.strip():
+            return failure_output("EmptyOutput", "The conversation returned no usable output.", output_type)
+        return _finalize_output_result_impl(final_decision, output_type)
+
+
 def finalize_output(final_decision: str, output_type: OutputType):
+    """Legacy projection: text/path/ErrorResult, with the producer retaining the kind."""
+    return finalize_output_result(final_decision, output_type).legacy_value()
+
+
+def _finalize_output_result_impl(final_decision: str, output_type: OutputType):
     """
     Finalizes the output by calling the appropriate function based on output_type.
 
@@ -1491,6 +1567,8 @@ def finalize_output(final_decision: str, output_type: OutputType):
             )
 
         message = response.choices[0].message
+        if getattr(message, "refusal", None):
+            return failure_output("RefusedOutput", "The provider declined to produce this output.", output_type)
         print(f"\nmessage: {message}\n")
 
         if response.choices[0].message.tool_calls:
@@ -1523,16 +1601,23 @@ def finalize_output(final_decision: str, output_type: OutputType):
                 filepath = function_mapping[tool_function_name](
                     final_decision=tool_query_string, filename=filename
                 )
-                return filepath
+                if tool_function_name == "generate_simple_concise_answer_message":
+                    if not isinstance(filepath, str) or not filepath.strip():
+                        return failure_output("EmptyOutput", "The conversation returned no usable output.", output_type)
+                    return ConversationOutput(kind="text", content=filepath, output_type=output_type)
+                return artifact_conversation_output(filepath, output_type)
             else:
                 error_result = ErrorResult(
                     error_type="ValidationError",
                     error_message=f"Function '{tool_function_name}' not found.",
                     error_details=str({"tool_function_name": tool_function_name}),
                 )
-                return error_result
+                return failure_output("ValidationError", "The provider selected an unsupported output tool.", output_type)
         else:
-            return getattr(message, "content", None) or message
+            content = getattr(message, "content", None)
+            if not isinstance(content, str) or not content.strip():
+                return failure_output("EmptyOutput", "The conversation returned no usable output.", output_type)
+            return ConversationOutput(kind="text", content=content, output_type=output_type)
     except (ProviderPolicyError, DisallowedModelError):
         raise
     except Exception as e:
@@ -1542,7 +1627,7 @@ def finalize_output(final_decision: str, output_type: OutputType):
             error_message=f"Error in finalize_output: {str(e)} on line {e.__traceback__.tb_lineno}",
             error_details=str(e),
         )
-        return error_result
+        return failure_output("OutputError", "The conversation output could not be generated.", output_type)
 
 
 sample_conversation_history = """User: Hey, have we figured out the root cause of that recurring issue in the system yet?
@@ -2638,7 +2723,26 @@ def run_conversation(
     max_calls: Optional[int] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
 ):
-    with _conversation_run_scope(
+    return run_conversation_result(
+        problem_statement, selected_personalities, lead_personality, num_rounds,
+        context, model, temperature, timeout_seconds, max_calls, cancel_check,
+    ).legacy_tuple()
+
+
+def run_conversation_result(
+    problem_statement,
+    selected_personalities,
+    lead_personality,
+    num_rounds=3,
+    context=None,
+    model: Optional[str] = None,
+    temperature: Optional[float] = None,
+    timeout_seconds: Optional[float] = None,
+    max_calls: Optional[int] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+):
+    artifact_scope = contextlib.nullcontext() if get_active_run_id() else artifact_run_scope(None)
+    with artifact_scope, _conversation_run_scope(
         model=model,
         temperature=temperature,
         timeout_seconds=timeout_seconds,
@@ -3400,7 +3504,7 @@ def _run_conversation_impl(
                     )
                     print(f"\n\nFinal Checked Output: {final_checked_output}\n\n")
 
-                    final_output = finalize_output(final_checked_output, output_type)
+                    final_output = finalize_output_result(final_checked_output, output_type)
                     print(f"\n\nFinal Output filepath: {final_output}\n\n")
                     # Add the final output to the conversation history and then save the conversation history to a file
                     conversation_history.append(
@@ -3408,7 +3512,7 @@ def _run_conversation_impl(
                             "role": "system",
                             "name": lead_personality,
                             "round": rnd,
-                            "content": f"Final Output: {final_output}",
+                            "content": f"Final Output: {final_output.content}",
                             }
                     )
                     try:
@@ -3566,7 +3670,7 @@ def _run_conversation_impl(
                     )
                     print(f"\n\nFinal Checked Output: {final_checked_output}\n\n")
 
-                    final_output = finalize_output(final_checked_output, output_type)
+                    final_output = finalize_output_result(final_checked_output, output_type)
                     print(f"\n\nFinal Output filepath: {final_output}\n\n")
                     # Add the final output to the conversation history and then save the conversation history to a file
                     conversation_history.append(
@@ -3574,7 +3678,7 @@ def _run_conversation_impl(
                             "role": "system",
                             "name": lead_personality,
                             "round": rnd,
-                            "content": f"Final Output: {final_output}",
+                            "content": f"Final Output: {final_output.content}",
                             }
                     )
                     try:
@@ -3648,7 +3752,7 @@ def _run_conversation_impl(
                     )
                     print(f"\n\nFinal Checked Output: {final_checked_output}\n\n")
 
-                    final_output = finalize_output(
+                    final_output = finalize_output_result(
                         final_checked_output, output_type
                     )
                     print(f"\n\nFinal Output filepath: {final_output}\n\n")
@@ -3658,7 +3762,7 @@ def _run_conversation_impl(
                             "role": "system",
                             "name": lead_personality,
                             "round": rnd,
-                            "content": f"Final Output: {final_output}",
+                            "content": f"Final Output: {final_output.content}",
                             }
                     )
                 elif mediator_decision is not None and mediator_decision.keep_output:
@@ -3717,14 +3821,14 @@ def _run_conversation_impl(
                     )
                     print(f"\n\nFinal Checked Output: {final_checked_output}\n\n")
 
-                    final_output = finalize_output(final_checked_output, output_type)
+                    final_output = finalize_output_result(final_checked_output, output_type)
                     print(f"\n\nFinal Output filepath: {final_output}\n\n")
                     conversation_history.append(
                         {
                             "role": "system",
                             "name": lead_personality,
                             "round": rnd,
-                            "content": f"Final Output: {final_output}",
+                            "content": f"Final Output: {final_output.content}",
                         }
                     )
     try:
@@ -3740,4 +3844,12 @@ def _run_conversation_impl(
         print("⚠️  Final conversation data may be lost.")
     
     # print("Conversation History in manager: ", conversation_history, "Type: ", type(conversation_history), "Type Content: ", type(conversation_history[0]["content"]))
-    return (conversation_history, all_questions_asked, final_output)
+    if not isinstance(final_output, ConversationOutput):
+        final_output = failure_output("EmptyOutput", "The conversation returned no usable output.", locals().get("output_type"))
+    questions = []
+    for question in all_questions_asked:
+        if isinstance(question, dict):
+            text = question.get("question") or question.get("reply")
+            if isinstance(text, str) and text.strip():
+                questions.append({"assistant": str(question.get("assistant", "Assistant")), "question": text})
+    return ConversationResult(output=final_output, conversation=copy.deepcopy(conversation_history), questions=questions)

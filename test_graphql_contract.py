@@ -8,6 +8,7 @@ import json
 import os
 import tempfile
 import time
+from test_collaboration_results import typed_fixture
 import unittest
 from unittest.mock import patch
 import strawberry
@@ -84,7 +85,7 @@ class TestGraphQLContract(unittest.TestCase):
             "Test final output",
         )
 
-        with patch("conversation_manager.run_conversation", return_value=mocked_backend_return):
+        with patch("conversation_manager.run_conversation_result", return_value=typed_fixture(mocked_backend_return)):
             result = self.schema.execute_sync(query, variable_values=variables)
 
         self.assertIsNone(result.errors, f"GraphQL execution returned errors: {result.errors}")
@@ -467,7 +468,7 @@ class TestGraphQLContract(unittest.TestCase):
                 provider_client.consume_provider_call("forbidden-model-xyz")
                 return ([], [], "should-not-succeed")
 
-            with patch("conversation_manager.run_conversation", side_effect=_disallowed_rc):
+            with patch("conversation_manager.run_conversation_result", side_effect=_disallowed_rc):
                 rc_res = self.schema.execute_sync(rc_mutation, variable_values=rc_vars)
             self.assertIsNotNone(rc_res.errors)
 
@@ -483,7 +484,7 @@ class TestGraphQLContract(unittest.TestCase):
                 provider_client.consume_provider_call("gpt-4o-mini")
                 return ([], [], "should-not-succeed")
 
-            with patch("conversation_manager.run_conversation", side_effect=_budget_rc):
+            with patch("conversation_manager.run_conversation_result", side_effect=_budget_rc):
                 rc_res = self.schema.execute_sync(rc_mutation, variable_values=rc_vars)
                 re_res = self.schema.execute_sync(re_mutation, variable_values=_re_vars())
 
@@ -499,7 +500,7 @@ class TestGraphQLContract(unittest.TestCase):
                 provider_client.consume_provider_call("gpt-4o-mini")
                 return ([], [], "should-not-succeed")
 
-            with patch("conversation_manager.run_conversation", side_effect=_timeout_rc):
+            with patch("conversation_manager.run_conversation_result", side_effect=_timeout_rc):
                 rc_res = self.schema.execute_sync(rc_mutation, variable_values=rc_vars)
                 re_res = self.schema.execute_sync(re_mutation, variable_values=_re_vars())
 
@@ -516,7 +517,7 @@ class TestGraphQLContract(unittest.TestCase):
 
             for candidate_escape in ("C:\\escape.txt", "/tmp/escape.txt", escaped_file):
                 fake_tuple = ([{"role": "assistant", "name": "Strategist", "content": "Done"}], [], candidate_escape)
-                with patch("conversation_manager.run_conversation", return_value=fake_tuple):
+                with patch("conversation_manager.run_conversation_result", return_value=typed_fixture(fake_tuple)):
                     rc_res = self.schema.execute_sync(rc_mutation, variable_values=rc_vars)
                     re_res = self.schema.execute_sync(re_mutation, variable_values=_re_vars())
 
@@ -530,7 +531,7 @@ class TestGraphQLContract(unittest.TestCase):
             "Failed sk-sentinel-secret-999 Bearer sentinel-bearer-tok "
             "token=sentinel-kv-888 C:\\Users\\alice\\secret.txt /tmp/leak.txt"
         )
-        with patch("conversation_manager.run_conversation", side_effect=RuntimeError(secret_err)):
+        with patch("conversation_manager.run_conversation_result", side_effect=RuntimeError(secret_err)):
             rc_res = self.schema.execute_sync(rc_mutation, variable_values=rc_vars)
             re_res = self.schema.execute_sync(re_mutation, variable_values=_re_vars())
 

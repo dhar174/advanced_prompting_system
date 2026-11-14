@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List
 from unittest.mock import MagicMock, Mock, patch
 
+from test_collaboration_results import typed_fixture
 import pytest
 from pydantic import ValidationError
 
@@ -68,7 +69,7 @@ def mock_collaborative_tuple():
         {"assistant": "Database Administrator", "question": "What is the current p99 query latency?"}
     ]
     final_output = "Consensus output: Composite index added on (tenant_id, created_at)."
-    return conversation_history, questions_asked, final_output
+    return typed_fixture((conversation_history, questions_asked, final_output))
 
 
 @pytest.fixture
@@ -564,7 +565,7 @@ class TestExecuteRunCollaborative:
         import conversation_manager
 
         monkeypatch.setattr(
-            conversation_manager, "run_conversation", lambda *a, **kw: mock_collaborative_tuple
+            conversation_manager, "run_conversation_result", lambda *a, **kw: mock_collaborative_tuple
         )
 
         req = RunRequest(
@@ -578,8 +579,8 @@ class TestExecuteRunCollaborative:
 
         assert result.status == "completed"
         assert result.mode == "collaborative"
-        assert result.final_output == mock_collaborative_tuple[2]
-        assert len(result.conversation) == len(mock_collaborative_tuple[0])
+        assert result.final_output == mock_collaborative_tuple.output.content
+        assert len(result.conversation) == len(mock_collaborative_tuple.conversation)
         assert result.output_type.output_type == "Simple Concise Answer"
 
     def test_collaborative_agent_attributions_extracted(self, mock_collaborative_tuple, monkeypatch):
@@ -587,7 +588,7 @@ class TestExecuteRunCollaborative:
         import conversation_manager
 
         monkeypatch.setattr(
-            conversation_manager, "run_conversation", lambda *a, **kw: mock_collaborative_tuple
+            conversation_manager, "run_conversation_result", lambda *a, **kw: mock_collaborative_tuple
         )
 
         req = RunRequest(mode="collaborative", task_prompt="Analyze database performance")
@@ -607,7 +608,7 @@ class TestExecuteRunCollaborative:
         import conversation_manager
 
         monkeypatch.setattr(
-            conversation_manager, "run_conversation", lambda *a, **kw: mock_collaborative_tuple
+            conversation_manager, "run_conversation_result", lambda *a, **kw: mock_collaborative_tuple
         )
 
         req = RunRequest(mode="collaborative", task_prompt="Analyze database performance")
@@ -622,7 +623,7 @@ class TestExecuteRunCollaborative:
         import conversation_manager
 
         monkeypatch.setattr(
-            conversation_manager, "run_conversation", lambda *a, **kw: mock_collaborative_tuple
+            conversation_manager, "run_conversation_result", lambda *a, **kw: mock_collaborative_tuple
         )
 
         req = RunRequest(mode="collaborative", task_prompt="Analyze database performance")
@@ -643,8 +644,8 @@ class TestExecuteRunCollaborative:
         json_output = '{"service": "auth", "port": 8080, "status": "healthy"}'
         monkeypatch.setattr(
             conversation_manager,
-            "run_conversation",
-            lambda *a, **kw: (json_history, [], json_output),
+            "run_conversation_result",
+            lambda *a, **kw: typed_fixture((json_history, [], json_output), output_type=OutputType(output_type="JSON", file_extension=".json")),
         )
 
         req = RunRequest(mode="collaborative", task_prompt="Generate auth service config")
@@ -660,7 +661,7 @@ class TestExecuteRunCollaborative:
         import conversation_manager
 
         monkeypatch.setattr(
-            conversation_manager, "run_conversation", lambda *a, **kw: mock_collaborative_tuple
+            conversation_manager, "run_conversation_result", lambda *a, **kw: mock_collaborative_tuple
         )
 
         req = RunRequest(
@@ -818,7 +819,7 @@ class TestAdversarialAndErrorHandling:
 
         monkeypatch.setattr(
             conversation_manager,
-            "run_conversation",
+            "run_conversation_result",
             Mock(side_effect=RuntimeError("Simulated LLM rate limit failure")),
         )
 
@@ -898,8 +899,8 @@ print('execution_modes_import_purity_verified')
         # Mock run_conversation returning the path to this existing file
         monkeypatch.setattr(
             conversation_manager,
-            "run_conversation",
-            Mock(return_value=([{"role": "assistant", "content": "Done"}], [], str(sensitive_file))),
+            "run_conversation_result",
+            Mock(return_value=typed_fixture(([{"role": "assistant", "content": "Done"}], [], str(sensitive_file)))),
         )
 
         req = RunRequest(mode="collaborative", task_prompt="What is in the config?")
@@ -920,11 +921,11 @@ print('execution_modes_import_purity_verified')
         def scoped_run_returning_artifact(*args, **kwargs):
             active_run = get_active_run_id()
             track_generated_artifact(str(artifact_file), run_id=active_run)
-            return ([{"role": "assistant", "content": "Done"}], [], str(artifact_file))
+            return typed_fixture(([{"role": "assistant", "content": "Done"}], [], str(artifact_file)), artifact=True)
 
         monkeypatch.setattr(
             conversation_manager,
-            "run_conversation",
+            "run_conversation_result",
             scoped_run_returning_artifact,
         )
 
@@ -943,8 +944,8 @@ print('execution_modes_import_purity_verified')
         )
         monkeypatch.setattr(
             conversation_manager,
-            "run_conversation",
-            Mock(return_value=([{"role": "assistant", "content": "Done"}], [], str(artifact_file))),
+            "run_conversation_result",
+            Mock(return_value=typed_fixture(([{"role": "assistant", "content": "Done"}], [], str(artifact_file)))),
         )
         res3 = execute_run(cross_req)
         assert "safe generated analysis" not in res3.final_output

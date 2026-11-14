@@ -1037,7 +1037,7 @@ def _execute_collaborative(
     Execute collaborative debate mode via conversation_manager.run_conversation.
     Extracts attributions, questions, OutputType, artifacts, and timeline telemetry.
     """
-    from conversation_manager import run_conversation
+    from conversation_manager import run_conversation_result as run_conversation
 
     cfg = provider_config or get_provider_config()
     resolved_model = validate_provider_model(request.model, cfg)
@@ -1104,7 +1104,8 @@ def _execute_collaborative(
         )
     )
     with scope_cm:
-        raw_history, raw_questions, raw_final_output = run_conversation(**rc_kwargs)
+        conversation_result = run_conversation(**rc_kwargs)
+        raw_history, raw_questions, raw_final_output = conversation_result.legacy_tuple()
 
     # 4. Check for ErrorResult from run_conversation
     if isinstance(raw_final_output, ErrorResult):
@@ -1173,40 +1174,12 @@ def _execute_collaborative(
                 "question": str(q.get("question") or q.get("reply") or ""),
             })
 
-    # 7. Output Type resolution and strictly run-scoped artifact content reading
-    final_output_str = str(raw_final_output or "")
-    file_path = ""
-    candidate_path = final_output_str.strip()
-    run_artifacts = list_run_artifacts(run_id=correlation_id)
-
-    if candidate_path and is_tracked_artifact(candidate_path, run_id=correlation_id):
-        abs_candidate = os.path.realpath(os.path.abspath(candidate_path))
-        cwd = os.path.realpath(os.path.abspath(os.getcwd()))
-        is_safe_subpath = os.path.commonpath([abs_candidate, cwd]) == cwd
-        if not is_safe_subpath:
-            try:
-                import tempfile
-                td = os.path.realpath(os.path.abspath(tempfile.gettempdir()))
-                is_safe_subpath = os.path.commonpath([abs_candidate, td]) == td
-            except Exception:
-                is_safe_subpath = False
-        if not is_safe_subpath:
-            try:
-                from output_generator import get_artifacts_base_dir
-                art_base = get_artifacts_base_dir()
-                is_safe_subpath = os.path.commonpath([abs_candidate, art_base]) == art_base
-            except Exception:
-                is_safe_subpath = False
-
-        if is_safe_subpath and os.path.isfile(abs_candidate):
-            file_path = abs_candidate
-            preview = read_tracked_artifact(abs_candidate, run_id=correlation_id)
-            if preview is not None and preview.strip():
-                final_output_str = preview
-            elif abs_candidate.lower().endswith(".pdf"):
-                final_output_str = f"Generated PDF artifact: {os.path.basename(abs_candidate)}"
-
-    resolved_output_type = _infer_output_type(content=final_output_str, file_path=file_path)
+    # The producer classified the output; ordinary text never becomes file authority.
+    final_output_str = conversation_result.output.content
+    refs = conversation_result.output.artifacts
+    file_path = refs[0].path if refs else ""
+    run_artifacts = list(refs)
+    resolved_output_type = conversation_result.output.output_type
 
     has_output = bool(final_output_str.strip()) or bool(run_artifacts)
     final_status: RunStatus = "completed" if has_output else "incomplete"
