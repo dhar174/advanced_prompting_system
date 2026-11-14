@@ -15,7 +15,7 @@ Make all correction/revision paths atomic, deeply isolated and locally bounded w
 ## Deliverables and verification
 
 - [x] Typed final-output correction controller and all four production finalization branches; focused red/green tests; commit.
-- [ ] Deep candidate snapshots, independent revision evaluation and controller limits; red/green tests; commit.
+- [x] Deep candidate snapshots, independent revision evaluation and controller limits; red/green tests; commit.
 - [ ] Provider-only real conversation/main/HTTP accepted/rejected revision scenarios and built-UI browser proof; commit.
 - [ ] Guarded full Python 3.11/3.12, frontend guard/tests/lint/build, Chromium, clean runtime-image qualification, independent whole-branch review and CRLF-aware diff checks.
 - [ ] Exact-source qualification documentation, PR, and verified evidence with remaining limitations. No automatic issue acceptance or merge.

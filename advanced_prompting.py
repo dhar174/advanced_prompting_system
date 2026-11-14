@@ -2214,13 +2214,8 @@ class AdvancedPromptEngineer:
             revision_clean,
         )
 
-        candidate_budget = prior_step.remaining_budget
-        if rev_count is not None:
-            try:
-                parsed_count = int(rev_count)
-                candidate_budget = max(parsed_count - 1, 0) if decrement_count else max(parsed_count, 0)
-            except (TypeError, ValueError):
-                candidate_budget = prior_step.remaining_budget
+        # A model-authored count is never controller authority.
+        candidate_budget = max(prior_step.remaining_budget - (1 if decrement_count else 0), 0)
 
         candidate_step = Step(
             description=extracted_step,
@@ -2285,7 +2280,9 @@ class AdvancedPromptEngineer:
         if not math.isfinite(candidate_reward) or candidate_reward < 0.0 or candidate_reward > 1.0:
             return None
 
-        prior_reward = float(getattr(current_step.reflection, "reward", 0.0) or 0.0)
+        prior_reward = getattr(current_step.reflection, "reward", None)
+        if prior_reward is None or not math.isfinite(prior_reward) or not 0.0 <= prior_reward <= 1.0:
+            return None
         if candidate_reward <= prior_reward:
             return None
 
@@ -4331,9 +4328,20 @@ class AdvancedPromptEngineer:
         if self._parse_and_validate_revision(response, prior_step) is None:
             return interaction
         proposed = self.parse_response(response, task, plan_step_number=plan_step.step_number)
-        new_score = proposed.final_reward
-        if (new_score is None or not math.isfinite(new_score) or not 0.0 <= new_score <= 1.0
-                or new_score <= score or not proposed.steps or not (proposed.answer or "").strip()):
+        if not proposed.steps or not (proposed.answer or "").strip():
+            return interaction
+        evaluation_step = Step(description="Proposed reasoning steps:\n" + "\n".join(step.description for step in proposed.steps)
+            + "\nProposed answer:\n" + proposed.answer, step_number=prior_step.step_number,
+            plan_step_number=plan_step.step_number, remaining_budget=prior_step.remaining_budget)
+        try:
+            assessment = self.judge_step(evaluation_step, task)
+        except self._policy_exception_types():
+            raise
+        except Exception:
+            return interaction
+        new_score = getattr(assessment, "reward", None)
+        if (not isinstance(assessment, Reflection) or getattr(assessment, "_judge_error", False)
+                or new_score is None or not math.isfinite(new_score) or not 0.0 <= new_score <= 1.0 or new_score <= score):
             return interaction
         base = copy.deepcopy(accepted_base) if accepted_base is not None else Interaction(
             task=task,
@@ -4402,6 +4410,13 @@ class AdvancedPromptEngineer:
         Generates responses from multiple agents for collaborative reasoning.
         """
         # TODO: Use conversation_manager.py for more advanced multi-agent interactions
+        step_budget = self._local_allowance(step_budget, "step_budget")
+        call_cap = self._local_allowance(self.config.max_sc_calls, "max_sc_calls")
+        restart_limit = self._local_allowance(restart_limit, "restart_limit")
+        backtrack_limit = self._local_allowance(backtrack_limit, "backtrack_limit")
+        if not step_budget or not call_cap:
+            return []
+        local_calls = 0
         type_of_output = output_type.output_type
         ext_of_output = output_type.file_extension
         agent_responses = []
@@ -4522,11 +4537,14 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
             agent_reflections = []
             step_num = step_number
             restart_attempts = 0
+            generated_steps = 0
             base_messages = copy.deepcopy(messages)
             msgs = copy.deepcopy(base_messages)
             while (
-                len(agent_steps) < step_budget and step_num < step_budget
+                generated_steps < step_budget and local_calls < call_cap
             ) and agent_response is None:
+                generated_steps += 1
+                local_calls += 1
                 response = self.call_openai(
                     messages=msgs,
                     temperature=agent_intro_mapping[i % len(agent_intro_mapping)]["temperature"],
@@ -4593,15 +4611,7 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
                 current_step = Step(
                     description=latest_step,
                     step_number=step_num,
-                    remaining_budget=(
-                        int(latest_count) - 1
-                        if latest_count
-                        else (
-                            int(agent_steps[-1].remaining_budget - 1)
-                            if agent_steps
-                            else int(step_budget)
-                        )
-                    ),
+                    remaining_budget=step_budget - generated_steps,
                     plan_step_number=plan_step_num,
                 )
                 step_num += 1
@@ -4637,6 +4647,9 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
                     )
                     and restart_attempts < restart_limit
                 ):
+                    if local_calls >= call_cap:
+                        break
+                    local_calls += 1
                     backtracks += 1
                     former_score = float(getattr(current_step.reflection, "reward", 0.0) or 0.0)
                     msgs_b = copy.deepcopy(msgs)
@@ -4754,7 +4767,7 @@ Remember to provide a clear and concise answer within <agent_response> tags at t
                     final_reward=0.0,
                 )
             print_saver.print_and_store(f"\n Agent {i} response: {agent_response} \n")
-            agent_responses.append(agent_response)
+            agent_responses.append(copy.deepcopy(agent_response))
         print_saver.print_and_store("Agent Interactions:")
         assert all(
             isinstance(agent_resp, Interaction) for agent_resp in agent_responses
@@ -7661,6 +7674,12 @@ Task: {task}
     # -------------------------------
     # Self-Consistency
     # -------------------------------
+    @staticmethod
+    def _local_allowance(value, name: str) -> int:
+        if type(value) is not int or value < 0:
+            raise ValueError(f"{name} must be a nonnegative integer")
+        return value
+
     def self_consistency(
         self,
         task: Task,
@@ -7682,13 +7701,22 @@ Task: {task}
         """
         Implements Self-Consistency by generating multiple reasoning paths and selecting the most consistent one.
         """
+        step_budget_int = self._local_allowance(step_budget, "step_budget")
+        call_cap = self._local_allowance(max_calls if max_calls is not None else self.config.max_sc_calls, "max_calls")
+        restart_limit = self._local_allowance(restart_limit, "restart_limit")
+        backtrack_limit = self._local_allowance(backtrack_limit, "backtrack_limit")
+        consistency_multiplier = self._local_allowance(consistency_multiplier, "consistency_multiplier")
+        path_count = self._local_allowance(self.config.n, "n")
+        existing_interaction = copy.deepcopy(existing_interaction)
+        task = copy.deepcopy(task)
         responses: List[Interaction] = []
         base_messages = copy.deepcopy(messages or [])
-        step_budget_int = max(int(step_budget or 1), 1)
-        call_cap = max(
-            int(max_calls if max_calls is not None else getattr(self.config, "max_sc_calls", 30)),
-            1,
-        )
+        if not step_budget_int or not call_cap or not consistency_multiplier or not path_count:
+            self._last_sc_termination = {"reason": "budget_exhausted", "calls": 0}
+            result = existing_interaction or Interaction(task, [], [])
+            result.answer, result.final_reward = "", None
+            result.status = result.stop_reason = "budget_exhausted"
+            return result
         total_calls_made = 0
         termination_reason: Optional[str] = None
         self._last_sc_termination = {"reason": None, "calls": 0}
@@ -7711,7 +7739,7 @@ Task: {task}
                 return True
             return False
 
-        num_paths = self.config.n if self.config.n > 4 else max(int(self.config.n or 1), 1)
+        num_paths = path_count
         # Preserve prior behavior for configs with n <= 4 unless explicitly constrained by low call_cap
         if self.config.n <= 4 and call_cap >= 15:
             num_paths = 5
@@ -7737,13 +7765,15 @@ Task: {task}
                 _reflections = []
                 step_num = step_number
                 restart_attempts = 0
+                generated_steps = 0
                 answer_response = None
-                while len(new_steps) < step_budget_int and not step_completion:
+                while generated_steps < step_budget_int and not step_completion:
                     if _limit_reached():
                         break
 
+                    generated_steps += 1
                     step_responses = []
-                    for _cm in range(max(int(consistency_multiplier or 1), 1)):
+                    for _cm in range(consistency_multiplier):
                         if _limit_reached():
                             break
                         total_calls_made += 1
@@ -7838,15 +7868,7 @@ Task: {task}
                         current_step = Step(
                             description=latest_step if latest_step is not None else response.strip(),
                             step_number=step_num,
-                            remaining_budget=(
-                                int(latest_count)
-                                if latest_count
-                                else (
-                                    int(new_steps[-1].remaining_budget - 1)
-                                    if new_steps
-                                    else step_budget_int
-                                )
-                            ),
+                            remaining_budget=step_budget_int - generated_steps,
                             plan_step_number=plan_step_number,
                         )
                     except ValidationError as e:
@@ -8064,6 +8086,7 @@ Task: {task}
                     task=existing_interaction.task or task,
                     steps=list(existing_interaction.steps or []),
                     reflections=list(existing_interaction.reflections or []),
+                    collaboration_results=existing_interaction.collaboration_results,
                     answer="",
                     final_reward=None,
                     existing_files=list(getattr(existing_interaction, "existing_files", []) or []),
@@ -8098,6 +8121,7 @@ Task: {task}
                 steps=merged_steps,
                 reflections=merged_reflections,
                 answer=best_interaction.answer,
+                collaboration_results=existing_interaction.collaboration_results,
                 final_reward=best_interaction.final_reward,
                 error_result=best_interaction.error_result,
                 existing_files=list(getattr(existing_interaction, "existing_files", []) or []),
@@ -8803,11 +8827,12 @@ Task: {task}
                     if complete:
                         current_plan_step.completed = True
                         for stp in best_interaction.steps or []:
-                            if stp not in main_interaction.steps:
-                                main_interaction.steps.append(stp)
+                            if not any((old.plan_step_number, old.step_number) == (stp.plan_step_number, stp.step_number)
+                                       for old in main_interaction.steps):
+                                main_interaction.steps.append(copy.deepcopy(stp))
                         for refl in best_interaction.reflections or []:
-                            if refl not in main_interaction.reflections:
-                                main_interaction.reflections.append(refl)
+                            if not any(old.step_number == refl.step_number for old in main_interaction.reflections):
+                                main_interaction.reflections.append(copy.deepcopy(refl))
                         main_interaction.commit_collaboration_results(best_interaction)
                         self._publish_accepted_collaboration_metadata(main_interaction)
                         if best_interaction.answer and str(best_interaction.answer).strip():

@@ -308,7 +308,7 @@ class _ChatCompletions:
                     "<answer>SOLO_TAKEOVER_ANSWER</answer><final_reward>0.9</final_reward>")
                 return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=None), finish_reason="stop")])
             if "evaluate the following step" in lower_prompt:
-                score = "0.0" if scenario.endswith("zero") else "0.3"
+                score = "0.9" if "Proposed reasoning steps:" in prompt_text else "0.0" if scenario.endswith("zero") else "0.3"
                 content = f"<reflection>Measured discarded candidate.</reflection><reward>{score}</reward>"
                 return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=None), finish_reason="stop")])
             if "<step>" in prompt_text and "finalizing the final output of a step" not in lower_prompt:
