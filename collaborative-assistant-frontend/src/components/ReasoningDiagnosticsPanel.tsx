@@ -1,14 +1,25 @@
 import React, { useState } from 'react';
-import type { RunDiagnosticsType, RunEventType } from '../graphql/graphqlTypes';
+import type {
+  ArtifactRefType,
+  RunDiagnosticsType,
+  RunEventType,
+  RunStatus,
+} from '../graphql/graphqlTypes';
 
 export interface ReasoningDiagnosticsPanelProps {
   diagnostics?: RunDiagnosticsType | null;
   events?: RunEventType[] | null;
+  stopReason?: string | null;
+  artifacts?: ArtifactRefType[] | null;
+  runStatus?: RunStatus | null;
 }
 
 export const ReasoningDiagnosticsPanel: React.FC<ReasoningDiagnosticsPanelProps> = ({
   diagnostics,
   events,
+  stopReason,
+  artifacts,
+  runStatus,
 }) => {
   const [activeTab, setActiveTab] = useState<'plan' | 'reflections' | 'agents' | 'events'>('plan');
   const [isExpanded, setIsExpanded] = useState(true);
@@ -17,6 +28,7 @@ export const ReasoningDiagnosticsPanel: React.FC<ReasoningDiagnosticsPanelProps>
     return null;
   }
 
+  const runHalted = Boolean(runStatus && runStatus !== 'completed');
   const complexityScore = diagnostics?.complexityScore;
   const complexityBadge =
     complexityScore !== null && complexityScore !== undefined
@@ -30,15 +42,16 @@ export const ReasoningDiagnosticsPanel: React.FC<ReasoningDiagnosticsPanelProps>
   return (
     <div className="mt-4 border border-slate-200 rounded-lg overflow-hidden bg-white shadow-sm">
       {/* Header bar */}
-      <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-        <div className="flex items-center space-x-3">
+      <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center space-x-3 flex-wrap gap-y-1">
           <button
             type="button"
+            aria-expanded={isExpanded}
             onClick={() => setIsExpanded(!isExpanded)}
             className="text-sm font-semibold text-slate-800 flex items-center space-x-1.5 hover:text-blue-600"
           >
             <span>{isExpanded ? '▼' : '▶'}</span>
-            <span>Reasoning Diagnostics & Telemetry</span>
+            <span>Reasoning Diagnostics &amp; Telemetry</span>
           </button>
           {complexityBadge && (
             <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${complexityBadge.color}`}>
@@ -50,14 +63,22 @@ export const ReasoningDiagnosticsPanel: React.FC<ReasoningDiagnosticsPanelProps>
               Reward: {diagnostics.finalReward.toFixed(2)}
             </span>
           )}
-          {diagnostics?.durationMs && (
+          {stopReason && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-slate-200 text-slate-700 font-mono">
+              {stopReason}
+            </span>
+          )}
+          {diagnostics?.durationMs !== null && diagnostics?.durationMs !== undefined && (
             <span className="text-xs text-slate-500">
               {diagnostics.durationMs.toFixed(0)}ms
             </span>
           )}
         </div>
-        <div className="text-xs text-slate-500">
-          {diagnostics?.initialBudget && (
+        <div className="text-xs text-slate-500 flex items-center space-x-3">
+          {artifacts && artifacts.length > 0 && (
+            <span>Artifacts: {artifacts.length}</span>
+          )}
+          {diagnostics?.initialBudget !== null && diagnostics?.initialBudget !== undefined && (
             <span>Budget: {diagnostics.adjustedBudget ?? diagnostics.initialBudget}</span>
           )}
         </div>
@@ -66,9 +87,11 @@ export const ReasoningDiagnosticsPanel: React.FC<ReasoningDiagnosticsPanelProps>
       {isExpanded && (
         <div className="p-4 space-y-4">
           {/* Tabs */}
-          <div className="flex border-b border-slate-200 space-x-4 text-xs font-medium">
+          <div role="tablist" aria-label="Telemetry views" className="flex border-b border-slate-200 space-x-4 text-xs font-medium">
             <button
               type="button"
+              role="tab"
+              aria-selected={activeTab === 'plan'}
               onClick={() => setActiveTab('plan')}
               className={`pb-2 border-b-2 transition-colors ${
                 activeTab === 'plan'
@@ -80,6 +103,8 @@ export const ReasoningDiagnosticsPanel: React.FC<ReasoningDiagnosticsPanelProps>
             </button>
             <button
               type="button"
+              role="tab"
+              aria-selected={activeTab === 'reflections'}
               onClick={() => setActiveTab('reflections')}
               className={`pb-2 border-b-2 transition-colors ${
                 activeTab === 'reflections'
@@ -87,10 +112,12 @@ export const ReasoningDiagnosticsPanel: React.FC<ReasoningDiagnosticsPanelProps>
                   : 'border-transparent text-slate-500 hover:text-slate-700'
               }`}
             >
-              Steps & Reflections ({diagnostics?.reflections?.length ?? 0})
+              Steps &amp; Reflections ({diagnostics?.reflections?.length ?? 0})
             </button>
             <button
               type="button"
+              role="tab"
+              aria-selected={activeTab === 'agents'}
               onClick={() => setActiveTab('agents')}
               className={`pb-2 border-b-2 transition-colors ${
                 activeTab === 'agents'
@@ -102,6 +129,8 @@ export const ReasoningDiagnosticsPanel: React.FC<ReasoningDiagnosticsPanelProps>
             </button>
             <button
               type="button"
+              role="tab"
+              aria-selected={activeTab === 'events'}
               onClick={() => setActiveTab('events')}
               className={`pb-2 border-b-2 transition-colors ${
                 activeTab === 'events'
@@ -131,10 +160,12 @@ export const ReasoningDiagnosticsPanel: React.FC<ReasoningDiagnosticsPanelProps>
                           className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
                             step.completed
                               ? 'bg-emerald-100 text-emerald-800'
+                              : runHalted
+                              ? 'bg-rose-100 text-rose-800'
                               : 'bg-amber-100 text-amber-800'
                           }`}
                         >
-                          {step.completed ? 'Completed' : 'In Progress'}
+                          {step.completed ? 'Completed' : runHalted ? 'Incomplete' : 'In Progress'}
                         </span>
                       </div>
                       {step.assignedAgents.length > 0 && (

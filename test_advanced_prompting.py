@@ -743,6 +743,133 @@ class TestAdvancedPromptEngineer(unittest.TestCase):
         # Ensure decision is one of the valid string values from ComponentType
         self.assertIn(decision, ComponentType.values())
 
+    def _make_plan_step(self, step_number: int, name: str = "Step") -> PlanStep:
+        return PlanStep(
+            step_number=step_number,
+            completed=False,
+            step_name=f"{name} {step_number}",
+            step_description=f"Description for step {step_number}",
+            step_explanation=f"Explanation for step {step_number}",
+            step_output=f"Expected output {step_number}",
+            step_full_text=f"Full text {step_number}",
+            subtasks=[],
+        )
+
+    def _make_final_planstep_output(
+        self, plan_step: PlanStep, final_output: str
+    ) -> FinalPlanStepOutput:
+        return FinalPlanStepOutput(
+            final_output=final_output,
+            output_type=self.output_type,
+            version=1,
+            component_type=ComponentType["standalone_file"],
+            steps=[],
+            planstep=plan_step,
+            file_name="out.py",
+            parent_file_name="",
+        )
+
+    def _make_task_with_outputs(
+        self, plan_steps, planstep_outputs, description: str = "Component decision test"
+    ) -> Task:
+        task = Task(
+            description=description,
+            refined_description=description,
+            complexity=1,
+            steps=[],
+            reflections=[],
+            answer="",
+            final_reward=0.0,
+            plan=Plan(steps=plan_steps),
+            output_type=self.output_type,
+        )
+        task.planstep_outputs = list(planstep_outputs)
+        return task
+
+    def test_component_decision_sparse_step_number(self):
+        step1 = self._make_plan_step(1)
+        step3 = self._make_plan_step(3)
+        task = self._make_task_with_outputs(
+            [step1],
+            [self._make_final_planstep_output(step1, "ONLY_STEP_1")],
+            description="Sparse step test",
+        )
+
+        decision = self.engineer.component_decision(task, step3)
+        self.assertIn(decision, ComponentType.values())
+        user_msg = self.mock_create.call_args.kwargs["messages"][-1]["content"]
+        self.assertIn("Plan Step Output: No output yet", user_msg)
+        self.assertNotIn("Plan Step Output: ONLY_STEP_1", user_msg)
+
+        # When a sparse output explicitly matches step 3, it must be surfaced.
+        task.planstep_outputs.append(
+            self._make_final_planstep_output(step3, "SPARSE_STEP_3_OUT")
+        )
+        decision_with_out = self.engineer.component_decision(task, step3)
+        self.assertIn(decision_with_out, ComponentType.values())
+        user_msg_with_out = self.mock_create.call_args.kwargs["messages"][-1]["content"]
+        self.assertIn("Plan Step Output: SPARSE_STEP_3_OUT", user_msg_with_out)
+
+    def test_component_decision_zero_and_negative_step_number_do_not_wrap_to_last(self):
+        step1 = self._make_plan_step(1)
+        step2 = self._make_plan_step(2)
+        task = self._make_task_with_outputs(
+            [step1, step2],
+            [
+                self._make_final_planstep_output(step1, "FIRST_OUT"),
+                self._make_final_planstep_output(step2, "LAST_OUT_MUST_NOT_LEAK"),
+            ],
+            description="Zero step test",
+        )
+
+        for bad_num in (0, -1):
+            bad_step = self._make_plan_step(bad_num)
+            decision = self.engineer.component_decision(task, bad_step)
+            self.assertIn(decision, ComponentType.values())
+            user_msg = self.mock_create.call_args.kwargs["messages"][-1]["content"]
+            step_header_section = user_msg.split("This Plan Step is part of the following Task:")[0]
+            self.assertIn("Plan Step Output: No output yet", step_header_section)
+            self.assertNotIn("LAST_OUT_MUST_NOT_LEAK", step_header_section)
+
+    def test_component_decision_empty_plan_steps(self):
+        orphan_step = self._make_plan_step(1)
+        task = self._make_task_with_outputs(
+            [],
+            [],
+            description="Empty plan steps test",
+        )
+
+        decision = self.engineer.component_decision(task, orphan_step)
+        self.assertIn(decision, ComponentType.values())
+        user_msg = self.mock_create.call_args.kwargs["messages"][-1]["content"]
+        self.assertIn("Plan Step Output: No output yet", user_msg)
+
+    def test_component_decision_out_of_order_planstep_outputs_matched_by_step_number(self):
+        step1 = self._make_plan_step(1)
+        step2 = self._make_plan_step(2)
+        task = self._make_task_with_outputs(
+            [step1, step2],
+            [
+                self._make_final_planstep_output(step2, "SECOND_STEP_OUTPUT"),
+                self._make_final_planstep_output(step1, "FIRST_STEP_OUTPUT"),
+            ],
+            description="Out of order outputs test",
+        )
+
+        self.engineer.component_decision(task, step1)
+        msg_step1 = self.mock_create.call_args.kwargs["messages"][-1]["content"]
+        header_step1 = msg_step1.split("This Plan Step is part of the following Task:")[0]
+        self.assertIn("Plan Step Output: FIRST_STEP_OUTPUT", header_step1)
+        self.assertNotIn("SECOND_STEP_OUTPUT", header_step1)
+        self.assertIn("Plan Step Output: ('FIRST_STEP_OUTPUT', True)", msg_step1)
+        self.assertIn("Plan Step Output: ('SECOND_STEP_OUTPUT', True)", msg_step1)
+
+        self.engineer.component_decision(task, step2)
+        msg_step2 = self.mock_create.call_args.kwargs["messages"][-1]["content"]
+        header_step2 = msg_step2.split("This Plan Step is part of the following Task:")[0]
+        self.assertIn("Plan Step Output: SECOND_STEP_OUTPUT", header_step2)
+        self.assertNotIn("FIRST_STEP_OUTPUT", header_step2)
+
 
     def test_judge_step_completion(self):
         step_list = [ # judge_step_completion expects a List[Step]
@@ -1521,6 +1648,543 @@ class TestFinalizePlanStepOutput(unittest.TestCase):
         self.assertEqual(output.final_output, self.plan_step.step_output)
         self.assertIn("planstep_1_output", output.file_name)
         # print("Success test_finalize_planstep_output_exception_handling") # Commented out
+
+
+class TestPR39EngineAndSelfConsistency(unittest.TestCase):
+    """PR #39 regressions for multi-step main(), self_consistency revisions, and policy routing."""
+
+    @staticmethod
+    def _make_plan_step(step_number: int, name: str, output: str) -> PlanStep:
+        return PlanStep(
+            step_number=step_number,
+            step_name=name,
+            step_description=f"Execute {name}",
+            step_explanation=f"Detailed work for {name}",
+            step_output=output,
+            step_full_text=f"Step {step_number}: {name}",
+            subtasks=[],
+            completed=False,
+        )
+
+    @staticmethod
+    def _setup_deterministic_main_engineer(
+        plan: Plan,
+        *,
+        max_steps: int = 5,
+        agents: int = 0,
+    ) -> AdvancedPromptEngineer:
+        config = PromptEngineeringConfig(
+            agents=agents,
+            n=1,
+            initial_budget=len(plan.steps),
+            max_steps=max_steps,
+            max_retries=1,
+            max_sc_calls=12,
+            confidence_thresholds=(0.8, 0.5, 0.2),
+        )
+        engineer = AdvancedPromptEngineer(config)
+        engineer.retrieve_information = lambda task: "retrieved info"
+        engineer.task_into_prompt = lambda task: f"Refined: {task}"
+        engineer.assess_complexity = lambda task: (2.0, plan)
+        engineer.name_project = lambda task_obj, p: "PR39Project"
+        engineer.adjust_step_budget = lambda task, complexity: max_steps
+        engineer.generate_initial_prompt = lambda task, info, budget, comp, out_type: (
+            "system",
+            f"InitialPrompt({budget})",
+        )
+        engineer.convert_planstep_to_prompt = (
+            lambda plan_step, task_obj: f"PROMPT_STEP_{plan_step.step_number}:{plan_step.step_name}"
+        )
+        engineer.condense_plan = lambda p: "condensed"
+        engineer.dynamic_confidence_exploration = lambda ict, task_obj, pstep: ict
+        engineer.refine_prompt = lambda interaction, task, complexity, prompt: prompt
+
+        def _fake_step_out(step, task_obj, plan_step, prev_steps):
+            return FinalStepOutput(
+                final_output=step.description,
+                output_type=task_obj.output_type,
+                version=1,
+                component_type=ComponentType["response_to_prompt"],
+                associated_plan_step=plan_step,
+                step=step,
+            )
+
+        def _fake_planstep_out(steps, task_obj, plan_step):
+            combined = "; ".join(s.description for s in steps) if steps else plan_step.step_output
+            return FinalPlanStepOutput(
+                final_output=combined,
+                output_type=task_obj.output_type,
+                version=1,
+                component_type=ComponentType["response_to_prompt"],
+                steps=list(steps),
+                planstep=plan_step,
+                file_name=f"step_{plan_step.step_number}.txt",
+                parent_file_name="parent.txt",
+            )
+
+        def _fake_judge_final(task_obj, interaction):
+            assert isinstance(task_obj, Task)
+            interaction.final_reward = 0.9
+            return interaction
+
+        engineer.finalize_step_output = _fake_step_out
+        engineer.finalize_planstep_output = _fake_planstep_out
+        engineer.judge_final_answer = _fake_judge_final
+        return engineer
+
+    def test_main_agents_zero_judges_real_candidate_steps_and_isolates_rejected_candidates(self):
+        plan = Plan(steps=[self._make_plan_step(1, "StepOne", "Out1")])
+        engineer = self._setup_deterministic_main_engineer(plan, max_steps=3, agents=0)
+
+        phase = {"accepted": False}
+        seen_judge_steps = []
+
+        def _fake_call(messages, temperature=0.7, stop_sequence=None, **kw):
+            if not phase["accepted"]:
+                return "<step>Rejected candidate step</step><answer>BadAnswer</answer>"
+            return "<step>Accepted candidate step</step><answer>GoodAnswer</answer>"
+
+        engineer.call_openai = _fake_call
+        engineer.choose_best_response = lambda responses, plan_step, interaction, step_number: responses[0]
+        engineer.judge_step = lambda step, task: Reflection(
+            content="Solid reasoning", reward=0.9, step_number=step.step_number
+        )
+        engineer.refine_prompt = lambda interaction, task, complexity, prompt: prompt
+
+        def _judge_completion(steps, plan_step, max_plan_steps=0):
+            seen_judge_steps.append([s.description for s in steps])
+            if steps and steps[-1].description == "Accepted candidate step":
+                return (True, 1)
+            # After main() evaluates the rejected candidate (when step_budget==1 finishes),
+            # switch to generating the accepted candidate on the next main() iteration.
+            if any("Rejected candidate step" == s.description for s in steps):
+                # Switch after both SC completion check and main() completion check have run.
+                if len(seen_judge_steps) >= 3:
+                    phase["accepted"] = True
+            return (False, 1)
+
+        engineer.judge_step_completion = _judge_completion
+
+        with patch(
+            "advanced_prompting.output_type_determination",
+            return_value=OutputType(output_type="Simple Concise Answer", file_extension=".txt"),
+        ):
+            result = engineer.main("Solve single step cleanly")
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.stop_reason, "final_answer")
+        self.assertEqual(result.answer, "GoodAnswer")
+        self.assertTrue(plan.steps[0].completed)
+        # Candidate steps were passed into judge_step_completion (never empty []),
+        # and the rejected step stayed isolated from main_interaction and attempt 2.
+        self.assertIn(["Rejected candidate step"], seen_judge_steps)
+        self.assertIn(["Accepted candidate step"], seen_judge_steps)
+        committed_descs = [s.description for s in result.steps]
+        self.assertEqual(committed_descs, ["Accepted candidate step"])
+        self.assertNotIn("Rejected candidate step", committed_descs)
+
+    def test_main_executes_all_multistep_plan_steps_before_final_answer(self):
+        plan = Plan(
+            steps=[
+                self._make_plan_step(1, "Analyze", "AnalysisOut"),
+                self._make_plan_step(2, "Synthesize", "SynthesisOut"),
+            ]
+        )
+        engineer = self._setup_deterministic_main_engineer(plan, max_steps=4, agents=0)
+
+        prompts_seen = []
+
+        def _fake_call_openai(messages, temperature=0.7, stop_sequence=None, **kw):
+            user_prompt = next(
+                (m["content"] for m in messages if m.get("role") == "user"), ""
+            )
+            prompts_seen.append(user_prompt)
+            if "PROMPT_STEP_1" in user_prompt:
+                return "<step>Step 1 analyzed inputs</step><answer>Step1Result</answer>"
+            if "PROMPT_STEP_2" in user_prompt:
+                return "<step>Step 2 synthesized solution</step><answer>Step2Result</answer>"
+            raise AssertionError(f"Unexpected prompt: {user_prompt}")
+
+        engineer.call_openai = _fake_call_openai
+        engineer.choose_best_response = lambda responses, plan_step, interaction, step_number: responses[0]
+        engineer.judge_step = lambda step, task: Reflection(
+            content="Good step", reward=0.9, step_number=step.step_number
+        )
+        judge_final_calls = []
+
+        def _record_judge_final(task_obj, interaction):
+            judge_final_calls.append(
+                (isinstance(task_obj, Task), task_obj.description, interaction.answer)
+            )
+            interaction.final_reward = 0.95
+            return interaction
+
+        engineer.judge_final_answer = _record_judge_final
+        engineer.judge_step_completion = lambda steps, plan_step, max_plan_steps=0: (
+            bool(steps),
+            plan_step.step_number + 1 if plan_step.step_number < max_plan_steps else plan_step.step_number,
+        )
+
+        with patch(
+            "advanced_prompting.output_type_determination",
+            return_value=OutputType(output_type="Simple Concise Answer", file_extension=".txt"),
+        ):
+            result = engineer.main("Complete a 2-step workflow")
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.stop_reason, "final_answer")
+        self.assertTrue(all(ps.completed for ps in plan.steps))
+        self.assertEqual(len(result.planstep_outputs), 2)
+        self.assertIn("Step1Result", result.answer)
+        self.assertIn("Step2Result", result.answer)
+        self.assertTrue(any("PROMPT_STEP_1" in p for p in prompts_seen))
+        self.assertTrue(any("PROMPT_STEP_2" in p for p in prompts_seen))
+        whole_task_calls = [
+            c for c in judge_final_calls if c[1] == "Complete a 2-step workflow"
+        ]
+        self.assertEqual(len(whole_task_calls), 1)
+        self.assertTrue(whole_task_calls[0][0])
+        self.assertIn("Step1Result", whole_task_calls[0][2])
+        self.assertIn("Step2Result", whole_task_calls[0][2])
+
+    def test_main_midplan_budget_exhaustion_preserves_partial_progress_and_stays_incomplete(self):
+        # Case A: max_steps=1 exhausts step budget after Step 1 on a 2-step plan
+        plan = Plan(
+            steps=[
+                self._make_plan_step(1, "StepOne", "Out1"),
+                self._make_plan_step(2, "StepTwo", "Out2"),
+            ]
+        )
+        engineer = self._setup_deterministic_main_engineer(plan, max_steps=1, agents=0)
+        engineer.call_openai = (
+            lambda messages, temperature=0.7, stop_sequence=None, **kw: "<step>Done 1</step><answer>PartialStep1</answer>"
+        )
+        engineer.choose_best_response = lambda responses, plan_step, interaction, step_number: responses[0]
+        engineer.judge_step = lambda step, task: Reflection(
+            content="Good", reward=0.9, step_number=step.step_number
+        )
+        engineer.judge_step_completion = lambda steps, plan_step, max_plan_steps=0: (True, 2)
+
+        with patch(
+            "advanced_prompting.output_type_determination",
+            return_value=OutputType(output_type="Simple Concise Answer", file_extension=".txt"),
+        ):
+            result = engineer.main("Two step plan under tight max_steps")
+
+        self.assertTrue(plan.steps[0].completed)
+        self.assertFalse(plan.steps[1].completed)
+        self.assertEqual(len(result.planstep_outputs), 1)
+        self.assertEqual(len(result.steps), 1)
+        self.assertEqual(result.answer, "")
+        self.assertEqual(result.status, "budget_exhausted")
+        self.assertEqual(result.stop_reason, "budget_exhausted")
+
+        # Case B: Policy ledger raises RunBudgetExceededError on Step 2
+        import contextlib
+        import provider_client
+        from conversation_manager import RunBudgetExceededError
+
+        plan_b = Plan(
+            steps=[
+                self._make_plan_step(1, "StepOne", "Out1"),
+                self._make_plan_step(2, "StepTwo", "Out2"),
+            ]
+        )
+        engineer_b = self._setup_deterministic_main_engineer(plan_b, max_steps=5, agents=0)
+        call_counter = {"count": 0, "limit": 1}
+
+        def _check_budget():
+            if call_counter["count"] >= call_counter["limit"]:
+                raise RunBudgetExceededError("Shared call ledger exhausted")
+
+        @contextlib.contextmanager
+        def _reserve_scope(model=None, *, call_type="llm", validate_model=True):
+            _check_budget()
+            call_counter["count"] += 1
+            yield model or "gpt-4o-mini"
+
+        engineer_b.call_openai = (
+            lambda messages, temperature=0.7, stop_sequence=None, **kw: "<step>Step 1 work</step><answer>Part1</answer>"
+        )
+        engineer_b.choose_best_response = lambda responses, plan_step, interaction, step_number: responses[0]
+        engineer_b.judge_step = lambda step, task: Reflection(
+            content="Good", reward=0.9, step_number=step.step_number
+        )
+        engineer_b.judge_step_completion = lambda steps, plan_step, max_plan_steps=0: (True, 2)
+
+        with patch(
+            "advanced_prompting.output_type_determination",
+            return_value=OutputType(output_type="Simple Concise Answer", file_extension=".txt"),
+        ), patch.object(
+            provider_client,
+            "get_active_execution_context",
+            return_value=SimpleNamespace(allowed_models=("gpt-4o-mini",)),
+            create=True,
+        ), patch.object(
+            provider_client,
+            "get_effective_model",
+            return_value="gpt-4o-mini",
+            create=True,
+        ), patch.object(
+            provider_client,
+            "check_provider_budget",
+            side_effect=_check_budget,
+            create=True,
+        ), patch.object(
+            provider_client,
+            "reserve_call_scope",
+            side_effect=_reserve_scope,
+            create=True,
+        ):
+            result_b = engineer_b.main("Two step plan hitting policy ledger cap")
+
+        self.assertTrue(plan_b.steps[0].completed)
+        self.assertFalse(plan_b.steps[1].completed)
+        self.assertEqual(len(result_b.planstep_outputs), 1)
+        self.assertEqual(result_b.answer, "")
+        self.assertEqual(result_b.status, "budget_exhausted")
+        self.assertEqual(engineer_b._last_sc_termination["reason"], "budget_exhausted")
+
+    def _run_revision_branch(self, revision_response: str, revision_judge):
+        plan_step = self._make_plan_step(1, "Solve", "Solution")
+        task = Task(
+            description="Compute value",
+            refined_description="Compute value",
+            complexity=2.0,
+            steps=[],
+            reflections=[],
+            answer="",
+            final_reward=0.0,
+            plan=Plan(steps=[plan_step]),
+            output_type=OutputType(output_type="Simple Concise Answer", file_extension=".txt"),
+        )
+        engineer = AdvancedPromptEngineer(
+            PromptEngineeringConfig(n=1, max_retries=1, max_sc_calls=10)
+        )
+        calls = iter(
+            [
+                "<thinking>Initial thought</thinking><step>Initial valid step</step>",
+                revision_response,
+            ]
+        )
+        recorded_prompts = []
+
+        def _call_openai(messages, temperature=0.7, stop_sequence=None, **kw):
+            recorded_prompts.append(list(messages))
+            return next(calls)
+
+        engineer.call_openai = _call_openai
+        engineer.choose_best_response = lambda responses, plan_step, interaction, step_number: responses[0]
+        judge_calls = {"n": 0}
+
+        def _judge_step(step, task_obj):
+            judge_calls["n"] += 1
+            if judge_calls["n"] == 1:
+                return Reflection(content="Needs improvement", reward=0.65, step_number=step.step_number)
+            return revision_judge(step, task_obj)
+
+        engineer.judge_step = _judge_step
+        engineer.judge_step_completion = lambda steps, pstep, max_plan_steps=0: (True, 1)
+        engineer.judge_final_answer = lambda t, ict: ict
+
+        result = engineer.self_consistency(
+            task=task,
+            prompt="Solve it",
+            existing_interaction=None,
+            messages=[{"role": "user", "content": "Solve it"}],
+            output_type=task.output_type,
+            step_budget=1,
+            step_number=1,
+            plan_step_number=1,
+            restart_limit=0,
+            backtrack_limit=1,
+            consistency_multiplier=1,
+            max_plan_steps=1,
+        )
+        return engineer, result
+
+    def test_self_consistency_revision_acceptance_and_rejection_branches(self):
+        # 1. Better revision: strictly improves reward -> accepted and replaces step/answer
+        eng_ok, res_ok = self._run_revision_branch(
+            "<thinking>Better thought</thinking><step>Revised improved step</step><answer>BetterAnswer</answer>",
+            lambda step, t: Reflection(content="Great revision", reward=0.92, step_number=step.step_number),
+        )
+        self.assertEqual(res_ok.steps[0].description, "Revised improved step")
+        self.assertEqual(res_ok.steps[0].thoughts, "Better thought")
+        self.assertEqual(res_ok.steps[0].reflection.reward, 0.92)
+        self.assertEqual(res_ok.answer, "BetterAnswer")
+        self.assertEqual(eng_ok._last_sc_termination["calls"], 2)
+
+        # 2. Worse revision -> rejected, prior candidate kept, call still charged
+        eng_worse, res_worse = self._run_revision_branch(
+            "<step>Regressed step</step>",
+            lambda step, t: Reflection(content="Worse", reward=0.40, step_number=step.step_number),
+        )
+        self.assertEqual(res_worse.steps[0].description, "Initial valid step")
+        self.assertEqual(res_worse.steps[0].reflection.reward, 0.65)
+        self.assertEqual(eng_worse._last_sc_termination["calls"], 2)
+
+        # 3. Tied-poor revision (equal reward) -> rejected
+        eng_tie, res_tie = self._run_revision_branch(
+            "<step>Lateral step</step>",
+            lambda step, t: Reflection(content="Same quality", reward=0.65, step_number=step.step_number),
+        )
+        self.assertEqual(res_tie.steps[0].description, "Initial valid step")
+        self.assertEqual(eng_tie._last_sc_termination["calls"], 2)
+
+        # 4. Empty revision -> rejected
+        eng_empty, res_empty = self._run_revision_branch(
+            "   ",
+            lambda step, t: Reflection(content="Should not reach", reward=0.99, step_number=step.step_number),
+        )
+        self.assertEqual(res_empty.steps[0].description, "Initial valid step")
+        self.assertEqual(eng_empty._last_sc_termination["calls"], 2)
+
+        # 5. Malformed / untagged prose revision -> rejected
+        for bad_rev in (
+            "Here is untagged prose without structural tags",
+            "<step>Truncated step <thinking",
+            "</step>Unmatched close tag",
+        ):
+            eng_bad, res_bad = self._run_revision_branch(
+                bad_rev,
+                lambda step, t: Reflection(content="Should not reach", reward=0.99, step_number=step.step_number),
+            )
+            self.assertEqual(res_bad.steps[0].description, "Initial valid step")
+            self.assertEqual(eng_bad._last_sc_termination["calls"], 2)
+
+        # 6. Refusal revision -> rejected even if wrapped in <step> tags
+        eng_ref, res_ref = self._run_revision_branch(
+            "<step>I'm sorry, I cannot assist with that request.</step>",
+            lambda step, t: Reflection(content="Should not reach", reward=0.99, step_number=step.step_number),
+        )
+        self.assertEqual(res_ref.steps[0].description, "Initial valid step")
+        self.assertEqual(eng_ref._last_sc_termination["calls"], 2)
+
+        # 7a. Judge failure (exception) -> rejected cleanly, prior candidate intact
+        eng_jerr, res_jerr = self._run_revision_branch(
+            "<step>Candidate whose judge explodes</step>",
+            lambda step, t: (_ for _ in ()).throw(RuntimeError("Judge failure")),
+        )
+        self.assertEqual(res_jerr.steps[0].description, "Initial valid step")
+        self.assertEqual(res_jerr.steps[0].reflection.reward, 0.65)
+        self.assertEqual(eng_jerr._last_sc_termination["calls"], 2)
+
+        # 7b. Judge failure (real judge_step returns internal error Reflection(_judge_error=True)) -> rejected
+        def _real_judge_failing(step, t):
+            refl = Reflection(content="Error", reward=0.0, step_number=step.step_number)
+            refl._judge_error = True
+            return refl
+
+        eng_jfb, res_jfb = self._run_revision_branch(
+            "<step>Candidate with judge internal error</step>",
+            _real_judge_failing,
+        )
+        self.assertEqual(res_jfb.steps[0].description, "Initial valid step")
+        self.assertEqual(res_jfb.steps[0].reflection.reward, 0.65)
+
+        # 8. Self-reported high <reward>0.99</reward> overridden by lower real judge_step reward -> rejected
+        eng_spoof, res_spoof = self._run_revision_branch(
+            "<step>Spoofed reward step</step><reward>0.99</reward>",
+            lambda step, t: Reflection(content="Actually weaker", reward=0.55, step_number=step.step_number),
+        )
+        self.assertEqual(res_spoof.steps[0].description, "Initial valid step")
+        self.assertEqual(res_spoof.steps[0].reflection.reward, 0.65)
+
+    @patch("advanced_prompting.client.beta.chat.completions.parse")
+    @patch("advanced_prompting.client.chat.completions.create")
+    def test_policy_effective_model_and_disallowed_model_propagation(
+        self, mock_create, mock_parse
+    ):
+        import contextlib
+        import provider_client
+        from advanced_prompting import FinalReviewScore, PromptSuggestions, StepNumber
+        from complexity_measures import Subtask
+
+        class _DisallowedModel(Exception):
+            pass
+
+        observed_calls = []
+
+        @contextlib.contextmanager
+        def _reserve_scope(model=None, *, call_type="llm", validate_model=True):
+            observed_calls.append((call_type, model))
+            yield model
+
+        plan_step = self._make_plan_step(1, "StepOne", "Out1")
+        subtask = Subtask(
+            subtask_number=1,
+            subtask_name="SubOne",
+            subtask_description="Do sub",
+            subtask_explanation="Explain sub",
+            subtask_output="SubOut",
+            subtask_full_text="Full sub",
+            completed=False,
+        )
+        task = Task(
+            description="Policy model task",
+            refined_description="Policy model task",
+            complexity=2.0,
+            steps=[],
+            reflections=[],
+            answer="ans",
+            final_reward=0.0,
+            plan=Plan(steps=[plan_step]),
+            output_type=OutputType(output_type="Simple Concise Answer", file_extension=".txt"),
+        )
+        step = Step(description="Some step", step_number=1, remaining_budget=2, plan_step_number=1)
+        interaction = Interaction(task=task, steps=[step], reflections=[], answer="ans", final_reward=0.0)
+
+        engineer = AdvancedPromptEngineer(PromptEngineeringConfig(model="gpt-4o-mini", max_retries=1))
+
+        mock_create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="<prompt>Refined</prompt>"))]
+        )
+        mock_parse.side_effect = [
+            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=CompletionStatus(completion=True)))]),
+            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=CompletionStatus(completion=True)))]),
+            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=PromptSuggestions(prompt_modifications=["a"])))]),
+            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=StepNumber(score=2)))]),
+            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=FinalReviewScore(score=0.85)))]),
+        ]
+
+        ctx = SimpleNamespace(allowed_models=("gpt-4.1-mini",), default_model="gpt-4.1-mini")
+        with patch.object(
+            provider_client, "get_active_execution_context", return_value=ctx, create=True
+        ), patch.object(
+            provider_client, "get_effective_model", return_value="gpt-4.1-mini", create=True
+        ), patch.object(
+            provider_client, "reserve_call_scope", side_effect=_reserve_scope, create=True
+        ):
+            self.assertEqual(engineer.judge_step_completion([step], plan_step, 1), (True, 1))
+            self.assertEqual(engineer.judge_subtask_completion(step, subtask), (True, 2))
+            self.assertIsNotNone(engineer.refine_prompt_via_meta_prompt("perf"))
+            self.assertEqual(
+                engineer.place_step("Some step", 1, 2, [{"role": "user", "content": "hi"}]),
+                2,
+            )
+            engineer.judge_final_answer(task, interaction)
+            self.assertEqual(engineer.call_openai([{"role": "user", "content": "hi"}]), "<prompt>Refined</prompt>")
+
+        for call_type, model in observed_calls:
+            self.assertEqual(model, "gpt-4.1-mini", f"{call_type} used wrong model {model}")
+        for call in mock_parse.call_args_list:
+            self.assertEqual(call.kwargs["model"], "gpt-4.1-mini")
+        self.assertEqual(mock_create.call_args.kwargs["model"], "gpt-4.1-mini")
+
+        # DisallowedModelError must never be swallowed by retry/fallback blocks
+        with patch.object(
+            provider_client, "DisallowedModelError", _DisallowedModel, create=True
+        ), patch.object(
+            provider_client,
+            "reserve_call_scope",
+            side_effect=_DisallowedModel("Model blocked"),
+            create=True,
+        ):
+            with self.assertRaises(_DisallowedModel):
+                engineer.judge_step_completion([step], plan_step, 1)
+            with self.assertRaises(_DisallowedModel):
+                engineer.call_openai([{"role": "user", "content": "hi"}])
 
 
 if __name__ == "__main__":

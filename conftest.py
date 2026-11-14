@@ -9,7 +9,8 @@ import pytest
 def pytest_configure(config):
     if not getattr(sys, '_aps_network_guard', False):
         raise pytest.UsageError('Run via tools/run-offline.ps1: network guard must be active before collection.')
-    config.option.basetemp = str(Path(__file__).parent / '.qualification' / 'pytest-tmp')
+    if not getattr(config.option, 'basetemp', None):
+        config.option.basetemp = str(Path(__file__).parent / '.qualification' / f'pytest-tmp-{os.getpid()}')
 
 
 @pytest.fixture(autouse=True)

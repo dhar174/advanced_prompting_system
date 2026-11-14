@@ -1,6 +1,8 @@
 import { gql } from '@apollo/client';
 import type {
   ExecutionModeCapabilityType,
+  PersonalityCapabilityType,
+  ProviderPolicyType,
   RunExecutionInputType,
   RunExecutionResponseType,
 } from './graphqlTypes';
@@ -15,6 +17,14 @@ export const GET_EXECUTION_MODES = gql`
       gatedIssue
       supportsMultiAgent
       supportsStepPlanning
+      ready
+      unavailableReason
+      supportsCancellation
+      supportsResume
+      minNumRounds
+      maxNumRounds
+      maxSteps
+      maxAgents
     }
   }
 `;
@@ -23,13 +33,43 @@ export interface GetExecutionModesData {
   executionModes: ExecutionModeCapabilityType[];
 }
 
+export const GET_PERSONALITIES = gql`
+  query GetPersonalities {
+    personalities {
+      id
+      instructions
+    }
+  }
+`;
+
+export interface GetPersonalitiesData {
+  personalities: PersonalityCapabilityType[];
+}
+
+export const GET_PROVIDER_POLICY = gql`
+  query GetProviderPolicy {
+    providerPolicy {
+      defaultModel
+      allowedModels
+      defaultTemperature
+    }
+  }
+`;
+
+export interface GetProviderPolicyData {
+  providerPolicy: ProviderPolicyType;
+}
+
 export const RUN_EXECUTION = gql`
   mutation RunExecution($input: RunExecutionInput!) {
     runExecution(input: $input) {
       mode
+      effectiveMode
       status
+      stopReason
       finalOutput
       errorMessage
+      usageAvailable
       outputType {
         outputType
         fileExtension
@@ -42,6 +82,15 @@ export const RUN_EXECUTION = gql`
       questions {
         assistant
         question
+      }
+      artifacts {
+        artifactId
+        runId
+        filename
+        path
+        mimeType
+        sizeBytes
+        sha256
       }
       diagnostics {
         complexityScore
@@ -121,9 +170,12 @@ export const RUN_ADVANCED_PIPELINE = gql`
       model: $model
     ) {
       mode
+      effectiveMode
       status
+      stopReason
       finalOutput
       errorMessage
+      usageAvailable
       outputType {
         outputType
         fileExtension
@@ -132,6 +184,15 @@ export const RUN_ADVANCED_PIPELINE = gql`
         role
         name
         content
+      }
+      artifacts {
+        artifactId
+        runId
+        filename
+        path
+        mimeType
+        sizeBytes
+        sha256
       }
       diagnostics {
         complexityScore

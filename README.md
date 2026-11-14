@@ -1,188 +1,168 @@
-# Advanced Prompting Engine
+# Advanced Prompting System
 
-A sophisticated Python-based prompting engine that leverages multi-agent collaboration, complexity-based step planning, and adaptive reasoning to solve complex tasks using OpenAI's GPT models.
+A hybrid Python + React/TypeScript AI orchestration platform combining:
 
-## Features
+1. **Multi-Agent Collaborative Debate (`conversation_manager.py`)**: 26 distinct domain personas (`assistant_personalities.py`) performing problem definition consensus, round deliberation, clarifying question extraction, confidence/binary voting, mediator tie-breaking, and format-aware artifact delivery (`.txt`, `.json`, `.pdf`, `.html`, `.csv`, `.py`).
+2. **Complexity-Driven Reasoning Pipeline (`advanced_prompting.py`, `complexity_measures.py`)**: Linguistic/AST/entropy/ML complexity assessment, structured `Plan` / `PlanStep` / `Subtask` decomposition, self-consistency, least-to-most, progressive-hint, step reflection/reward judging, and collaborative multi-agent step delegation.
+3. **Unified GraphQL API & React 19 SPA (`app.py`, `schema.py`, `execution_modes.py`, `collaborative-assistant-frontend/`)**: Flask + Strawberry GraphQL backend serving `/graphql`, per-run isolated `.aps_artifacts/<run_id>/`, CORS/auth/rate-limit hardening, and a React 19 + TypeScript + Vite 6 + Apollo Client frontend.
 
-- **Multi-Agent Collaboration**: Implements a collaborative reasoning system with multiple AI agents working together to solve complex problems
-- **Complexity-Based Planning**: Uses 
+---
 
-complexity_measures.py
+## Execution Modes
 
- to analyze task complexity and generate optimal execution plans
-- **Dynamic Step Budgeting**: Automatically adjusts processing steps based on task complexity
-- **Self-Consistency Checks**: Validates solutions through multiple reasoning paths
-- **Adaptive Prompt Engineering**: Refines prompts based on performance data and feedback
-- **Structured Output Management**: Handles various output types via 
+| Mode ID | Backend Engine | Status | Notes |
+| :--- | :--- | :--- | :--- |
+| `collaborative` | `conversation_manager.run_conversation` | Enabled | Multi-agent debate, voting, consensus summary, artifact generation |
+| `advanced_pipeline` | `advanced_prompting.AdvancedPromptEngineer.main` | Enabled | Solo (`agents=0`) or multi-agent (`agents>0`) complexity/step planning + diagnostics |
+| `tree_of_thought` | — | **Gated (`enabled=False`)** | Explicitly gated pending [Issue #36](https://github.com/dhar174/advanced_prompting_system/issues/36); zero provider calls permitted |
 
-OutputType
+---
 
- class
+## Quick Start (Local Development)
 
-## Offline qualification
+### Prerequisites
 
-See [PR #34 qualification](docs/pr34-offline-qualification.md) for the exact tested
-environment, evidence, unresolved quarantines and supported scope. On the qualified
-Windows checkout run `./tools/run-offline.ps1`; frontend commands use
-`./tools/run-frontend-offline.ps1 -Action test` (or `lint`, `build`). These wrappers
-remove API credentials and install process-only outbound-denial guards. Bare pytest
-intentionally fails without the guard. No full browser/end-to-end certification is
-claimed; [#35](https://github.com/dhar174/advanced_prompting_system/issues/35) tracks it.
+- Python 3.11+ (3.12 recommended)
+- Node.js 22+ & npm (for frontend development/builds)
+- Optional for live LLM calls (`OFFLINE_MODE=0`): OpenAI API credentials in `.env` (see [`.env.example`](.env.example))
+- Optional for full NLP linguistic scorers: `python -m spacy download en_core_web_sm` (safely degrades offline when absent)
 
-## Installation
+### 1. Clone & Install
 
-1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/advanced-prompting-engine.git
-cd advanced-prompting-engine
+git clone https://github.com/dhar174/advanced_prompting_system.git
+cd advanced_prompting_system
+
+python -m venv .venv
+# Linux/macOS:
+source .venv/bin/activate
+# Windows PowerShell:
+.\.venv\Scripts\Activate.ps1
+
+pip install --upgrade pip
+pip install -e ".[dev]"
 ```
 
-2. Install required dependencies:
+For production WSGI serving (`waitress` on Windows / `gunicorn` on Linux) or Playwright browser E2E testing:
+
 ```bash
-pip install openai pydantic tqdm regex traitlets
+pip install -e ".[server]"
+pip install -e ".[dev,e2e]"
+python -m playwright install chromium
 ```
 
-3. Set up your OpenAI API key:
+### 2. Configure Environment
+
+Copy `.env.example` to `.env` (never commit `.env` or real API keys):
+
 ```bash
-export OPENAI_API_KEY='your-api-key-here'
+cp .env.example .env
 ```
 
-## Quick Start Guide
+All application modules use lazy provider initialization (`provider_client.LazyClient`). Importing Python modules never instantiates an OpenAI client or requires credentials at import time.
 
-This guide demonstrates a common use case: solving a complex problem that requires step-by-step reasoning. We'll use the `AdvancedPromptEngineer` to generate a plan for organizing a community event.
+### 3. Build Frontend & Run Server
 
-```python
-from advanced_prompting import AdvancedPromptEngineer, PromptEngineeringConfig
-from advanced_prompting.config import OutputType # Assuming OutputType is here
-
-# 1. Initialize PromptEngineeringConfig
-# These parameters control how the AdvancedPromptEngineer behaves.
-# - model: Specifies the OpenAI model to use (e.g., "gpt-4o-mini", "gpt-4").
-# - agents: Number of AI agents that will collaborate on the task. More agents can lead to more robust solutions but increase cost.
-# - max_steps: The maximum number of reasoning steps the engineer can take. Prevents runaway processes.
-# - initial_budget: Relates to the complexity allowed for the initial plan.
-# - output_type: Defines the desired format of the output. Default is a string.
-config = PromptEngineeringConfig(
-    model="gpt-4o-mini",
-    agents=3,
-    max_steps=10,
-    initial_budget=10, # Corresponds to a moderately complex task
-    output_type=OutputType.STRING # Explicitly setting for clarity, though it's the default
-)
-
-# 2. Create an AdvancedPromptEngineer instance
-# This object orchestrates the problem-solving process.
-engineer = AdvancedPromptEngineer(config)
-
-# 3. Define a slightly more complex task
-# Let's ask the engineer to outline a plan for a community hackathon.
-task = """
-Create a comprehensive plan to organize a 2-day community hackathon focused on AI for social good.
-The plan should include:
-- Pre-event: Theme ideation, speaker outreach, participant registration, sponsorship.
-- During event: Schedule, judging criteria, mentor roles, technical support.
-- Post-event: Prize distribution, feedback collection, community building.
-Provide a timeline for each phase.
-"""
-
-# 4. Run the engineer with the task
-# The main method executes the multi-agent collaboration and reasoning process.
-result = engineer.main(task)
-
-# 5. Print various parts of the result
-# The result object contains detailed information about the solution.
-print("--- Generated Plan ---")
-print(result.answer)
-print("\\n--- Confidence and Reasoning ---")
-print(f"Final Confidence Score: {result.final_reward}")
-print(f"Number of Steps Taken: {len(result.history) if result.history else 'N/A'}") # history might be None or empty
-# You can also inspect result.history for detailed step-by-step reasoning if needed.
-# For example:
-# if result.history:
-# for i, step_info in enumerate(result.history):
-# print(f"Step {i+1}: Action - {step_info.action}, Output - {step_info.output}")
-```
-
-## Usage
-
-```python
-from advanced_prompting import AdvancedPromptEngineer, PromptEngineeringConfig
-
-# Initialize configuration
-config = PromptEngineeringConfig()
-
-# Create prompt engineer instance
-engineer = AdvancedPromptEngineer(config)
-
-# Define your task
-task = """
-Design a system that...
-"""
-
-# Generate solution
-result = engineer.main(task)
-
-# Access results
-print(result.answer)
-print(f"Confidence Score: {result.final_reward}")
-```
-
-## Core Concepts
-
-The Advanced Prompting Engine is built around a modular architecture designed to tackle complex tasks by breaking them down into manageable steps and leveraging multiple AI perspectives.
-
--   **`advanced_prompting.py` (Main Engine)**: This is the heart of the system. It orchestrates the entire process, from receiving the initial task to delivering the final solution. It manages the multi-agent collaboration, directs the iterative reasoning process, and integrates feedback for adaptive learning. The `AdvancedPromptEngineer` class within this module is the primary interface for users. It takes a task and a `PromptEngineeringConfig` object, and then guides the task through stages of planning, execution, and self-correction.
-
--   **`complexity_measures.py` (Complexity Analysis & Planning)**: Before tackling a task, the engine first assesses its complexity. This module provides tools to analyze the input task and estimate the resources (e.g., number of reasoning steps, model capabilities) required. Based on this analysis, it helps in generating an initial execution plan or "budget." For instance, a highly complex task might be allocated more steps or involve more specialized agents. This proactive planning helps in optimizing resource usage and improving the quality of the output.
-
--   **`conversation_manager.py` (Output & Interaction Handling)**: This module is responsible for managing the inputs and outputs of the AI agents and the overall system. It defines how results are structured (e.g., using the `OutputType` enum for formats like strings, JSON, lists) and ensures that the conversation flow between agents, and between the system and the user, is coherent. It plays a crucial role in formatting the final answer and presenting any intermediate steps or reasoning paths if requested. For example, it ensures that if a JSON output is specified, the final answer conforms to valid JSON syntax.
-
-**Interaction Flow:**
-
-1.  A user submits a task to the `AdvancedPromptEngineer` (`advanced_prompting.py`).
-2.  The engine may use `complexity_measures.py` to analyze the task's complexity and determine an initial plan and resource allocation (e.g. step budget).
-3.  The `AdvancedPromptEngineer` then initiates a multi-agent collaborative process. It breaks down the problem and assigns sub-tasks to different AI agents (conceptual agents, actual model calls are managed by the engineer).
-4.  Agents (or the engineer itself through structured prompts) perform reasoning steps. `conversation_manager.py` helps in formatting the prompts sent to the LLM and parsing its responses.
-5.  The process may involve iterative refinement, self-correction, and dynamic adjustments to the plan based on intermediate results.
-6.  Finally, `conversation_manager.py` ensures the final output is presented in the desired format, along with any supporting information like confidence scores or steps taken.
-
-This architecture allows the system to adapt its approach based on the task's nature and complexity, leading to more robust and reliable solutions.
-
-## Configuration
-
-The 
-
-PromptEngineeringConfig
-
- class supports various parameters:
-
-- `max_steps`: Maximum number of reasoning steps (default: 20)
-- `initial_budget`: Initial token/computation budget (default: 20)
-- `agents`: Number of collaborative agents (default: 3)
-- `temperature`: Sampling temperature (default: 0.7)
-- `model`: GPT model to use (default: "gpt-4o-mini")
-
-## Testing
-
-### Backend Tests
-To run the authoritative offline regression and contract test suite:
-```bash
-pytest -q
-```
-This verifies smoke tests (`test_smoke.py`), import integrity (`test_import_integrity.py`), voting consensus semantics (`test_voting_semantics.py`), safe dynamic message boundary handling (`test_message_handling.py`), functional RAG retrieval (`test_retrieval.py`), and GraphQL schema contracts (`test_graphql_contract.py`) with zero live network or OpenAI calls in ~25 seconds.
-
-### Frontend Tests
-To run the full Vitest component and integration suite:
 ```bash
 cd collaborative-assistant-frontend
-npm test -- --run
+npm ci
+npm run build
+cd ..
+
+# Production-style WSGI entrypoint (binds 0.0.0.0:$PORT, default 8000)
+python wsgi.py
 ```
-This executes all 111 component, hook, and integration tests across the React client.
 
-## License
+On Linux / containers:
 
-MIT
+```bash
+gunicorn --bind 0.0.0.0:${PORT:-8080} --workers 1 --threads 8 --timeout 120 wsgi:app
+```
 
-## Contributing
+In development, you can also run the Vite dev server (`npm run dev` on `http://localhost:5173`) alongside `python wsgi.py`, because `/graphql` allows local loopback origins (`localhost`/`127.0.0.1`) by default or configured `APS_ALLOWED_ORIGINS`.
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+---
+
+## Python Programmatic Usage
+
+```python
+from advanced_prompting import AdvancedPromptEngineer, PromptEngineeringConfig
+from conversation_manager import OutputType
+
+config = PromptEngineeringConfig(
+    output_type=OutputType(output_type="PDF File", file_extension=".pdf"),
+    max_steps=5,
+    initial_budget=5,
+    agents=2,
+)
+engineer = AdvancedPromptEngineer(config)
+interaction = engineer.main("Design an offline-first API reliability checklist.")
+
+print("Final Answer:", interaction.answer)
+print("Final Reward:", interaction.final_reward)
+print("Plan Steps:", len(interaction.plan.steps) if interaction.plan else 0)
+```
+
+---
+
+## Production Packaging & Docker
+
+A multi-stage [`Dockerfile`](Dockerfile) builds the React bundle (`node:22-alpine`) and packages only runtime dependencies (`python:3.12-slim` + `pip install ".[server]"`) under a non-root `appuser`, binding `0.0.0.0:${PORT:-8080}` via `gunicorn wsgi:app`:
+
+```bash
+docker build -t advanced-prompting-system .
+docker run --rm -p 8080:8080 -e PORT=8080 --env-file .env advanced-prompting-system
+```
+
+---
+
+## Offline Qualification & Testing
+
+`conftest.py` enforces **fail-closed offline network isolation** (`sys._aps_network_guard`). Running bare `pytest` without the wrapper intentionally stops with a usage error.
+
+Always execute tests through the guarded offline runners:
+
+### Backend & Integration Tests
+
+**Windows PowerShell:**
+
+```powershell
+# Fast backend unit & GraphQL HTTP integration suite (without Playwright browser E2E)
+./tools/run-offline.ps1 -PytestArgs '--ignore=test_browser_e2e.py','-q'
+
+# Full backend + GraphQL integration + Playwright Chromium browser E2E suite
+./tools/run-offline.ps1 -PytestArgs '-q'
+
+# Playwright browser E2E matrix only (requires built dist/ and Playwright Chromium)
+./tools/run-offline.ps1 -PytestArgs 'test_browser_e2e.py','-v'
+```
+
+**Linux / macOS:**
+
+```bash
+./tools/run-offline.sh --ignore=test_browser_e2e.py -q
+./tools/run-offline.sh -q
+./tools/run-offline.sh test_browser_e2e.py -v
+```
+
+### Frontend Offline Verification
+
+**Windows PowerShell:**
+
+```powershell
+./tools/run-frontend-offline.ps1 -Action guard
+./tools/run-frontend-offline.ps1 -Action lint
+./tools/run-frontend-offline.ps1 -Action test
+./tools/run-frontend-offline.ps1 -Action build
+```
+
+**Linux / macOS:**
+
+```bash
+./tools/run-frontend-offline.sh guard
+./tools/run-frontend-offline.sh lint
+./tools/run-frontend-offline.sh test
+./tools/run-frontend-offline.sh build
+```
+
+See [`docs/issue35-qualification.md`](docs/issue35-qualification.md) and [`docs/offline-test-inventory.md`](docs/offline-test-inventory.md) for qualification evidence, bug fixes, and test baselines.

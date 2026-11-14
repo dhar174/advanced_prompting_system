@@ -110,4 +110,18 @@ describe('ChatInput component', () => {
     await userEvent.type(textarea, 'Valid message');
     expect(sendButton).not.toBeDisabled(); // Enabled with valid message
   });
+
+  it('ignores Enter key while IME composition is active', async () => {
+    mockOnSendMessage.mockClear();
+    render(<ChatInput onSendMessage={mockOnSendMessage} isLoading={false} />);
+    const textarea = screen.getByPlaceholderText('Type your message...') as HTMLTextAreaElement;
+
+    await userEvent.type(textarea, '日本語');
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'isComposing', { value: true });
+    textarea.dispatchEvent(event);
+
+    expect(mockOnSendMessage).not.toHaveBeenCalled();
+    expect(textarea.value).toBe('日本語');
+  });
 });
