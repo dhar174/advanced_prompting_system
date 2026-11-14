@@ -2,29 +2,29 @@
 
 ## Current Focus
 
-- Issue #35 remains open. Its original acceptance backlog is tracked by follow-ups #44–#61; green maintained suites or a narrow review do not establish whole-issue acceptance.
-- #48 is closed and [PR #62](https://github.com/dhar174/advanced_prompting_system/pull/62) is merged. Its typed collaboration/owned-output foundation remains in place; do not keep reporting that PR as draft/open.
-- Current slice: **#49 atomic revisions and candidate isolation**, on `fix/issue-49-atomic-revisions`, based on `fddf9f9`, under the approved [plan](../docs/superpowers/plans/2026-11-14-issue49-atomic-revisions.md).
-- Current qualified implementation source: `0980b4e0ff222188e880cc68266c3ff044e25ca2`, following `10cab82` (typed correction controller) and `b01b5b5` (deep isolation/controller allowances). #49 has no PR yet; PR creation, exact-head CI and runtime-image qualification remain pending with the coordinator.
+- Issue #35 remains open. Follow-ups #44–#61 track its acceptance backlog; a green narrow slice does not establish whole-issue acceptance.
+- #48 / [PR #62](https://github.com/dhar174/advanced_prompting_system/pull/62) and #49 / [PR #63](https://github.com/dhar174/advanced_prompting_system/pull/63) are merged and their issues are closed. Preserve their typed owned outputs, selected metadata, atomic revisions, measured scores and isolated candidate state.
+- Current slice: **#51 finite standalone provider policy**, branch `fix/issue-51-standalone-provider-policy`, based on merged main `a85a913f673fe65afb22485b1e919f7fcaedebe1`, under the approved [plan](../docs/superpowers/plans/2026-11-14-issue51-standalone-policy.md).
+- Current qualified implementation source: `8f4300ac6c83d63f4ec50dbfeb90e79dc278cb83`. At this memory checkpoint, PR publication, exact-head CI, clean runtime-image qualification and downloaded evidence verification remain **pending** with the coordinator. Consult the final PR description for later outcomes.
 
-## Verified #49 Contracts
+## Verified #51 Contracts
 
-- Final-output correction is an iterative typed controller over the actual accepted text. Preserve the legacy string/positional projection; keyword-only `max_version=5` is an absolute controller-owned ceiling. At the ceiling dispatch nothing; rejected attempts still consume a monotonically increasing version and the shared provider ledger.
-- The user chose **no-regression acceptance**: freeze initial unique requirement identities plus format/alignment/completeness checks. A proposal must retain every passed check and improve at least one failed check. Changed/missing checks, ties, regressions and unknown evaluation cannot replace accepted state.
-- Candidate/task/plan/step/reflection/output/metadata snapshots are deep-copied across empty, rejected, merged and restart paths. Rejection retains accepted state and owned artifacts; local zero allowances are not coerced to one, and model-authored counts/versions do not replenish controller budgets.
-- Reward-based revisions require independent finite evaluator quality and strict improvement. Composite judgment sees the actual answer plus all proposed steps. A measured 0.61 is retained even if authored reward tags claim 1.0; nullable unknown quality and earlier #48 failure/metadata protections remain intact.
-- Earlier #48 foundations remain: typed text/artifact/failure producers, owned conversion/scope lifetime, lossless legacy questions, selected plan-linked metadata, safe partial failure, rejected-artifact filtering and versioned registered output collisions.
+- Use `AdvancedPromptEngineer.main(task) -> Interaction` as the supported direct boundary. It establishes one finite provider scope before retrieval/planning, composes with artifact ownership and restores owned scopes on every exit. Lower-level helpers do not establish that guarantee by themselves.
+- Provider-only canonical configuration belongs to `provider_client.py`; `execution_modes.py` retains compatibility exports. Standalone defaults are 40 calls / 120 seconds. Constructor limits may tighten canonical environment ceilings; zero calls dispatch nothing. Invalid/nonfinite/excessive values fail before dispatch. Omitted models inherit the effective default; explicit selection must pass the allowlist.
+- The user chose **caller policy wins**: reuse a valid finite parent context unchanged, including identity, consumed ledger, deadline, model policy and cancellation. Constructor call/time limits apply only to standalone roots. Reject incomplete/unbounded policies, malformed or rolled-back counts and conflicting explicit models before dispatch.
+- Planning, embeddings, generation, revisions, selection, judges and nested collaboration share one ledger/deadline. Keep embedding identifiers distinct from chat-model allowlisting. SDK retries remain zero; explicit attempts and waits are bounded. Ambient single-call reservations must not exempt a whole run: bind reservation markers to their context and suspend/restore them at main entry.
+- Policy stops before normal Interaction construction return fresh safe non-success results with unknown quality; later stops preserve accepted partial work and diagnostics. Check deadline/cancellation before returning, but allow success on the final permitted call. Deadlines are cooperative, not hard Python preemption. Use separate engineer instances for simultaneous runs.
+- The README's literal example is exercised under the network guard with a deterministic SDK fixture. Legacy tuples, mutation shapes, application-token access and lazy imports remain supported.
 
 ## Verified Evidence and Limits
 
-- Full guarded suites at current source: **Python 3.12.14: 439 passed in 54.81s; Python 3.11.18: 439 passed in 76.99s**.
-- Full suite includes **10 browser-suite checks: eight real Chromium scenarios, one non-browser ownership/CORS check and one manifest verifier**. Two new real-browser revision cases cover accepted and rejected corrections.
-- Frontend: **147 passed across 17 files**; network guard, lint and production build pass. Focused owning/HTTP checks passed 95 cases and the two new Chromium revision scenarios passed separately.
-- Four independent review findings were reproduced RED→GREEN and repaired; final re-review found no remaining blockers in the inspected slice. This does not certify broader #35 acceptance.
-- At this documentation checkpoint, current exact-head CI and runtime-image qualification are pending, not green; later PR checks are authoritative. Existing local environments/assets were reused; do not claim fresh dependency resolution or local container success. No paid calls, deployment, #49 merge or original-scope human acceptance occurred.
+- Full guarded source suites: **Python 3.12.14: 504 passed in 55.51s; Python 3.11.18: 504 passed in 74.95s**. Each includes ten browser-suite checks: eight actual Chromium scenarios, ownership/CORS and manifest verification.
+- Latest focused policy checks: **76 passed in 7.69s**. Two independent review accounting findings were reproduced RED→GREEN and repaired; final independent recheck found no remaining actionable findings. An additional huge-timeout validation regression also passed RED→GREEN.
+- Frontend network guard, **147 tests across 17 files**, lint and production build pass. The existing Browserslist warning remains. CRLF-aware diff checks are clean.
+- Local environments/assets were reused; do not infer clean dependency resolution or container success from local tests. Current-head CI and retained evidence are separate gates. No paid calls, deployment, merge or #35 closure occurred in this slice. mem0ry4ai was unavailable; no durable-tool writes were made.
 
 ## Next Priorities
 
-1. Finish #49's PR/evidence publication, exact-head CI and review without treating it as completion of #35.
-2. Address #51 (standalone provider policy), then #50 (whole-task finalized deliverables). Downloads/UI, follow-up/feedback, progress/configuration and broader acceptance evidence remain separate follow-ups.
-3. Keep #36 Tree of Thoughts gated. Backend cancellation and durable resume remain unsupported; ToT is not next while #35 blockers remain.
+1. Finish #51 PR publication, exact-head CI/runtime-image qualification and retained evidence verification.
+2. Address #50 whole-task finalized deliverables next. Broader configuration/setup remains #56/#57; acceptance correlation/disposition remains #59/#60/#61. Other API/UI/operations follow-ups remain separate.
+3. Keep #36 ToT gated. New streaming, shared-engine concurrency, backend cancellation API, hard kill and durable resume remain outside this slice.

@@ -17,7 +17,8 @@ Approved in the conversation. Base: merged main `a85a913f673fe65afb22485b1e919f7
 - [x] Configuration contract with RED→GREEN regressions; commit.
 - [x] Standalone/main composition, early/late termination and cleanup; RED→GREEN; commit.
 - [x] Real provider-only direct, nested, revision, exact-cap, timeout/retry, cancellation, concurrent-run and HTTP compatibility qualification; literal README example.
-- [ ] Guarded full Python 3.11/3.12, frontend guard/tests/lint/build, Chromium, production-image CI, independent whole-branch review and CRLF diff checks.
+- [x] Guarded full Python 3.11/3.12, frontend guard/tests/lint/build, Chromium, independent whole-branch review and CRLF diff checks.
+- [ ] Clean production-image CI and exact-head browser artifact verification (PR description records final results).
 - [ ] Focused PR, exact-source qualification/evidence and documented limitations.
 
 ## Boundaries
