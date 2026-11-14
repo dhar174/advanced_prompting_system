@@ -17,7 +17,8 @@ Make all correction/revision paths atomic, deeply isolated and locally bounded w
 - [x] Typed final-output correction controller and all four production finalization branches; focused red/green tests; commit.
 - [x] Deep candidate snapshots, independent revision evaluation and controller limits; red/green tests; commit.
 - [x] Provider-only real conversation/main/HTTP accepted/rejected revision scenarios and built-UI browser proof; commit.
-- [ ] Guarded full Python 3.11/3.12, frontend guard/tests/lint/build, Chromium, clean runtime-image qualification, independent whole-branch review and CRLF-aware diff checks.
+- [x] Guarded full Python 3.11/3.12, frontend guard/tests/lint/build, Chromium, independent whole-branch review and CRLF-aware diff checks.
+- [ ] Final PR-head CI, including clean runtime-image qualification; publish exact workflow/evidence links in the PR description.
 - [ ] Exact-source qualification documentation, PR, and verified evidence with remaining limitations. No automatic issue acceptance or merge.
 
 Critical regressions: version5/max5 zero work; version4/max5 one correction; version5/max8 at most three; actual failing text; no-regression/changed-checklist rejection; SDK/refusal/malformed/timeout safety; deep nested mutations; zero/negative limits; reasoning ID12 with two steps; count999999; consumed calls across rejection/restart; existing #48 regressions remain green.
