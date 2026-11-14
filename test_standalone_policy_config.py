@@ -72,3 +72,9 @@ def test_default_model_must_be_in_explicit_allowlist(monkeypatch):
     monkeypatch.setenv('APS_ALLOWED_MODELS','gpt-4o')
     with pytest.raises(ValueError):
         em.get_provider_config()
+
+
+def test_extremely_large_environment_integer_fails_as_value_error(monkeypatch):
+    monkeypatch.setenv('APS_PROVIDER_MAX_CALLS','9'*400)
+    with pytest.raises(ValueError):
+        em.get_provider_config()

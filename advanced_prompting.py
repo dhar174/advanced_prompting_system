@@ -8376,12 +8376,21 @@ Task: {task}
         self._collaboration_artifact_ids = set()
         self.last_conversation_history = []
         self.last_questions_asked = []
-        with policy_scope, artifact_scope:
+        with policy_scope, artifact_scope, provider_client.unreserved_run_scope():
             result = None
             try:
                 provider_client.check_provider_budget()
                 result = self._main_impl(task)
                 provider_client.check_provider_liveness()
+                ctx = provider_client.get_active_execution_context()
+                reason = ctx.termination_reason if ctx.termination_reason in ("budget_exhausted", "timeout", "cancelled") else result.status
+                if reason in ("budget_exhausted", "timeout", "cancelled"):
+                    result.status = result.stop_reason = reason
+                    result.final_reward = None
+                    if result.error_result is None:
+                        error_type = {"budget_exhausted": "RunBudgetExceededError", "timeout": "RunTimeoutError", "cancelled": "RunCancelledError"}[reason]
+                        result.error_result = ConversationErrorResult(error_type=error_type,
+                            error_message="Execution stopped before a complete result was available.")
             except self._termination_exception_types() as exc:
                 if result is None:
                     current_task = Task(task, task, 0.0, [], [], "", None, Plan(steps=[]),

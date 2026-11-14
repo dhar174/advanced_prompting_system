@@ -182,6 +182,53 @@ def test_unexpected_failure_restores_owned_context(direct_provider,monkeypatch):
     assert pc.get_active_execution_context() is None and get_active_run_id() is None
 
 
+@pytest.mark.parametrize('scoped',[False,True])
+def test_ambient_reservation_cannot_bypass_main_ledger(direct_provider,scoped):
+    import contextlib
+    scope=pc.provider_execution_scope(allowed_models=('gpt-4o-mini',),max_calls=8,timeout_seconds=120) if scoped else contextlib.nullcontext()
+    with scope:
+        with pc.reserve_call_scope('gpt-4o-mini'):
+            if scoped:
+                pc.LazyClient().chat.completions.create(model='gpt-4o-mini',messages=[{'role':'user','content':'Prior reserved SDK call'}])
+            reservation=pc._IN_RESERVED_CALL.get()
+            result=engine(max_calls=8).main(task())
+            assert result.status=='budget_exhausted'
+            assert pc._IN_RESERVED_CALL.get() is reservation
+    contexts={id(row['context']):row['context'] for row in direct_provider.observed}
+    assert len(contexts)==1
+    ctx=next(iter(contexts.values()))
+    assert direct_provider.ledger.total_calls==ctx.calls_made==len(ctx.recorded_calls)==8
+    assert pc.get_active_execution_context() is None
+
+
+@pytest.mark.parametrize('value',[-1,True,1.5,'1'])
+def test_invalid_consumed_count_fails_before_dispatch(direct_provider,value):
+    with pc.provider_execution_scope(allowed_models=('gpt-4o-mini',),max_calls=1,timeout_seconds=5) as parent:
+        parent.calls_made=value
+        with pytest.raises(ValueError):
+            engine().main(task())
+    assert direct_provider.ledger.total_calls==0
+
+
+def test_consumed_count_cannot_be_rolled_back_against_existing_ledger(direct_provider):
+    with pc.provider_execution_scope(allowed_models=('gpt-4o-mini',),max_calls=2,timeout_seconds=5) as parent:
+        pc.LazyClient().chat.completions.create(model='gpt-4o-mini',messages=[{'role':'user','content':'Prior'}])
+        parent.calls_made=0
+        with pytest.raises(ValueError):
+            engine().main(task())
+    assert direct_provider.ledger.total_calls==1
+
+
+@pytest.mark.parametrize('field,value',[('deadline_monotonic','bad'),('deadline_monotonic',10**400),
+    ('temperature','bad'),('temperature',10**400),('allowed_models','gpt-4o-mini')])
+def test_malformed_parent_fields_raise_clear_value_error(direct_provider,field,value):
+    with pc.provider_execution_scope(allowed_models=('gpt-4o-mini',),max_calls=1,timeout_seconds=5) as parent:
+        setattr(parent,field,value)
+        with pytest.raises(ValueError):
+            engine().main(task())
+    assert direct_provider.ledger.total_calls==0
+
+
 def test_valid_parent_wins_without_replenishing_prior_calls(direct_provider):
     with pc.provider_execution_scope(default_model='gpt-4o',allowed_models=('gpt-4o',),max_calls=2,timeout_seconds=5) as parent:
         pc.LazyClient().chat.completions.create(model='gpt-4o',messages=[{'role':'user','content':'Prior call'}])

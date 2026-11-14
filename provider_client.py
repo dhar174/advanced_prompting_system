@@ -79,7 +79,7 @@ def get_provider_config() -> ProviderConfig:
             value = conversion(raw)
         except (ValueError, OverflowError):
             raise ValueError(f"{name} must contain a valid numeric policy value") from None
-        if not math.isfinite(value):
+        if conversion is float and not math.isfinite(value):
             raise ValueError(f"{name} must be finite")
         return value
 
@@ -139,8 +139,8 @@ class ProviderExecutionContext:
 _ACTIVE_EXECUTION_CONTEXT: contextvars.ContextVar[Optional[ProviderExecutionContext]] = (
     contextvars.ContextVar("aps_provider_execution_context", default=None)
 )
-_IN_RESERVED_CALL: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "aps_in_reserved_provider_call", default=False
+_IN_RESERVED_CALL: contextvars.ContextVar[Optional[ProviderExecutionContext]] = contextvars.ContextVar(
+    "aps_in_reserved_provider_call", default=None
 )
 
 
@@ -203,20 +203,43 @@ def provider_execution_scope(
         _ACTIVE_EXECUTION_CONTEXT.reset(token)
 
 
+@contextlib.contextmanager
+def unreserved_run_scope():
+    """A whole engine run is not the SDK attempt reserved by an ambient caller."""
+    token = _IN_RESERVED_CALL.set(None)
+    try:
+        yield
+    finally:
+        _IN_RESERVED_CALL.reset(token)
+
+
+def _finite_number(value) -> bool:
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def validate_caller_policy(ctx: ProviderExecutionContext, requested_model: Optional[str] = None) -> None:
     """Require a complete finite caller policy without replacing or tightening it."""
     if not isinstance(ctx, ProviderExecutionContext):
         raise ValueError("main() requires a real provider execution context")
     if type(ctx.max_calls) is not int or ctx.max_calls < 0:
         raise ValueError("main() requires a finite nonnegative caller call allowance")
-    if (ctx.deadline_monotonic is None or isinstance(ctx.deadline_monotonic, bool)
-            or not math.isfinite(ctx.deadline_monotonic)):
+    with ctx._lock:
+        if type(ctx.calls_made) is not int or ctx.calls_made < 0:
+            raise ValueError("Caller consumed count must be a nonnegative integer")
+        if not isinstance(ctx.recorded_calls, list) or len(ctx.recorded_calls) != ctx.calls_made:
+            raise ValueError("Caller consumed count does not match its provider ledger")
+    if not _finite_number(ctx.deadline_monotonic):
         raise ValueError("main() requires a finite caller deadline")
-    if (not ctx.allowed_models or not all(isinstance(model, str) and model.strip() for model in ctx.allowed_models)
+    if (not isinstance(ctx.allowed_models, (tuple, list)) or not ctx.allowed_models
+            or not all(isinstance(model, str) and model.strip() for model in ctx.allowed_models)
             or ctx.default_model not in ctx.allowed_models):
         raise ValueError("main() requires a valid caller model allowlist and default")
-    if ctx.temperature is not None and (isinstance(ctx.temperature, bool)
-            or not math.isfinite(ctx.temperature) or not 0 <= ctx.temperature <= 2):
+    if ctx.temperature is not None and (not _finite_number(ctx.temperature) or not 0 <= ctx.temperature <= 2):
         raise ValueError("Caller temperature must be finite and between zero and two")
     if requested_model is not None:
         validate_model_for_context(requested_model, ctx)
@@ -362,7 +385,7 @@ def reserve_call_scope(
     effective_model = consume_provider_call(
         model=model, call_type=call_type, validate_model=validate_model
     )
-    token = _IN_RESERVED_CALL.set(True)
+    token = _IN_RESERVED_CALL.set(_ACTIVE_EXECUTION_CONTEXT.get())
     try:
         yield effective_model
         ctx = _ACTIVE_EXECUTION_CONTEXT.get()
@@ -473,7 +496,7 @@ class LazyClient:
         is_chat_call = len(self._path) > 0 and self._path[0] in ("chat", "beta")
         req_model = kwargs.get("model")
 
-        if _IN_RESERVED_CALL.get():
+        if _IN_RESERVED_CALL.get() is ctx:
             if ctx.cancel_check and ctx.cancel_check():
                 ctx.termination_reason = "cancelled"
                 raise RunCancelledError("Execution cancelled by caller.")

@@ -281,6 +281,14 @@ class _ChatCompletions:
                 choices=[SimpleNamespace(message=SimpleNamespace(content="", tool_calls=None), finish_reason="stop")]
             )
 
+        if (scenario == "standalone_retry" and kwargs.get("stop") == ["</answer>"]
+                and not getattr(self._parent, "_standalone_retry_used", False)):
+            self._parent._standalone_retry_used = True
+            self._parent.ledger.record(method="chat.completions.create", model=model,
+                response_format=None, correlation_id=corr_id, scenario=scenario,
+                prompt_preview=prompt_text, full_prompt=prompt_text, error="Deterministic transient failure")
+            raise RuntimeError("Deterministic transient failure")
+
         self._parent.ledger.record(
             method="chat.completions.create",
             model=model,

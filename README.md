@@ -85,23 +85,51 @@ In development, you can also run the Vite dev server (`npm run dev` on `http://l
 
 ## Python Programmatic Usage
 
+`AdvancedPromptEngineer.main(task)` establishes one provider policy before planning.
+Without overrides, `APS_PROVIDER_MAX_CALLS` defaults to 40 provider calls and
+`APS_PROVIDER_TIMEOUT_SECONDS` to a 120-second cooperative deadline. Explicit constructor limits can tighten those
+ceilings; larger limits fail before dispatch. `max_calls=0` performs no outbound
+work. An omitted model inherits `APS_DEFAULT_MODEL`; an explicit model must be
+permitted by `APS_ALLOWED_MODELS`.
+
 ```python
 from advanced_prompting import AdvancedPromptEngineer, PromptEngineeringConfig
-from conversation_manager import OutputType
 
 config = PromptEngineeringConfig(
-    output_type=OutputType(output_type="PDF File", file_extension=".pdf"),
-    max_steps=5,
-    initial_budget=5,
-    agents=2,
+    max_steps=2,
+    initial_budget=2,
+    agents=0,
+    n=1,
+    max_sc_calls=6,
+    max_calls=40,
+    timeout_seconds=30,
 )
 engineer = AdvancedPromptEngineer(config)
 interaction = engineer.main("Design an offline-first API reliability checklist.")
 
+print("Status:", interaction.status, interaction.stop_reason)
 print("Final Answer:", interaction.answer)
 print("Final Reward:", interaction.final_reward)
-print("Plan Steps:", len(interaction.plan.steps) if interaction.plan else 0)
+plan = interaction.task.plan
+print("Plan Steps:", len(plan.steps) if plan else 0)
 ```
+
+This example normally uses a configured provider. Its guarded regression executes
+these exact lines with a test-only deterministic provider; `OFFLINE_MODE` alone
+does not provide completion replies or prohibit network traffic.
+
+All planning, generation, explicit retries, judging, embeddings and nested
+collaboration share the run allowance and deadline. SDK retries are disabled;
+remaining time is forwarded to provider calls. A provider that ignores its
+request timeout can return late: the run then reports timeout and dispatches no
+further work. This is not hard preemption of arbitrary Python code.
+
+An existing caller-owned `provider_execution_scope` wins unchanged. It must have
+a finite call allowance/deadline and a model allowlist; constructor call/time
+limits apply only to standalone roots. An explicit engine model must agree with
+the caller's selected model. Reuse preserves consumed calls and does not reset
+the deadline. Lower-level helpers do not establish a supported standalone run
+boundary on their own. Use separate engineer instances for simultaneous runs.
 
 ---
 

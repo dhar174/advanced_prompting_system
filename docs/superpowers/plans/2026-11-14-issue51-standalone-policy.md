@@ -5,21 +5,21 @@ Approved in the conversation. Base: merged main `a85a913f673fe65afb22485b1e919f7
 ## Required contract
 
 - Keep `AdvancedPromptEngineer.main(task) -> Interaction` supported. Establish one finite validated provider scope before retrieval/rephrasing/planning when standalone; preserve artifact ownership and lazy imports.
-- Move provider-only configuration/environment resolution/model validation into provider_client; keep execution_modes compatibility imports. Canonical defaults:40calls/120seconds. Add optional constructor max_calls/timeout_seconds; only tighten environment ceilings; zero calls dispatchnothing, timeout positivefinite; rejectinvalid/excessive values.
+- Move provider-only configuration, environment resolution and model validation into provider_client; keep execution_modes compatibility imports. Canonical defaults: 40 calls / 120 seconds. Add optional constructor max_calls/timeout_seconds; only tighten environment ceilings. Zero calls dispatch nothing; timeout must be positive and finite. Reject invalid/excessive values.
 - Distinguish omitted and explicit model. Validate explicit selection; do not infer omission by the default model string.
-- User chose caller-policy-wins: reuse a valid finite parent scope unchanged, including ledgeridentity/consumedcalls/deadline/model/cancellation; constructor limits governstandalone roots only. Reject incomplete/unboundedparentpolicy and conflicting explicit model beforedispatch.
-- All reachable planning/embedding/generation/revision/selection/judging/complexity/nestedcalls shareledger, chargedonce. Embeddings sharecounts without chat-model allowlisting. PreservezeroSDKretries and boundedexplicitretries/waits.
-- Normalize earlypolicytermination to safe non-successInteraction withunknownquality; preserve acceptedpartials on later stops. Checkdeadline/cancelbeforepublishingreturn, without rejecting exact-final-call success. Clean up ownedcontexts and preserveparentcontexts.
-- Cooperative deadlines enforceSDKremainingtimeouts and rejectlatereturns; no hardPythonpreemptionclaim.
+- User chose caller-policy-wins: reuse a valid finite parent scope unchanged, including ledger identity, consumed calls, deadline, model and cancellation. Constructor limits govern standalone roots only. Reject incomplete/unbounded parent policy and conflicting explicit model before dispatch.
+- All reachable planning, embedding, generation, revision, selection, judging, complexity and nested calls share the ledger, charged once. Embeddings share counts without chat-model allowlisting. Preserve zero SDK retries and bounded explicit retries/waits.
+- Normalize early policy termination to safe non-success Interaction with unknown quality; preserve accepted partials on later stops. Check deadline/cancellation before publishing a return, without rejecting exact-final-call success. Clean up owned contexts and preserve parent contexts.
+- Cooperative deadlines enforce SDK remaining timeouts and reject late returns; no hard Python preemption claim.
 
 ## Delivery and qualification
 
 - [x] Configuration contract with RED→GREEN regressions; commit.
 - [x] Standalone/main composition, early/late termination and cleanup; RED→GREEN; commit.
-- [ ] Real provider-only direct, nested, revision, exact-cap, timeout/retry, cancellation, concurrent-run and HTTP compatibility qualification; README literalexample; commit.
-- [ ] Guarded fullPython3.11/3.12, frontendguard/tests/lint/build, Chromium, productionimageCI, independentwholebranchreview andCRLFdiffchecks.
-- [ ] FocusedPR, exact-source qualification/evidence and documentedlimitations.
+- [x] Real provider-only direct, nested, revision, exact-cap, timeout/retry, cancellation, concurrent-run and HTTP compatibility qualification; literal README example.
+- [ ] Guarded full Python 3.11/3.12, frontend guard/tests/lint/build, Chromium, production-image CI, independent whole-branch review and CRLF diff checks.
+- [ ] Focused PR, exact-source qualification/evidence and documented limitations.
 
 ## Boundaries
 
-Preserve #48/#49result,ownership,revision,qualityandpartialdiagnostics. No paidcalls,deployment,merges,#35closure,newstreaming/shared-engineconcurrency/hardkill/durableresume. #50deliverables,#56/#57broaderconfig/setup,#59/#60/#61acceptance remainseparate. Useexistingoutboundguards anddeterministicfixtures;rootsoleproductionwriter, specialistsread-only.
+Preserve #48/#49 result, ownership, revision, quality and partial diagnostics. No paid calls, deployment, merges, #35 closure, new streaming, shared-engine concurrency, hard kill or durable resume. #50 deliverables, #56/#57 broader configuration/setup and #59/#60/#61 acceptance remain separate. Use existing outbound guards and deterministic fixtures; root is sole production writer, specialists are read-only.
