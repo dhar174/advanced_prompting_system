@@ -1409,7 +1409,7 @@ class PromptEngineeringConfig:
         max_steps: int = 20,
         initial_budget: int = 20,
         confidence_thresholds: Tuple[float, float, float] = (0.8, 0.5, 0.0),
-        model: str = "gpt-4o-mini",
+        model: Optional[str] = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         n: int = 3,
@@ -1418,6 +1418,8 @@ class PromptEngineeringConfig:
         agents: int = 3,
         complexity_factor: int = 5,
         max_sc_calls: int = 30,
+        max_calls: Optional[int] = None,
+        timeout_seconds: Optional[float] = None,
     ):
         """Initialize the configuration settings.
 
@@ -1437,7 +1439,13 @@ class PromptEngineeringConfig:
         self.max_steps = max_steps
         self.initial_budget = initial_budget
         self.confidence_thresholds = confidence_thresholds
-        self.model = model
+        self._model_explicit = model is not None
+        if model is not None and (not isinstance(model, str) or not model.strip()):
+            raise ValueError("model must be a nonempty identifier")
+        self.model = model.strip() if model is not None else "gpt-4o-mini"
+        provider_client.validate_standalone_limits(max_calls, timeout_seconds)
+        self.max_calls = max_calls
+        self.timeout_seconds = timeout_seconds
         self.temperature = temperature
         self.top_p = top_p
         self.n = n
