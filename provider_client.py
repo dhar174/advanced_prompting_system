@@ -68,6 +68,8 @@ def get_provider_config() -> ProviderConfig:
     allowed = [model.strip() for model in raw_allowed.split(",") if model.strip()] if raw_allowed.strip() else list(_DEFAULT_ALLOWED_MODELS)
     if default_model not in allowed and not raw_allowed.strip():
         allowed.insert(0, default_model)
+    if default_model not in allowed:
+        raise DisallowedModelError("APS_DEFAULT_MODEL is not permitted by APS_ALLOWED_MODELS")
 
     def number(name, default, conversion):
         raw = os.environ.get(name, "").strip()
@@ -199,6 +201,38 @@ def provider_execution_scope(
         yield ctx
     finally:
         _ACTIVE_EXECUTION_CONTEXT.reset(token)
+
+
+def validate_caller_policy(ctx: ProviderExecutionContext, requested_model: Optional[str] = None) -> None:
+    """Require a complete finite caller policy without replacing or tightening it."""
+    if not isinstance(ctx, ProviderExecutionContext):
+        raise ValueError("main() requires a real provider execution context")
+    if type(ctx.max_calls) is not int or ctx.max_calls < 0:
+        raise ValueError("main() requires a finite nonnegative caller call allowance")
+    if (ctx.deadline_monotonic is None or isinstance(ctx.deadline_monotonic, bool)
+            or not math.isfinite(ctx.deadline_monotonic)):
+        raise ValueError("main() requires a finite caller deadline")
+    if (not ctx.allowed_models or not all(isinstance(model, str) and model.strip() for model in ctx.allowed_models)
+            or ctx.default_model not in ctx.allowed_models):
+        raise ValueError("main() requires a valid caller model allowlist and default")
+    if ctx.temperature is not None and (isinstance(ctx.temperature, bool)
+            or not math.isfinite(ctx.temperature) or not 0 <= ctx.temperature <= 2):
+        raise ValueError("Caller temperature must be finite and between zero and two")
+    if requested_model is not None:
+        validate_model_for_context(requested_model, ctx)
+        if requested_model != ctx.default_model:
+            raise ValueError("Explicit engine model conflicts with the caller's selected model")
+
+
+def check_provider_liveness() -> None:
+    """Check cancellation/deadline without treating an exactly consumed cap as failure."""
+    ctx = _ACTIVE_EXECUTION_CONTEXT.get()
+    if ctx is None:
+        return
+    if ctx.cancel_check and ctx.cancel_check():
+        ctx.termination_reason = "cancelled"
+        raise RunCancelledError("Execution cancelled by caller.")
+    get_remaining_timeout()
 
 
 def validate_model_for_context(

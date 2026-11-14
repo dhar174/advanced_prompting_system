@@ -15,7 +15,7 @@ Approved in the conversation. Base: merged main `a85a913f673fe65afb22485b1e919f7
 ## Delivery and qualification
 
 - [x] Configuration contract with RED→GREEN regressions; commit.
-- [ ] Standalone/main composition, early/late termination and cleanup; RED→GREEN; commit.
+- [x] Standalone/main composition, early/late termination and cleanup; RED→GREEN; commit.
 - [ ] Real provider-only direct, nested, revision, exact-cap, timeout/retry, cancellation, concurrent-run and HTTP compatibility qualification; README literalexample; commit.
 - [ ] Guarded fullPython3.11/3.12, frontendguard/tests/lint/build, Chromium, productionimageCI, independentwholebranchreview andCRLFdiffchecks.
 - [ ] FocusedPR, exact-source qualification/evidence and documentedlimitations.

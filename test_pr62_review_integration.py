@@ -124,7 +124,7 @@ def test_reused_engine_resets_bookkeeping_and_keeps_shared_provider_ledger(live_
     from provider_client import provider_execution_scope
     _, _, ledger, _=live_graphql_client
     engineer=ap.AdvancedPromptEngineer(ap.PromptEngineeringConfig(agents=2, max_steps=1, initial_budget=1, n=1))
-    with provider_execution_scope(max_calls=300) as policy:
+    with provider_execution_scope(max_calls=300,timeout_seconds=120,allowed_models=("gpt-4o-mini",)) as policy:
         with scenario_scope("review_owned_artifact"):
             first=engineer.main("Design a verification strategy and risk analysis")
         assert first.status == "completed"
