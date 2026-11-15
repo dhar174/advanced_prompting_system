@@ -3,18 +3,17 @@
 ## Current Qualified Slice: Issue #51
 
 - Approved [finite standalone policy plan](../docs/superpowers/plans/2026-11-14-issue51-standalone-policy.md); branch `fix/issue-51-standalone-provider-policy`, merged-main base `a85a913`.
-- Implementation commits: `f821fd4` shared configuration, `c1fcadd` finite main boundary, `14a77dc` real-path qualification/review repairs, and current source `8f4300ac6c83d63f4ec50dbfeb90e79dc278cb83` numeric validation consistency.
-- At this documentation checkpoint, no #51 PR exists yet. Publication, exact-head CI, clean runtime image and downloaded evidence verification remain pending; later PR checks are authoritative.
+- Original implementation commits: `f821fd4` shared configuration, `c1fcadd` finite main boundary, `14a77dc` real-path qualification and `8f4300a` numeric validation. Current review-fix source: `684053885775b9b4e9e4b6888271b87883c0abcc`.
+- [PR #64](https://github.com/dhar174/advanced_prompting_system/pull/64) is open and unmerged. Its original `247bc73` head passed CI/evidence; current review-fix publication, CI/runtime image, downloaded evidence and comment closure remain pending at this checkpoint. Later PR checks are authoritative.
 
 | Verification | Verified current #51 result |
 |---|---|
-| Full guarded Python 3.12.14 | 504 passed in 55.51s |
-| Full guarded Python 3.11.18 | 504 passed in 74.95s |
+| Full guarded Python 3.12.14 | 525 passed in 57.59s |
+| Full guarded Python 3.11.18 | 525 passed in 70.47s |
 | Browser checks in each full suite | Ten: eight actual Chromium scenarios, ownership/CORS and manifest verification |
-| Focused configuration/direct/provider/integration checks | 76 passed in 7.69s |
-| Frontend Vitest | 147 passed across 17 files in 13.78s |
-| Frontend guard / lint / production build | Passed; build 7.64s; existing Browserslist warning |
-| Independent whole-branch review | Two accounting findings repaired RED→GREEN; final recheck has no remaining actionable findings |
+| Focused configuration/direct/provider/integration checks | 97 passed in 7.84s, including 21 new PR #64 cases |
+| Frontend Vitest / guard / lint / build | Prior 147 tests/17 files passed; no UI/API/configuration changes, so not locally repeated in this repair; current-head CI pending |
+| Independent review | Fresh review passed 21 review regressions in 8.62s; no actionable findings |
 | CRLF-aware diff | Clean |
 | Exact-head CI / clean runtime image / downloaded evidence | Pending at this checkpoint |
 
@@ -28,7 +27,8 @@ Local environments, NLP assets and browsers were reused. Frontend builds did not
 - [x] Context-bound reservation accounting, consistent consumed-count validation and no allowance replenishment across later work.
 - [x] Safe early/mid-run stops, partial preservation, unknown stopped quality, late-result rejection, cancellation, exact-last-call success, cleanup and independent simultaneous instances.
 - [x] Literal corrected README example runs with a deterministic SDK bootstrap; #48/#49 ownership/revision/metadata and protected HTTP regressions remain green.
-- [ ] Publish focused PR and verify exact-head CI/runtime image and downloaded browser evidence before declaring delivery complete.
+- [x] PR #64 callback/stats deadlock and termination locking, strict scope allowances and filename policy propagation repairs; nine policy and three filename failures witnessed before repair. Documented setup-only spaCy prerequisite while retaining production missing-model fallback.
+- [ ] Publish current review fixes, verify exact-head CI/runtime image and downloaded browser evidence, then reply individually and resolve verified review threads.
 
 ## Historical Milestones
 
@@ -38,7 +38,7 @@ Local environments, NLP assets and browsers were reused. Frontend builds did not
 
 ## Remaining Work and Acceptance
 
-- [ ] Complete #51 publication/current-head gates and human review; no #51 merge is claimed.
+- [ ] Complete PR #64 review replies/current-head gates and human review; no #51 merge is claimed.
 - [ ] #50 whole-task finalized deliverables is next. API/UI, configuration/setup/operations and broader acceptance evidence remain separate follow-ups.
 - [ ] Issue #35 remains open; #61 tracks final requirements disposition and human acceptance.
 - [ ] #36 ToT remains gated. No paid/live calls, deployment, merge or #35 closure occurred in this slice.

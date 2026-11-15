@@ -27,7 +27,19 @@ The timeout contract is cooperative: SDK timeouts receive remaining time, late r
 
 Direct integration fixtures replace only the SDK/provider below orchestration. They do not replace the dispatcher, main loop, conversation runner, selection, judges or registry reader. Narrow cleanup units are labeled separately. Existing outbound guards are unchanged.
 
-Independent whole-branch review found two additional accounting gaps: ambient reservations bypassing some charges and invalid consumed counts entering a parent policy. Both received witnessed failing regressions and repairs, together with malformed-number validation controls. Final independent re-review found no remaining actionable findings; it separately passed 66 configuration/boundary/provider checks and nine integration scenarios. A final numeric consistency regression also proves an extremely large constructor timeout raises a clear ValueError rather than overflowing during validation.
+Before PR publication, independent whole-branch review found two additional accounting gaps: ambient reservations bypassing some charges and invalid consumed counts entering a parent policy. Both received witnessed failing regressions and repairs, together with malformed-number validation controls. Final independent re-review found no remaining actionable findings; it separately passed 66 configuration/boundary/provider checks and nine integration scenarios. A final numeric consistency regression also proves an extremely large constructor timeout raises a clear ValueError rather than overflowing during validation.
+
+## PR 64 review repairs
+
+Antigravity's review of published head `247bc73` identified three further repairs and the qualification prerequisite documented below. Fix source: `684053885775b9b4e9e4b6888271b87883c0abcc`.
+
+- The context uses a reentrant lock so a cancellation callback can synchronously call `get_execution_stats()` without deadlocking. Cancellation, timeout and disallowed-model termination updates use that same lock; SDK calls remain outside it. Shared deadline checks replace duplicate unlocked post-call updates and preserve exact-last-call success.
+- `provider_execution_scope(max_calls=...)` accepts only `None` or an exact nonnegative integer. Booleans, fractions, numeric strings, negatives and nonfinite values fail before installing a new context. Omission, zero and trusted caller allowances such as 300 remain supported; the standalone environment ceiling does not constrain an existing caller policy.
+- Plan-step finalization now has one shared filename-generation block. Policy exceptions propagate immediately instead of producing a synthetic filename; ordinary helper errors retain the existing fallback.
+
+`test_pr64_review_regressions.py` has 21 cases. Four bounded subprocesses reproduce the former callback/stats deadlock without leaving hung workers. SDK-backed tests retain one billed/dispatched call before cancellation in direct/reserved paths, and two actual calls before budget/timeout/cancellation at filename generation. Strict-scope tests preserve the parent on failure and cover `None`/0/300; an ordinary filename error still returns its fallback. Nine initial failures and three filename failures were witnessed before repair. The aggregate focused run passed 97 cases; a fresh independent reviewer separately passed all 21 review regressions and found no actionable findings at the fix source. The PR description records full-suite and exact-head CI results after qualification.
+
+At the review-fix source, full guarded suites passed **525 tests on Python 3.12.14 (57.59s) and Python 3.11.18 (70.47s)**, each including the ten browser-suite checks. CRLF-aware diff checks are clean. No frontend/API/configuration files changed in this repair, so local frontend checks were not repeated; the new-head CI still qualifies the frontend, browser and clean production image. At this documentation checkpoint, that new-head CI and remote review replies remain pending; the PR description and replies record their final outcomes.
 
 ## Verification and remaining gates
 
