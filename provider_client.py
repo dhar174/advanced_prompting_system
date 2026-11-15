@@ -12,10 +12,13 @@ import contextvars
 from dataclasses import dataclass, field
 from functools import lru_cache
 import inspect
+import math
 import os
 import threading
 import time
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
+
+from pydantic import BaseModel, Field, model_validator
 
 
 class ProviderPolicyError(RuntimeError):
@@ -38,6 +41,84 @@ class DisallowedModelError(ValueError):
     """Raised when a client or caller requests a model outside the allowlist."""
 
 
+_DEFAULT_ALLOWED_MODELS = ("gpt-4o-mini", "gpt-4o", "o3-mini")
+
+
+class ProviderConfig(BaseModel):
+    """Canonical server-owned model policy and standalone execution ceilings."""
+    default_model: str = "gpt-4o-mini"
+    allowed_models: List[str] = Field(default_factory=lambda: list(_DEFAULT_ALLOWED_MODELS))
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0, allow_inf_nan=False)
+    timeout_seconds: float = Field(default=120.0, gt=0.0, le=600.0, allow_inf_nan=False)
+    max_calls: int = Field(default=40, ge=1, le=200, strict=True)
+
+    @model_validator(mode="after")
+    def validate_models(self):
+        if not self.default_model.strip() or not self.allowed_models or any(not model.strip() for model in self.allowed_models):
+            raise ValueError("Provider model identifiers must be nonempty")
+        if self.default_model not in self.allowed_models:
+            raise ValueError("Default provider model must be in APS_ALLOWED_MODELS")
+        return self
+
+
+def get_provider_config() -> ProviderConfig:
+    """Read canonical environment settings, rejecting invalid policy values."""
+    default_model = os.environ.get("APS_DEFAULT_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
+    raw_allowed = os.environ.get("APS_ALLOWED_MODELS", "")
+    allowed = [model.strip() for model in raw_allowed.split(",") if model.strip()] if raw_allowed.strip() else list(_DEFAULT_ALLOWED_MODELS)
+    if default_model not in allowed and not raw_allowed.strip():
+        allowed.insert(0, default_model)
+    if default_model not in allowed:
+        raise DisallowedModelError("APS_DEFAULT_MODEL is not permitted by APS_ALLOWED_MODELS")
+
+    def number(name, default, conversion):
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            return default
+        try:
+            value = conversion(raw)
+        except (ValueError, OverflowError):
+            raise ValueError(f"{name} must contain a valid numeric policy value") from None
+        if conversion is float and not math.isfinite(value):
+            raise ValueError(f"{name} must be finite")
+        return value
+
+    return ProviderConfig(default_model=default_model, allowed_models=allowed,
+        temperature=number("APS_DEFAULT_TEMPERATURE", 0.7, float),
+        timeout_seconds=number("APS_PROVIDER_TIMEOUT_SECONDS", 120.0, float),
+        max_calls=number("APS_PROVIDER_MAX_CALLS", 40, int))
+
+
+def validate_provider_model(requested_model: Optional[str], config: Optional[ProviderConfig] = None) -> str:
+    cfg = config or get_provider_config()
+    candidate = str(requested_model or "").strip() or cfg.default_model
+    if candidate not in cfg.allowed_models:
+        raise DisallowedModelError(f"Requested model '{candidate}' is not permitted. Allowed models: {', '.join(cfg.allowed_models)}.")
+    return candidate
+
+
+def validate_standalone_limits(max_calls=None, timeout_seconds=None) -> None:
+    if max_calls is not None and (type(max_calls) is not int or not 0 <= max_calls <= 200):
+        raise ValueError("max_calls must be an integer from 0 through 200")
+    if timeout_seconds is not None and (not _finite_number(timeout_seconds)
+            or not 0 < timeout_seconds <= 600):
+        raise ValueError("timeout_seconds must be finite, positive and at most 600")
+
+
+def resolve_standalone_policy(requested_model=None, max_calls=None, timeout_seconds=None) -> Dict[str, Any]:
+    """Resolve a new root policy; explicit limits can only tighten environment ceilings."""
+    validate_standalone_limits(max_calls, timeout_seconds)
+    cfg = get_provider_config()
+    if max_calls is not None and max_calls > cfg.max_calls:
+        raise ValueError("max_calls exceeds APS_PROVIDER_MAX_CALLS")
+    if timeout_seconds is not None and timeout_seconds > cfg.timeout_seconds:
+        raise ValueError("timeout_seconds exceeds APS_PROVIDER_TIMEOUT_SECONDS")
+    return {"default_model": validate_provider_model(requested_model, cfg),
+            "allowed_models": tuple(cfg.allowed_models), "temperature": cfg.temperature,
+            "max_calls": cfg.max_calls if max_calls is None else max_calls,
+            "timeout_seconds": cfg.timeout_seconds if timeout_seconds is None else timeout_seconds}
+
+
 @dataclass
 class ProviderExecutionContext:
     """Request-scoped provider policy, shared call ledger, and deadline state."""
@@ -52,14 +133,15 @@ class ProviderExecutionContext:
     cancel_check: Optional[Callable[[], bool]] = None
     termination_reason: Optional[str] = None
     recorded_calls: List[Dict[str, Any]] = field(default_factory=list)
-    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+    # Cancellation callbacks may synchronously inspect get_execution_stats().
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
 
 _ACTIVE_EXECUTION_CONTEXT: contextvars.ContextVar[Optional[ProviderExecutionContext]] = (
     contextvars.ContextVar("aps_provider_execution_context", default=None)
 )
-_IN_RESERVED_CALL: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "aps_in_reserved_provider_call", default=False
+_IN_RESERVED_CALL: contextvars.ContextVar[Optional[ProviderExecutionContext]] = contextvars.ContextVar(
+    "aps_in_reserved_provider_call", default=None
 )
 
 
@@ -80,6 +162,8 @@ def provider_execution_scope(
     deadline_monotonic: Optional[float] = None,
 ) -> Iterator[ProviderExecutionContext]:
     """Establish a request-scoped provider policy and shared call ledger with cleanup."""
+    if max_calls is not None and (type(max_calls) is not int or max_calls < 0):
+        raise ValueError("max_calls must be a nonnegative integer or None")
     normalized_allowed: Optional[Tuple[str, ...]] = None
     if allowed_models is not None:
         cleaned = tuple(str(m).strip() for m in allowed_models if str(m or "").strip())
@@ -102,17 +186,13 @@ def provider_execution_scope(
         else:
             computed_deadline = time.monotonic()
 
-    resolved_max_calls: Optional[int] = None
-    if max_calls is not None:
-        resolved_max_calls = max(int(max_calls), 0)
-
     ctx = ProviderExecutionContext(
         default_model=resolved_default,
         allowed_models=normalized_allowed,
         temperature=float(temperature) if temperature is not None else None,
         timeout_seconds=float(timeout_seconds) if timeout_seconds is not None else None,
         deadline_monotonic=computed_deadline,
-        max_calls=resolved_max_calls,
+        max_calls=max_calls,
         cancel_check=cancel_check,
     )
     token = _ACTIVE_EXECUTION_CONTEXT.set(ctx)
@@ -120,6 +200,62 @@ def provider_execution_scope(
         yield ctx
     finally:
         _ACTIVE_EXECUTION_CONTEXT.reset(token)
+
+
+@contextlib.contextmanager
+def unreserved_run_scope():
+    """A whole engine run is not the SDK attempt reserved by an ambient caller."""
+    token = _IN_RESERVED_CALL.set(None)
+    try:
+        yield
+    finally:
+        _IN_RESERVED_CALL.reset(token)
+
+
+def _finite_number(value) -> bool:
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def validate_caller_policy(ctx: ProviderExecutionContext, requested_model: Optional[str] = None) -> None:
+    """Require a complete finite caller policy without replacing or tightening it."""
+    if not isinstance(ctx, ProviderExecutionContext):
+        raise ValueError("main() requires a real provider execution context")
+    if type(ctx.max_calls) is not int or ctx.max_calls < 0:
+        raise ValueError("main() requires a finite nonnegative caller call allowance")
+    with ctx._lock:
+        if type(ctx.calls_made) is not int or ctx.calls_made < 0:
+            raise ValueError("Caller consumed count must be a nonnegative integer")
+        if not isinstance(ctx.recorded_calls, list) or len(ctx.recorded_calls) != ctx.calls_made:
+            raise ValueError("Caller consumed count does not match its provider ledger")
+    if not _finite_number(ctx.deadline_monotonic):
+        raise ValueError("main() requires a finite caller deadline")
+    if (not isinstance(ctx.allowed_models, (tuple, list)) or not ctx.allowed_models
+            or not all(isinstance(model, str) and model.strip() for model in ctx.allowed_models)
+            or ctx.default_model not in ctx.allowed_models):
+        raise ValueError("main() requires a valid caller model allowlist and default")
+    if ctx.temperature is not None and (not _finite_number(ctx.temperature) or not 0 <= ctx.temperature <= 2):
+        raise ValueError("Caller temperature must be finite and between zero and two")
+    if requested_model is not None:
+        validate_model_for_context(requested_model, ctx)
+        if requested_model != ctx.default_model:
+            raise ValueError("Explicit engine model conflicts with the caller's selected model")
+
+
+def check_provider_liveness() -> None:
+    """Check cancellation/deadline without treating an exactly consumed cap as failure."""
+    ctx = _ACTIVE_EXECUTION_CONTEXT.get()
+    if ctx is None:
+        return
+    with ctx._lock:
+        if ctx.cancel_check and ctx.cancel_check():
+            ctx.termination_reason = "cancelled"
+            raise RunCancelledError("Execution cancelled by caller.")
+        get_remaining_timeout()
 
 
 def validate_model_for_context(
@@ -130,13 +266,14 @@ def validate_model_for_context(
     candidate = str(model or "").strip()
     if not candidate:
         return active.default_model if active else None
-    if active and active.allowed_models:
-        if candidate not in active.allowed_models:
-            active.termination_reason = "disallowed_model"
-            raise DisallowedModelError(
-                f"Requested model '{candidate}' is not permitted. "
-                f"Allowed models: {', '.join(active.allowed_models)}."
-            )
+    if active:
+        with active._lock:
+            if active.allowed_models and candidate not in active.allowed_models:
+                active.termination_reason = "disallowed_model"
+                raise DisallowedModelError(
+                    f"Requested model '{candidate}' is not permitted. "
+                    f"Allowed models: {', '.join(active.allowed_models)}."
+                )
     return candidate
 
 
@@ -170,11 +307,12 @@ def get_remaining_timeout() -> Optional[float]:
     ctx = _ACTIVE_EXECUTION_CONTEXT.get()
     if ctx is None or ctx.deadline_monotonic is None:
         return None
-    remaining = float(ctx.deadline_monotonic) - time.monotonic()
-    if remaining <= 0:
-        ctx.termination_reason = "timeout"
-        raise RunTimeoutError("Execution timeout exceeded during provider run.")
-    return remaining
+    with ctx._lock:
+        remaining = float(ctx.deadline_monotonic) - time.monotonic()
+        if remaining <= 0:
+            ctx.termination_reason = "timeout"
+            raise RunTimeoutError("Execution timeout exceeded during provider run.")
+        return remaining
 
 
 def check_provider_budget() -> None:
@@ -249,14 +387,10 @@ def reserve_call_scope(
     effective_model = consume_provider_call(
         model=model, call_type=call_type, validate_model=validate_model
     )
-    token = _IN_RESERVED_CALL.set(True)
+    token = _IN_RESERVED_CALL.set(_ACTIVE_EXECUTION_CONTEXT.get())
     try:
         yield effective_model
-        ctx = _ACTIVE_EXECUTION_CONTEXT.get()
-        if ctx is not None and ctx.deadline_monotonic is not None:
-            if time.monotonic() >= float(ctx.deadline_monotonic):
-                ctx.termination_reason = "timeout"
-                raise RunTimeoutError("Execution timeout exceeded during provider call.")
+        get_remaining_timeout()
     finally:
         _IN_RESERVED_CALL.reset(token)
 
@@ -360,10 +494,8 @@ class LazyClient:
         is_chat_call = len(self._path) > 0 and self._path[0] in ("chat", "beta")
         req_model = kwargs.get("model")
 
-        if _IN_RESERVED_CALL.get():
-            if ctx.cancel_check and ctx.cancel_check():
-                ctx.termination_reason = "cancelled"
-                raise RunCancelledError("Execution cancelled by caller.")
+        if _IN_RESERVED_CALL.get() is ctx:
+            check_provider_liveness()
             if is_chat_call and req_model is not None:
                 validate_model_for_context(req_model, ctx)
         else:
@@ -386,7 +518,5 @@ class LazyClient:
                 kwargs["timeout"] = remaining
 
         result = resource(*args, **kwargs)
-        if ctx.deadline_monotonic is not None and time.monotonic() >= float(ctx.deadline_monotonic):
-            ctx.termination_reason = "timeout"
-            raise RunTimeoutError("Execution timeout exceeded during provider call.")
+        get_remaining_timeout()
         return result

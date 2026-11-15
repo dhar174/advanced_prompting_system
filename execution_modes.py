@@ -36,6 +36,9 @@ from output_generator import (
 import provider_client
 from provider_client import (
     DisallowedModelError,
+    ProviderConfig,
+    get_provider_config,
+    validate_provider_model,
     RunBudgetExceededError,
     RunCancelledError,
     RunTimeoutError,
@@ -70,19 +73,6 @@ MAX_NUM_ROUNDS = 10
 MAX_PIPELINE_STEPS = 50
 MAX_INITIAL_BUDGET = 50
 MAX_AGENTS = 10
-_DEFAULT_ALLOWED_MODELS = ("gpt-4o-mini", "gpt-4o", "o3-mini")
-
-
-class ProviderConfig(BaseModel):
-    """Server-owned provider configuration, model allowlist, and execution ceilings."""
-
-    default_model: str = Field(default="gpt-4o-mini")
-    allowed_models: List[str] = Field(default_factory=lambda: list(_DEFAULT_ALLOWED_MODELS))
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
-    timeout_seconds: float = Field(default=120.0, gt=0.0, le=600.0)
-    max_calls: int = Field(default=40, ge=1, le=200)
-
-
 class ProviderUnavailableError(RuntimeError):
     """Raised when live provider execution is requested without configured credentials."""
 
@@ -191,58 +181,6 @@ def _build_safe_error_artifacts(
     )
     return error_obj, error_event
 
-
-def get_provider_config() -> ProviderConfig:
-    """Resolve server-owned provider policy from environment variables."""
-    default_model = os.environ.get("APS_DEFAULT_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
-    raw_allowed = os.environ.get("APS_ALLOWED_MODELS", "")
-    if raw_allowed.strip():
-        allowed = [m.strip() for m in raw_allowed.split(",") if m.strip()]
-    else:
-        allowed = list(_DEFAULT_ALLOWED_MODELS)
-    if default_model not in allowed and not raw_allowed.strip():
-        allowed.insert(0, default_model)
-
-    def _safe_float(env_key: str, default: float, lo: float, hi: float) -> float:
-        raw = os.environ.get(env_key, "")
-        if not raw.strip():
-            return default
-        try:
-            val = float(raw)
-            return min(max(val, lo), hi)
-        except ValueError:
-            return default
-
-    def _safe_int(env_key: str, default: int, lo: int, hi: int) -> int:
-        raw = os.environ.get(env_key, "")
-        if not raw.strip():
-            return default
-        try:
-            val = int(raw)
-            return min(max(val, lo), hi)
-        except ValueError:
-            return default
-
-    return ProviderConfig(
-        default_model=default_model,
-        allowed_models=allowed,
-        temperature=_safe_float("APS_DEFAULT_TEMPERATURE", 0.7, 0.0, 2.0),
-        timeout_seconds=_safe_float("APS_PROVIDER_TIMEOUT_SECONDS", 120.0, 0.05, 600.0),
-        max_calls=_safe_int("APS_PROVIDER_MAX_CALLS", 40, 1, 200),
-    )
-
-
-def validate_provider_model(
-    requested_model: Optional[str], config: Optional[ProviderConfig] = None
-) -> str:
-    """Resolve and strictly enforce the server-owned model allowlist."""
-    cfg = config or get_provider_config()
-    candidate = str(requested_model or "").strip() or cfg.default_model
-    if candidate not in cfg.allowed_models:
-        raise DisallowedModelError(
-            f"Requested model '{candidate}' is not permitted. Allowed models: {', '.join(cfg.allowed_models)}."
-        )
-    return candidate
 
 RunEventType = Literal[
     "mode_selected",

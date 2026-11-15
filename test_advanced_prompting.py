@@ -1860,11 +1860,8 @@ class TestPR39EngineAndSelfConsistency(unittest.TestCase):
         with patch(
             "advanced_prompting.output_type_determination",
             return_value=OutputType(output_type="Simple Concise Answer", file_extension=".txt"),
-        ), patch.object(
-            provider_client,
-            "get_active_execution_context",
-            return_value=SimpleNamespace(allowed_models=("gpt-4o-mini",)),
-            create=True,
+        ), provider_client.provider_execution_scope(
+            default_model="gpt-4o-mini",allowed_models=("gpt-4o-mini",),max_calls=300,timeout_seconds=120,
         ), patch.object(
             provider_client,
             "get_effective_model",

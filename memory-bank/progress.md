@@ -1,43 +1,44 @@
 # Project Progress & Baselines (`advanced_prompting_system`)
 
-## Current Qualified Slice: Issue #49
+## Current Qualified Slice: Issue #51
 
-- Approved [atomic revisions plan](../docs/superpowers/plans/2026-11-14-issue49-atomic-revisions.md); branch `fix/issue-49-atomic-revisions`, base `fddf9f9`.
-- Implementation commits: `10cab82` typed correction, `b01b5b5` deep isolation/controller allowances, and current `0980b4e0ff222188e880cc68266c3ff044e25ca2` HTTP/browser qualification and review repairs.
-- No #49 PR yet. PR creation, current-head CI/runtime image and human review remain pending; implementation does not establish #35 acceptance.
+- Approved [finite standalone policy plan](../docs/superpowers/plans/2026-11-14-issue51-standalone-policy.md); branch `fix/issue-51-standalone-provider-policy`, merged-main base `a85a913`.
+- Original implementation commits: `f821fd4` shared configuration, `c1fcadd` finite main boundary, `14a77dc` real-path qualification and `8f4300a` numeric validation. Current review-fix source: `684053885775b9b4e9e4b6888271b87883c0abcc`.
+- [PR #64](https://github.com/dhar174/advanced_prompting_system/pull/64) is open and unmerged. Its original `247bc73` head passed CI/evidence; current review-fix publication, CI/runtime image, downloaded evidence and comment closure remain pending at this checkpoint. Later PR checks are authoritative.
 
-| Verification | Verified current #49 result |
+| Verification | Verified current #51 result |
 |---|---|
-| Full guarded Python 3.12.14 | 439 passed in 54.81s |
-| Full guarded Python 3.11.18 | 439 passed in 76.99s |
-| Browser checks included in full count | Ten: eight Chromium scenarios, non-browser ownership/CORS and manifest verification |
-| Two new Chromium revision cases | Passed separately in 13.17s; also included in full suite |
-| Focused owning/real-HTTP qualification | 95 passed in 8.93s |
-| Frontend Vitest | 147 passed across 17 files |
-| Frontend guard, lint, TypeScript/production build | Passed |
-| Independent review | Four findings witnessed RED→GREEN; final re-review found no remaining blockers in this slice |
-| Current-head CI / runtime-image qualification | Pending at this documentation checkpoint; later PR checks are authoritative |
+| Full guarded Python 3.12.14 | 525 passed in 57.59s |
+| Full guarded Python 3.11.18 | 525 passed in 70.47s |
+| Browser checks in each full suite | Ten: eight actual Chromium scenarios, ownership/CORS and manifest verification |
+| Focused configuration/direct/provider/integration checks | 97 passed in 7.84s, including 21 new PR #64 cases |
+| Frontend Vitest / guard / lint / build | Prior 147 tests/17 files passed; no UI/API/configuration changes, so not locally repeated in this repair; current-head CI pending |
+| Independent review | Fresh review passed 21 review regressions in 8.62s; no actionable findings |
+| CRLF-aware diff | Clean |
+| Exact-head CI / clean runtime image / downloaded evidence | Pending at this checkpoint |
 
-Configured environments, NLP assets and browser binaries were reused. Use the guarded wrappers; install assets during setup rather than test execution. Earlier local Docker setup failures are not image passes. Retained execution evidence: ignored `.qualification/issue49/progress.md` and associated logs.
+Local environments, NLP assets and browsers were reused. Frontend builds did not overlap browser runs. Use guarded wrappers; install assets during setup. Retained local evidence is under ignored `.qualification/issue51/`; local tests do not prove a clean image build.
 
-## Implemented and Verified in This Slice
+## Implemented and Verified
 
-- [x] Iterative typed correction over actual accepted content, lossless legacy projection and absolute controller-owned version ceiling (default five); attempts remain monotonic and share the provider call ledger.
-- [x] User-selected frozen-requirement no-regression rule: keep every previously passed check and improve a failed check; changed/missing requirements, ties, regressions or unknown evaluation cannot replace accepted state.
-- [x] Deep candidate/task/plan/step/reflection/output/metadata isolation, including empty/restart/rejection paths; explicit zero allowances do not dispatch and authored counts cannot replenish budget.
-- [x] Independently judged answer-plus-all-steps reward acceptance; measured 0.61 survives model-authored 1.0. Existing nullable-quality, artifact-filtering and typed-failure regressions remain green.
-- [x] Provider-only HTTP and built-UI browser proof for accepted/rejected revisions; four final review repairs and zero/invalid-config controls reproduced before repair.
-- [ ] Publish the focused PR/evidence and verify its exact-head CI/runtime image before claiming readiness.
+- [x] Canonical provider configuration/model validation in `provider_client.py`, compatibility exports, strict environment values and optional tighten-only standalone limits.
+- [x] Supported direct main boundary before early provider work; valid finite caller context wins unchanged; incomplete/unbounded/malformed parent policies fail before dispatch.
+- [x] One ledger/deadline across real solo/team, multi-step, revision, selection/judging and embedding calls; zero SDK retries and bounded explicit retries/waits.
+- [x] Context-bound reservation accounting, consistent consumed-count validation and no allowance replenishment across later work.
+- [x] Safe early/mid-run stops, partial preservation, unknown stopped quality, late-result rejection, cancellation, exact-last-call success, cleanup and independent simultaneous instances.
+- [x] Literal corrected README example runs with a deterministic SDK bootstrap; #48/#49 ownership/revision/metadata and protected HTTP regressions remain green.
+- [x] PR #64 callback/stats deadlock and termination locking, strict scope allowances and filename policy propagation repairs; nine policy and three filename failures witnessed before repair. Documented setup-only spaCy prerequisite while retaining production missing-model fallback.
+- [ ] Publish current review fixes, verify exact-head CI/runtime image and downloaded browser evidence, then reply individually and resolve verified review threads.
 
-## Historical Milestones, Not Current Acceptance Claims
+## Historical Milestones
 
-#48 is closed and [PR #62](https://github.com/dhar174/advanced_prompting_system/pull/62) is merged. It established typed collaboration results, owned output conversion, selected metadata and safe partial outcomes. Prior #48 snapshots of 342 and 389 tests per Python version, and earlier 243/126 or 294/147 backend/frontend counts, are historical evidence rather than the current #49 baseline. Earlier green CI must not be presented as current-head qualification.
+#48 / [PR #62](https://github.com/dhar174/advanced_prompting_system/pull/62) and #49 / [PR #63](https://github.com/dhar174/advanced_prompting_system/pull/63) are merged; both issues are closed. They established typed owned collaboration results, selected plan-linked metadata, atomic no-regression corrections, deep candidate isolation and truthful evaluator quality. The previous 439-test #49 baseline and older counts are historical evidence, not current-head qualification.
 
-The #34/#38 stabilization and #39–#41 review-repair stack established useful guarded API/browser infrastructure; the original-scope audit still found acceptance defects despite green maintained suites. A narrow no-introduced-blocker review is not full-issue acceptance.
+#34/#38 and the #39–#41 review stack established guarded API/browser infrastructure. Subsequent audits still found #35 acceptance defects despite green maintained suites. Neither historical CI nor a narrow review establishes original-scope acceptance.
 
 ## Remaining Work and Acceptance
 
-- [ ] #49 qualification/publication and human review; no current-slice merge is claimed.
-- [ ] Issue #35 remains open with follow-ups #44–#61. Next priorities: #51, then #50; remaining API/UI/configuration/evidence work stays outside this slice.
-- [ ] Original-scope human acceptance remains outstanding.
-- [ ] #36 ToT stays gated; backend cancellation/durable resume remain unsupported. No paid/live calls, deployment or #49 merge occurred here.
+- [ ] Complete PR #64 review replies/current-head gates and human review; no #51 merge is claimed.
+- [ ] #50 whole-task finalized deliverables is next. API/UI, configuration/setup/operations and broader acceptance evidence remain separate follow-ups.
+- [ ] Issue #35 remains open; #61 tracks final requirements disposition and human acceptance.
+- [ ] #36 ToT remains gated. No paid/live calls, deployment, merge or #35 closure occurred in this slice.

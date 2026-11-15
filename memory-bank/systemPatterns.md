@@ -22,6 +22,15 @@ User / GraphQL Client (React 19 + Apollo)
 - `LazyClient` defers `openai.OpenAI()` construction until a method call (`chat.completions.create`, `beta.chat.completions.parse`, `embeddings.create`) occurs.
 - Module imports must never require `OPENAI_API_KEY` or open network sockets.
 
+### Finite Supported Execution Boundary
+- `provider_client.py` owns canonical provider configuration and model validation; `execution_modes.py` re-exports compatibility names. Keep orchestration imports out of the core engine.
+- `AdvancedPromptEngineer.main(task)` establishes one finite provider scope before retrieval/planning when standalone, or reuses a complete validated caller policy unchanged. Constructor limits tighten standalone environment ceilings; they do not reset or tighten caller-owned context state.
+- All provider work shares one controller ledger and monotonic deadline. SDK retries are zero; explicit attempts are charged. Embedding model IDs do not use the chat-model allowlist.
+- Bind a single-call reservation to its active context, and suspend/restore ambient reservations around an entire main run. Otherwise a reservation can accidentally exempt multiple SDK calls. Validate consumed counts against the existing ledger before composing a parent policy.
+- Use a reentrant context lock: cancellation callbacks may synchronously read execution stats under that same lock. Keep every termination-state write locked and SDK calls outside the lock. Scope call allowances accept only `None` or exact nonnegative integers; do not coerce bools/fractions/strings or clamp trusted parent values to standalone ceilings.
+- Normalize early budget/deadline/cancellation stops into safe non-success Interactions with unknown quality, retain accepted partial work on later stops and check deadline/cancellation before publication. Exhausting the exact final call is compatible with success. The deadline is cooperative; no hard Python preemption is promised.
+- Optional filename generation must propagate policy exceptions before ordinary fallback handling; a synthetic fallback must not hide budget exhaustion, timeout or cancellation.
+
 ### Process-Level Socket/DNS Denial (`tools/offline/`)
 - `tools/offline/sitecustomize.py` sets `sys._aps_network_guard = True` and hooks Python `socket` / DNS functions to raise `NetworkForbidden(BaseException)` on non-loopback connections.
 - `conftest.py` fails collection if `sys._aps_network_guard` is missing, patches `provider_client.get_client` to fail on unscripted calls (`forbid_unconfigured_provider`), and isolates working directories via `monkeypatch.chdir(tmp_path)`.

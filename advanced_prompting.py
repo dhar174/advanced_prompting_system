@@ -1378,7 +1378,9 @@ class PromptEngineeringConfig:
                 0.5,  # Medium confidence threshold
                 0.0   # Low confidence threshold
             ))
-        model (str): Name of the language model to use (default: "gpt-4o-mini")
+        model (str): Explicit model selection; omission inherits the active/root policy.
+        max_calls (Optional[int]): Standalone root allowance, bounded by server policy.
+        timeout_seconds (Optional[float]): Standalone root deadline, bounded by server policy.
         temperature (float): Sampling temperature for response generation (default: 0.7)
         top_p (float): Top-p (nucleus) sampling parameter (default: 0.9)
         n (int): Number of self-consistent samples to generate (default: 3)
@@ -1409,7 +1411,7 @@ class PromptEngineeringConfig:
         max_steps: int = 20,
         initial_budget: int = 20,
         confidence_thresholds: Tuple[float, float, float] = (0.8, 0.5, 0.0),
-        model: str = "gpt-4o-mini",
+        model: Optional[str] = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         n: int = 3,
@@ -1418,6 +1420,8 @@ class PromptEngineeringConfig:
         agents: int = 3,
         complexity_factor: int = 5,
         max_sc_calls: int = 30,
+        max_calls: Optional[int] = None,
+        timeout_seconds: Optional[float] = None,
     ):
         """Initialize the configuration settings.
 
@@ -1437,7 +1441,13 @@ class PromptEngineeringConfig:
         self.max_steps = max_steps
         self.initial_budget = initial_budget
         self.confidence_thresholds = confidence_thresholds
-        self.model = model
+        self._model_explicit = model is not None
+        if model is not None and (not isinstance(model, str) or not model.strip()):
+            raise ValueError("model must be a nonempty identifier")
+        self._model = model.strip() if model is not None else "gpt-4o-mini"
+        provider_client.validate_standalone_limits(max_calls, timeout_seconds)
+        self.max_calls = max_calls
+        self.timeout_seconds = timeout_seconds
         self.temperature = temperature
         self.top_p = top_p
         self.n = n
@@ -1448,6 +1458,17 @@ class PromptEngineeringConfig:
         if type(max_sc_calls) is not int or max_sc_calls < 0:
             raise ValueError("max_sc_calls must be a nonnegative integer")
         self.max_sc_calls = max_sc_calls
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    @model.setter
+    def model(self, value: str) -> None:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("model must be a nonempty identifier")
+        self._model = value.strip()
+        self._model_explicit = True
 
 
 # CompnentType represents a category of different final output component types, ie. whether the output is its own standalone file, a part of a larger file, or a response to a prompt.
@@ -2026,21 +2047,9 @@ class AdvancedPromptEngineer:
         return getter() if callable(getter) else None
 
     def _effective_model(self, *, use_config_model: bool = False) -> str:
-        ctx = self._get_active_policy_context()
-        get_eff = getattr(provider_client, "get_effective_model", None)
-        cfg_model = getattr(self.config, "model", "gpt-4o-mini") or "gpt-4o-mini"
-        if not use_config_model:
-            if callable(get_eff):
-                return get_eff(explicit=None, fallback=cfg_model)
-            return cfg_model
-        explicit: Optional[str] = cfg_model
-        if ctx is not None and cfg_model == "gpt-4o-mini":
-            allowed = getattr(ctx, "allowed_models", None) or ()
-            if allowed and "gpt-4o-mini" not in allowed:
-                explicit = None
-        if callable(get_eff):
-            return get_eff(explicit=explicit, fallback=cfg_model)
-        return cfg_model
+        cfg_model = self.config.model
+        explicit = cfg_model if use_config_model and self.config._model_explicit else None
+        return provider_client.get_effective_model(explicit=explicit, fallback=cfg_model)
 
     def _check_policy_budget(self) -> None:
         checker = getattr(provider_client, "check_provider_budget", None)
@@ -3896,25 +3905,16 @@ class AdvancedPromptEngineer:
                 file_name="",
                 parent_file_name="",
             )
-            try:
-                final_output.file_name = self.name_file(
-                    final_output.final_output, task.output_type.file_extension
-                )
-                # if final_output.component_type in
-            except Exception as e:
-                print_saver.print_and_store(f"Error: {e}")
-                final_output.file_name = f"planstep_{plan_step.step_number}_output{task.output_type.file_extension}"
-
-            return final_output
-        else:
-            try:
-                final_output.file_name = self.name_file(
-                    final_output.final_output, task.output_type.file_extension
-                )
-            except Exception as e:
-                print_saver.print_and_store(f"Error: {e}")
-                final_output.file_name = f"planstep_{plan_step.step_number}_output{task.output_type.file_extension}"
-            return final_output
+        try:
+            final_output.file_name = self.name_file(
+                final_output.final_output, task.output_type.file_extension
+            )
+        except self._policy_exception_types():
+            raise
+        except Exception as e:
+            print_saver.print_and_store(f"Error: {e}")
+            final_output.file_name = f"planstep_{plan_step.step_number}_output{task.output_type.file_extension}"
+        return final_output
 
     def judge_step_completion(
         self, step: List[Step], plan_step: PlanStep, max_plan_steps: int
@@ -8351,9 +8351,48 @@ Task: {task}
             raise RuntimeError(f"Error in merging interactions: {e}")
 
     def main(self, task: str) -> Interaction:
-        scope = contextlib.nullcontext() if get_active_run_id() else artifact_run_scope(None)
-        with scope:
-            return self._main_impl(task)
+        """Supported direct-run boundary, or a participant in a caller-owned policy."""
+        requested_model = self.config.model if self.config._model_explicit else None
+        parent = provider_client.get_active_execution_context()
+        if parent is not None:
+            provider_client.validate_caller_policy(parent, requested_model)
+            policy_scope = contextlib.nullcontext(parent)
+        else:
+            policy = provider_client.resolve_standalone_policy(requested_model=requested_model,
+                max_calls=self.config.max_calls, timeout_seconds=self.config.timeout_seconds)
+            policy_scope = provider_client.provider_execution_scope(**policy)
+        artifact_scope = contextlib.nullcontext() if get_active_run_id() else artifact_run_scope(None)
+        # Clear only invocation bookkeeping, never caller-owned provider state.
+        self.task_object = None
+        self._collaboration_artifact_ids = set()
+        self.last_conversation_history = []
+        self.last_questions_asked = []
+        with policy_scope, artifact_scope, provider_client.unreserved_run_scope():
+            result = None
+            try:
+                provider_client.check_provider_budget()
+                result = self._main_impl(task)
+                provider_client.check_provider_liveness()
+                ctx = provider_client.get_active_execution_context()
+                reason = ctx.termination_reason if ctx.termination_reason in ("budget_exhausted", "timeout", "cancelled") else result.status
+                if reason in ("budget_exhausted", "timeout", "cancelled"):
+                    result.status = result.stop_reason = reason
+                    result.final_reward = None
+                    if result.error_result is None:
+                        error_type = {"budget_exhausted": "RunBudgetExceededError", "timeout": "RunTimeoutError", "cancelled": "RunCancelledError"}[reason]
+                        result.error_result = ConversationErrorResult(error_type=error_type,
+                            error_message="Execution stopped before a complete result was available.")
+            except self._termination_exception_types() as exc:
+                if result is None:
+                    current_task = Task(task, task, 0.0, [], [], "", None, Plan(steps=[]),
+                        OutputType(output_type="Simple Concise Answer", file_extension=".txt"))
+                    result = Interaction(current_task, [], [], answer="", final_reward=None)
+                reason = self._classify_policy_termination(exc)
+                result.status = result.stop_reason = reason
+                result.final_reward = None
+                result.error_result = ConversationErrorResult(error_type=type(exc).__name__,
+                    error_message="Execution stopped because its provider policy was exhausted, expired or cancelled.")
+            return result
 
     def _main_impl(self, task: str) -> Interaction:
         """Integrate reasoning components for one task with fresh run bookkeeping."""
