@@ -3905,25 +3905,16 @@ class AdvancedPromptEngineer:
                 file_name="",
                 parent_file_name="",
             )
-            try:
-                final_output.file_name = self.name_file(
-                    final_output.final_output, task.output_type.file_extension
-                )
-                # if final_output.component_type in
-            except Exception as e:
-                print_saver.print_and_store(f"Error: {e}")
-                final_output.file_name = f"planstep_{plan_step.step_number}_output{task.output_type.file_extension}"
-
-            return final_output
-        else:
-            try:
-                final_output.file_name = self.name_file(
-                    final_output.final_output, task.output_type.file_extension
-                )
-            except Exception as e:
-                print_saver.print_and_store(f"Error: {e}")
-                final_output.file_name = f"planstep_{plan_step.step_number}_output{task.output_type.file_extension}"
-            return final_output
+        try:
+            final_output.file_name = self.name_file(
+                final_output.final_output, task.output_type.file_extension
+            )
+        except self._policy_exception_types():
+            raise
+        except Exception as e:
+            print_saver.print_and_store(f"Error: {e}")
+            final_output.file_name = f"planstep_{plan_step.step_number}_output{task.output_type.file_extension}"
+        return final_output
 
     def judge_step_completion(
         self, step: List[Step], plan_step: PlanStep, max_plan_steps: int

@@ -1,6 +1,6 @@
 # Issue 51: finite standalone provider policy
 
-Production source: `8f4300ac6c83d63f4ec50dbfeb90e79dc278cb83`, based on merged main `a85a913f673fe65afb22485b1e919f7fcaedebe1` (PR #63 / #49). Later documentation commits do not change this implementation. Final PR-head CI is a separate gate; historical results do not qualify a newer head.
+Original implementation source before PR #64 review repairs: `8f4300ac6c83d63f4ec50dbfeb90e79dc278cb83`, based on merged main `a85a913f673fe65afb22485b1e919f7fcaedebe1` (PR #63 / #49). The PR description records the current tested head and later review-repair evidence. Historical results do not qualify a newer head.
 
 ## Supported behavior
 
@@ -31,6 +31,20 @@ Independent whole-branch review found two additional accounting gaps: ambient re
 
 ## Verification and remaining gates
 
+### Multi-step qualification prerequisite
+
+Install spaCy's **`en_core_web_sm`** model during environment setup, before guarded tests:
+
+```sh
+python -m spacy download en_core_web_sm
+```
+
+Use the same Python environment for setup and test execution. Exact-head backend/browser CI installs this model explicitly. The direct test `test_direct_nested_multistep_cap_is_shared_and_preserves_prior_output` and existing HTTP multi-step tests require it: without the model, `is_complex_llm()` returns its supported safe `0.0` fallback and the engine creates a one-step fallback plan, so those two-step assertions cannot qualify their intended behavior. A missing-model failure is a setup failure for these qualification scenarios, not evidence that the multi-step contract passed. Do not download assets during guarded execution or replace/skip planning to hide the prerequisite.
+
+Production's missing-model fallback remains supported and is qualified separately by import/fallback and runtime-image checks. The test prerequisite does not make NLP asset loading eager or require a model download during application startup.
+
+### Commands and historical baseline
+
 The final source qualification commands are:
 
 ```sh
@@ -42,9 +56,9 @@ bash tools/run-frontend-offline.sh build
 git -c core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol diff --check
 ```
 
-Full guarded local suites at the production source pass **504 tests on Python 3.12.14 (55.51s) and Python 3.11.18 (74.95s)**. Each full count includes ten browser-suite checks: eight actual Chromium scenarios, ownership/CORS and evidence verification. The focused guarded run passed 76 tests. Frontend network denial, 147 tests across 17 files, lint and production build pass; the existing Browserslist warning remains.
+Historical full guarded local suites at the original implementation source passed **504 tests on Python 3.12.14 (55.51s) and Python 3.11.18 (74.95s)**. Each full count includes ten browser-suite checks: eight actual Chromium scenarios, ownership/CORS and evidence verification. The focused guarded run passed 76 tests. Frontend network denial, 147 tests across 17 files, lint and production build passed; the existing Browserslist warning remains.
 
-At this documentation checkpoint, exact-head CI, clean production-image qualification and downloaded evidence verification are pending. The final PR description records current outcomes, exact workflow links and artifact verification after those gates settle.
+The original published head `247bc734f93f160d8914cb06b13dc734932fdefe` subsequently passed both push/PR workflows and downloaded evidence verification. Review repairs require their own current-head qualification. The PR description records current outcomes, exact workflow links and artifact verification after those gates settle.
 
 Local environments, NLP assets and browser binaries were reused. Frontend builds do not overlap browser runs. Clean dependency setup and tracked-source non-root runtime-image qualification are read from current-head CI, not inferred from local tests. Browser evidence retains per-scenario ledgers, HTTP/server records, traces, screenshots, manifests and hashes. Bundle verification reconciles totals, source identity, retained file hashes and nested-archive sentinel scans.
 

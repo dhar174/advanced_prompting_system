@@ -133,7 +133,8 @@ class ProviderExecutionContext:
     cancel_check: Optional[Callable[[], bool]] = None
     termination_reason: Optional[str] = None
     recorded_calls: List[Dict[str, Any]] = field(default_factory=list)
-    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+    # Cancellation callbacks may synchronously inspect get_execution_stats().
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
 
 _ACTIVE_EXECUTION_CONTEXT: contextvars.ContextVar[Optional[ProviderExecutionContext]] = (
@@ -161,6 +162,8 @@ def provider_execution_scope(
     deadline_monotonic: Optional[float] = None,
 ) -> Iterator[ProviderExecutionContext]:
     """Establish a request-scoped provider policy and shared call ledger with cleanup."""
+    if max_calls is not None and (type(max_calls) is not int or max_calls < 0):
+        raise ValueError("max_calls must be a nonnegative integer or None")
     normalized_allowed: Optional[Tuple[str, ...]] = None
     if allowed_models is not None:
         cleaned = tuple(str(m).strip() for m in allowed_models if str(m or "").strip())
@@ -183,17 +186,13 @@ def provider_execution_scope(
         else:
             computed_deadline = time.monotonic()
 
-    resolved_max_calls: Optional[int] = None
-    if max_calls is not None:
-        resolved_max_calls = max(int(max_calls), 0)
-
     ctx = ProviderExecutionContext(
         default_model=resolved_default,
         allowed_models=normalized_allowed,
         temperature=float(temperature) if temperature is not None else None,
         timeout_seconds=float(timeout_seconds) if timeout_seconds is not None else None,
         deadline_monotonic=computed_deadline,
-        max_calls=resolved_max_calls,
+        max_calls=max_calls,
         cancel_check=cancel_check,
     )
     token = _ACTIVE_EXECUTION_CONTEXT.set(ctx)
@@ -252,10 +251,11 @@ def check_provider_liveness() -> None:
     ctx = _ACTIVE_EXECUTION_CONTEXT.get()
     if ctx is None:
         return
-    if ctx.cancel_check and ctx.cancel_check():
-        ctx.termination_reason = "cancelled"
-        raise RunCancelledError("Execution cancelled by caller.")
-    get_remaining_timeout()
+    with ctx._lock:
+        if ctx.cancel_check and ctx.cancel_check():
+            ctx.termination_reason = "cancelled"
+            raise RunCancelledError("Execution cancelled by caller.")
+        get_remaining_timeout()
 
 
 def validate_model_for_context(
@@ -266,13 +266,14 @@ def validate_model_for_context(
     candidate = str(model or "").strip()
     if not candidate:
         return active.default_model if active else None
-    if active and active.allowed_models:
-        if candidate not in active.allowed_models:
-            active.termination_reason = "disallowed_model"
-            raise DisallowedModelError(
-                f"Requested model '{candidate}' is not permitted. "
-                f"Allowed models: {', '.join(active.allowed_models)}."
-            )
+    if active:
+        with active._lock:
+            if active.allowed_models and candidate not in active.allowed_models:
+                active.termination_reason = "disallowed_model"
+                raise DisallowedModelError(
+                    f"Requested model '{candidate}' is not permitted. "
+                    f"Allowed models: {', '.join(active.allowed_models)}."
+                )
     return candidate
 
 
@@ -306,11 +307,12 @@ def get_remaining_timeout() -> Optional[float]:
     ctx = _ACTIVE_EXECUTION_CONTEXT.get()
     if ctx is None or ctx.deadline_monotonic is None:
         return None
-    remaining = float(ctx.deadline_monotonic) - time.monotonic()
-    if remaining <= 0:
-        ctx.termination_reason = "timeout"
-        raise RunTimeoutError("Execution timeout exceeded during provider run.")
-    return remaining
+    with ctx._lock:
+        remaining = float(ctx.deadline_monotonic) - time.monotonic()
+        if remaining <= 0:
+            ctx.termination_reason = "timeout"
+            raise RunTimeoutError("Execution timeout exceeded during provider run.")
+        return remaining
 
 
 def check_provider_budget() -> None:
@@ -388,11 +390,7 @@ def reserve_call_scope(
     token = _IN_RESERVED_CALL.set(_ACTIVE_EXECUTION_CONTEXT.get())
     try:
         yield effective_model
-        ctx = _ACTIVE_EXECUTION_CONTEXT.get()
-        if ctx is not None and ctx.deadline_monotonic is not None:
-            if time.monotonic() >= float(ctx.deadline_monotonic):
-                ctx.termination_reason = "timeout"
-                raise RunTimeoutError("Execution timeout exceeded during provider call.")
+        get_remaining_timeout()
     finally:
         _IN_RESERVED_CALL.reset(token)
 
@@ -497,9 +495,7 @@ class LazyClient:
         req_model = kwargs.get("model")
 
         if _IN_RESERVED_CALL.get() is ctx:
-            if ctx.cancel_check and ctx.cancel_check():
-                ctx.termination_reason = "cancelled"
-                raise RunCancelledError("Execution cancelled by caller.")
+            check_provider_liveness()
             if is_chat_call and req_model is not None:
                 validate_model_for_context(req_model, ctx)
         else:
@@ -522,7 +518,5 @@ class LazyClient:
                 kwargs["timeout"] = remaining
 
         result = resource(*args, **kwargs)
-        if ctx.deadline_monotonic is not None and time.monotonic() >= float(ctx.deadline_monotonic):
-            ctx.termination_reason = "timeout"
-            raise RunTimeoutError("Execution timeout exceeded during provider call.")
+        get_remaining_timeout()
         return result
